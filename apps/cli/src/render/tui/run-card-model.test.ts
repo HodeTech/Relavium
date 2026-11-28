@@ -9,7 +9,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { approvalDecision } from '../../gate/decision.js';
-import type { RunGate } from '../../home/run-gates.js';
+import type { RunBudgetGate, RunCardGate, RunGate } from '../../home/run-gates.js';
 import type { HostedLaunch, HostedResumeRequest } from '../../home/run-host.js';
 import {
   createGateResumer,
@@ -149,7 +149,7 @@ describe('the answer applies to the gate under the cursor only', () => {
     expect(state(card).phase, 'the card is still open').toBe('open');
     const words = projectRunCard(state(card), { columns: 80, rows: 24, nowMs: 0 });
     const text = words.rows.map((row) => row.text).join('\n');
-    expect(text).toContain('Ctrl+N rejects');
+    expect(text).toContain('[Ctrl+N] Reject');
     expect(text).not.toContain('Ctrl+Y');
     expect(text).toContain('takes a typed value');
     expect(press(card, ctrl('n'))).toMatchObject({ kind: 'answered', gateId: 'typed' });
@@ -293,11 +293,11 @@ describe('below the terminal minimum', () => {
         { role: 'keys', text: 'Esc leaves it pending' },
       ]);
       expect(small.rows.map((row) => row.text).join('\n')).not.toMatch(
-        /Ctrl|approves|rejects|aborts|choose a gate/u,
+        /Ctrl|Approve|Reject|Abort|choose a gate/u,
       );
       // At the minimum the same card offers its keys: the degrade is the size, not the card.
       const fits = projectRunCard(state(card), { columns: 80, rows: 24, nowMs: 0 });
-      expect(fits.rows.map((row) => row.text).join('\n')).toContain('Ctrl+Y approves');
+      expect(fits.rows.map((row) => row.text).join('\n')).toContain('[Ctrl+Y] Approve');
     },
   );
 });
@@ -308,7 +308,7 @@ describe('an overdue gate, answered in both orders', () => {
     gate(id, { expiresAt: OVERDUE_AT, timeoutAction: 'reject', ...over });
   const afterDeadline = Date.parse(OVERDUE_AT) + 5_000;
 
-  it('says it is overdue with its deadline and the timeout policy, and still answers', () => {
+  it('says it is expired in the deadline’s own words and the timeout policy, and still answers', () => {
     const { card, resume } = rig([overdue('late')]);
     const before = projectRunCard(state(card), {
       columns: 80,
@@ -320,10 +320,15 @@ describe('an overdue gate, answered in both orders', () => {
       projectRunCard(state(card), { columns: 80, rows: 24, nowMs })
         .rows.map((row) => row.text)
         .join('\n');
-    expect(text(Date.parse(OVERDUE_AT) - 1)).toContain(`expires ${OVERDUE_AT}`);
+    // The words are the work page's own (`expiryLabel`), before the deadline and after it, and the stored timestamp is never drawn.
+    const nearly = Date.parse(OVERDUE_AT) - 5 * 60_000;
+    expect(text(nearly)).toContain(' · expires in 5m');
+    expect(text(nearly)).toBe(text(nearly).replace(OVERDUE_AT, ''));
     const late = projectRunCard(state(card), { columns: 80, rows: 24, nowMs: afterDeadline });
-    expect(late).toMatchObject({ state: 'overdue', overdue: true, glyph: '⚠', word: 'overdue' });
-    expect(text(afterDeadline)).toContain(`Overdue since ${OVERDUE_AT}.`);
+    expect(late).toMatchObject({ state: 'overdue', overdue: true, glyph: '⚠', word: 'expired' });
+    expect(text(afterDeadline)).toContain(' · expired');
+    expect(text(afterDeadline)).not.toContain('Overdue');
+    expect(text(afterDeadline)).toBe(text(afterDeadline).replace(OVERDUE_AT, ''));
     expect(text(afterDeadline)).toContain('On timeout: the run fails (run_timeout).');
     const approving = rig([overdue('late', { timeoutAction: 'approve' })]);
     expect(
@@ -647,5 +652,69 @@ describe('the resume opens a flow around the answer and closes it without changi
     const flow = flowWith(() => Promise.reject(new Error('the flow could not be closed')));
     const host = { resume: vi.fn((): Promise<HostedLaunch> => Promise.reject(new Error('boom'))) };
     await expect(createGateResumer({ host, flow })(request)).rejects.toThrow('boom');
+  });
+});
+
+describe('the sentence after an answer says what the answer did (unit 8 fix wave 2, O2-7)', () => {
+  const BUDGET: RunBudgetGate = {
+    runId: RUN,
+    gateId: 'b1',
+    nodeId: 'writer',
+    allowance: { kind: 'amount', microcents: 4_200_000 },
+    accepts: ['approved', 'rejected'],
+  };
+  /** A card over `gates` whose host starts a leg for every answer at once. */
+  async function answered(
+    gates: readonly RunCardGate[],
+    chord: [string, ChatKey],
+  ): Promise<string | undefined> {
+    const card = createRunCard({
+      runId: RUN,
+      gates,
+      resume: vi.fn(() => Promise.resolve(startedLaunch)),
+      now: () => 0,
+      guard: OFF,
+      painted: () => true,
+    });
+    expect(press(card, chord)).toMatchObject({ kind: 'answered' });
+    await flush();
+    const notice = card.getSnapshot().notice;
+    card.dispose();
+    return notice;
+  }
+
+  it.each([
+    [
+      'a human gate approved',
+      [gate('a')],
+      ctrl('y'),
+      'Answered. The run continues in the background.',
+    ],
+    [
+      'a human gate rejected: the workflow routes on it',
+      [gate('a')],
+      ctrl('n'),
+      'Rejected. The run continues in the background on its rejection route.',
+    ],
+    [
+      'a budget gate approved',
+      [BUDGET],
+      ctrl('y'),
+      'Answered. The run continues in the background.',
+    ],
+    [
+      'a budget gate aborted: the run fails at the budget',
+      [BUDGET],
+      ctrl('n'),
+      'Aborted. The run stops at the budget and fails (budget_exceeded).',
+    ],
+    [
+      'an abort while another gate still waits: the run fails all the same, so no gate is said to wait',
+      [BUDGET, gate('b')],
+      ctrl('n'),
+      'Aborted. The run stops at the budget and fails (budget_exceeded).',
+    ],
+  ] as const)('%s', async (_label, gates, chord, sentence) => {
+    expect(await answered(gates, chord)).toBe(sentence);
   });
 });

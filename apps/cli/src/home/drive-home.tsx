@@ -1,6 +1,14 @@
 import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { runHomeProjectInit } from './project-init.js';
-import { runSessionPicker } from './session-picker.js';
+import {
+  RESUME_ANOTHER_DIRECTORY,
+  RESUME_RESTORING,
+  RESUME_STEP,
+  resumePopup,
+  runSessionPicker,
+} from './session-picker.js';
+import type { FramedFlow } from './framed-flow.js';
+import { isDefaultModelCancelled, withDefaultModelCard } from '../chat/default-model-save.js';
 import { prepareRestoredHistory, retryRestoredHistory } from '../chat/restore-history.js';
 import { resumeHint } from '../chat/resume-hint.js';
 import { fsPolicyWorkspace } from '../engine/tool-host/fs-policy.js';
@@ -16,10 +24,10 @@ import { SessionTerminalOwner } from '../chat/session-terminal-owner.js';
 import { SessionViewLifetime } from '../chat/session-view-lifetime.js';
 import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
 import type { CliInvocation } from '../process/invocation.js';
+import { tryCall } from '../process/attempt.js';
 import { closeQuietly, warnTeardown } from '../process/close-quietly.js';
 import { COMPACTION_UNKNOWN_WINDOW_NOTICE } from '../chat/repl-info.js';
 import { randomUUID } from 'node:crypto';
-import { Buffer } from 'node:buffer';
 
 import {
   createEffectJournalPort,
@@ -59,7 +67,11 @@ import {
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
 import { onceEffortNotice } from '../chat/effort-notice.js';
 import { reconcileResumedSessionEffects, type NoticeFlush } from '../engine/effect-retention.js';
+import { displayRoots } from '../render/display-roots.js';
+import { displayPath } from '../render/notation.js';
+import { flowText } from '../render/tui/flow-text.js';
 import { sanitizeInline } from '../render/sanitize.js';
+import { noticeSurfaceOf } from '../render/surface.js';
 import type { DoctorProbes } from '../chat/doctor.js';
 import {
   createSessionPersister,
@@ -68,7 +80,7 @@ import {
 } from '../chat/persister.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { createStartingModeRuntime, startingModeConfigObserver } from '../chat/starting-mode.js';
-import { runModeSettings } from '../chat/mode-settings.js';
+import { readStartupDefault } from '../chat/startup-default.js';
 import { activateStartingModeHint } from '../chat/starting-mode-hint.js';
 import { admitFsInvocation, admitChatFsPolicy } from '../engine/tool-host/fs-admission.js';
 import { faultForTranscript } from '../config/config-error-text.js';
@@ -76,7 +88,6 @@ import { ConfigError } from '../config/errors.js';
 import {
   ConfigWriteRefusedError,
   prepareGlobalPreferences,
-  writeGlobalPreferences,
   type PreparedConfigWrite,
   type ConfigWriteResult,
 } from '../config/write.js';
@@ -86,7 +97,7 @@ import {
 } from '../config/invocation-default.js';
 import { createModelCatalogPort } from '../engine/model-catalog-port.js';
 import { readUserPricingOverlay } from '../engine/pricing-overlay.js';
-import { assembleToolEnv } from '../engine/tool-host/assemble.js';
+import { clampChatTier } from '../engine/tool-host/assemble.js';
 import {
   createProviderResolver,
   providerEndpointContext,
@@ -99,15 +110,18 @@ import {
   NativePromptVisibilityRefusedError,
 } from '../render/tui/native-prompt-channel.js';
 import { createChordHistory } from '../render/tui/chord-guard.js';
+import { openDoctor, type DoctorKeySample, type DoctorPort } from '../popups/doctor-port.js';
+import { openHomePopup } from '../popups/home-port.js';
+import { openReport } from '../popups/report-port.js';
+import { openSettings } from '../popups/settings-port.js';
+import { openUnreadableRun } from '../popups/unreadable-run-port.js';
+import { createNotificationChannel, type NotificationSource } from '../popups/notifications.js';
+import { createPopupHost, type PopupHost } from '../popups/popup-host.js';
+import { nativePromptFits } from '../render/tui/native-prompt-acknowledgement.js';
 import { createProviderSetupCoordinator, sampleProviderSetup } from './provider-setup.js';
 import type { OnboardingDefaultResult } from '../onboarding/wizard.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
 import { CliError, toCliError } from '../process/errors.js';
-import {
-  isProviderKeyless,
-  runOnboardingWizard,
-  type ClackOnboardingDeps,
-} from '../onboarding/wizard.js';
 import { acknowledgeWrite, type CliIo } from '../process/io.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
@@ -126,14 +140,23 @@ import type { KeychainStore } from '../secrets/keychain.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { askUserOption, createAskUserPort } from '../chat/ask-user-port.js';
 import { assertRenderStoreAgree, type TranscriptEntry } from '../render/tui/session-view-model.js';
-import { createMentionReader } from '../render/tui/mention.js';
+import { lazyMentionReader, scopedMentionReader } from './mention-reader.js';
 import {
   createHomeController,
+  homeOverlayFlags,
   type HomeChatSession,
   type HomeController,
+  type HomeControllerState,
   type HomeModelsPort,
 } from '../render/tui/home-controller.js';
-import { DISABLE_MOUSE, ENABLE_MOUSE, HIDE_CURSOR, SHOW_CURSOR } from '../render/alt-screen.js';
+import { keyToken } from '../render/tui/legend.js';
+import { overlayOwnsKeyboard } from '../render/tui/overlay-flags.js';
+import {
+  DISABLE_MOUSE,
+  ENABLE_MOUSE,
+  homeAfterInkEnter,
+  SHOW_CURSOR,
+} from '../render/alt-screen.js';
 import { nodeCreateTempDocument, createNodeSpawnEditor } from '../render/editor.js';
 import { inkOwnedTerminal, type HatchDeps } from '../render/hatches.js';
 import { nodeWaitForContinue, nodeWriteOut } from '../render/scrollback.js';
@@ -164,6 +187,8 @@ import { createRunViewFeed } from '../render/tui/run-view-feed.js';
 import { readParkedRuns } from '../render/tui/home-attention.js';
 import { createGateResumer } from '../render/tui/run-card-model.js';
 import { createHomeStore } from './home-store.js';
+import type { HomeStatusReader } from './home-status-facts.js';
+import { nextChatFacts, nextChatSettings, statusDirectory } from './next-chat-facts.js';
 import { RunHost } from './run-host.js';
 import { runMediaContinue } from './media-continue.js';
 import { readRunGates } from './run-gates.js';
@@ -171,7 +196,6 @@ import { createNativeConsentPrompter } from './consent-card.js';
 import { resolveHomeChatAgent, type HomeAgentRequest, type HomeChatAgent } from './agent-start.js';
 import { createAgentsPort } from './agents-port.js';
 import { createDefinedPort, createExportPort } from './defined-port.js';
-import { createSessionsPort } from './sessions-port.js';
 import { createPinPort } from './pin-port.js';
 import { createProjectCatalog, createRunLaunch } from './run-launch.js';
 import { runExportCard } from '../render/tui/export-card.js';
@@ -198,8 +222,8 @@ import { defaultSubscribeSignals } from '../process/signals.js';
  *   block is bracketed literal text (no embedded newline submits early); the controller strips the markers.
  */
 export interface HomeDeps {
-  /** Open the tab host on its Permissions tab as the run's whole job (a bare `relavium permissions` on a terminal, ADR-0137 §3,
-   *  ADR-0140 §1): the Home ends with success when the screen is closed. Absent ⇒ the ordinary Home. */
+  /** Open the `/permissions` popup as the run's whole job (a bare `relavium permissions` on a terminal, ADR-0137 §3,
+   *  ADR-0140 §1): the Home ends with success when the popup is closed. Absent ⇒ the ordinary Home. */
   readonly openPermissions?: boolean;
   /** Explicit home override for hermetic embeddings and tests. */
   readonly homeDir?: string;
@@ -230,9 +254,12 @@ export interface HomeDeps {
   readonly run?: RunHost;
   /** The `/doctor` probes (2.5.C S5) — production assembles the real probes; a test injects a fake. */
   readonly doctorProbes?: DoctorProbes;
-  /** The onboarding clack slice (2.5.G S8) — omit for the real prompts; a test injects a scripted one. Only ever
-   *  used on a truly key-less first run (the wizard is otherwise skipped). */
-  readonly onboardingPrompter?: ClackOnboardingDeps;
+  /**
+   * Whether the Home opens its first-run provider setup BY ITSELF when no provider is usable (ADR-0146 §6, read by `mayOfferFirstRunSetup`).
+   * `'off'` keeps it closed: an embedding or a test that drives a keyless Home for something else (`/providers`, the keyless `Enter` and
+   * the doctor's hand-off still open it). Absent ⇒ `'automatic'`, production's.
+   */
+  readonly firstRunSetup?: 'automatic' | 'off';
   readonly now?: () => number;
   readonly uuid?: () => string;
   /** Injectable ink mount + the terminal-size seam (tests drive `RootApp` props without a real TTY). `opts` carries
@@ -242,18 +269,18 @@ export interface HomeDeps {
     props: RootAppProps,
     opts: { readonly alternateScreen: boolean; readonly interactive: boolean },
   ) => Pick<ReturnType<typeof render>, 'unmount' | 'waitUntilRenderFlush' | 'waitUntilExit'>;
+  /**
+   * Whether a change of the Home's page slides (MVP-11 unit 7): absent or `true`, it does in the alternate screen (inline the pages always swap).
+   * `false` swaps them in the alternate screen too: for an embedding that drives the controller's keys with no renderer to show the frames
+   * between (a journey test), where the keys after a page key would otherwise wait for the slide's arrival.
+   */
+  readonly pageSlide?: boolean | undefined;
   readonly getSize?: () => { cols: number; rows: number };
   readonly subscribeResize?: (onResize: () => void) => () => void;
   /** Subscribe to SIGINT(2)/SIGTERM(15)/SIGHUP(1)/SIGQUIT(3); returns an unsubscribe. Default registers on `process`. */
   readonly subscribeSignals?: (onSignal: (signo: number) => void) => () => void;
   /** POSIX SIGTSTP/SIGCONT seam. Separate from termination signals: a job stop is reversible and MUST NOT exit. */
   readonly jobControlLifecycle?: JobControlLifecycle;
-  /**
-   * The short pre-Ink terminal custody window owned by `@clack/prompts` during first-run onboarding. Clack enables
-   * raw input and hides the cursor, so it needs the same reversible release/reclaim discipline as Ink before a
-   * SIGTSTP can stop the process. Injectable to keep the signal path testable without touching the real TTY.
-   */
-  readonly onboardingTerminalLifecycle?: OnboardingTerminalLifecycle;
   /** Register a synchronous `process.on('exit')` net; returns a remover. Default registers on `process`. The LAST
    *  chance to restore the terminal when something calls `process.exit()` past the `finally` (2.6.F Step 6f). */
   readonly subscribeProcessExit?: (onExit: () => void) => () => void;
@@ -277,32 +304,12 @@ export function defaultSubscribeProcessExit(onExit: () => void): () => void {
   return () => process.removeListener('exit', onExit);
 }
 
-/** The narrow `@clack/prompts` terminal custody seam needed only before Ink mounts. */
-export interface OnboardingTerminalLifecycle {
-  /** Observe raw input bytes while Clack owns stdin; callers remove the exact listener after the wizard settles. */
-  readonly onInput: (listener: (input: string) => void) => () => void;
-  /** Whether Clack currently owns raw input (and, by its contract, its hidden cursor). */
-  readonly isRawMode: () => boolean;
-  /** Transfer raw-mode ownership between Clack and the user's shell. */
-  readonly setRawMode: (enabled: boolean) => void;
-}
-
-/** Production terminal bridge for the real Clack prompt, intentionally kept out of the generic `CliIo` seam. */
-export const defaultOnboardingTerminalLifecycle: OnboardingTerminalLifecycle = {
-  onInput: (listener) => {
-    const onData = (chunk: Buffer | string): void => {
-      listener(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
-    };
-    process.stdin.on('data', onData);
-    return () => process.stdin.removeListener('data', onData);
-  },
-  isRawMode: () => process.stdin.isRaw === true,
-  setRawMode: (enabled) => {
-    // The bare Home is TTY-gated, but retain this guard so a future direct caller never invokes an unsupported
-    // `setRawMode` on a redirected stream.
-    if (process.stdin.isTTY) process.stdin.setRawMode(enabled);
-  },
-};
+/**
+ * What the Home says to a message sent in a chat whose provider has no usable key. A sentence that names a key writes it by the legend's
+ * bracket rule ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §3); exported so the legend golden records what
+ * the host shows. (What a resume says is in `session-picker.ts`: `RESUME_RESTORING` and `RESUME_ANOTHER_DIRECTORY`, which the golden records too.)
+ */
+export const NO_USABLE_KEY_NOTICE = `This session’s provider has no usable key. Go back to the Home (${keyToken('Ctrl+C')} twice) and use /providers to connect it, or use /models to switch provider.`;
 
 /** The agent a chat is built with: the session's own when it rebinds one, else the definition a `c` read (with its file for the consent prompt), else none. */
 function boundAgentOptions(
@@ -312,6 +319,22 @@ function boundAgentOptions(
   if (bound !== undefined) return { agent: bound.agent };
   if (resolvedAgent === undefined) return {};
   return { agent: resolvedAgent.agent, mcpArtifact: resolvedAgent.artifact };
+}
+
+/**
+ * Whether the first-run setup that opens by itself may open over the Home now (ADR-0146 §6): over an empty Home and nothing else, so no chat or
+ * build, no draft in the composer, and nothing that owns the keyboard (a palette, a picker, a screen, a card, a popup, a setup the person
+ * opened). A terminal that grows while the person is already typing or in a screen must not have a popup land on that. Only over the landing
+ * (page 1), and never while the pages slide (MVP-11 unit 7): the work page's rows are a place the person went to on purpose.
+ */
+export function homeClearForFirstRun(state: HomeControllerState, popupOpen: boolean): boolean {
+  return (
+    state.mode === 'home' &&
+    state.homePage === 'start' &&
+    state.slide === undefined &&
+    state.input.text === '' &&
+    !overlayOwnsKeyboard({ ...homeOverlayFlags(state), popup: popupOpen })
+  );
 }
 
 export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
@@ -340,23 +363,30 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   const startingModes = createStartingModeRuntime(initialConfig, true);
   const configReadObserver = startingModeConfigObserver(startingModes.authority);
   const fsPolicy = admitChatFsPolicy(grants, deps.global.cwd, config.chat.extraRoots);
+  // "This directory", ONCE (MVP-11 unit 7, round 2): the canonical spelling of the directory the Home was opened in, the very root a run
+  // records (`projectRootOf`) and the `working_dir` a chat records. Every reader that asks whether a run is this directory's (the lists,
+  // the parked rows and their cards, the History and Active tabs, the popups' catalogue, `r`, the run host's resume) compares a run's root with this
+  // text, never with `deps.global.cwd` as it was typed (`.`, `work/`, a symlink, a case variant).
+  const here = fsPolicyWorkspace(fsPolicy);
   // One chord history for every card the Home shows (ADR-0139 §4): the MCP consent card (this channel), the gate and budget cards and the
   // exit guard (the controller). What one answered, the next is locked against, so a key held through an answer cannot answer the next card.
   const chordHistory = createChordHistory();
   const nativePrompt = createNativePromptChannel({ history: chordHistory });
+  // The Home's one notification channel and its popup host (ADR-0148 §2): the popup host is built once the renderer is known (a popup is an
+  // overlay in the alternate screen and a block in the flow inline), on the SAME chord history, which the chat stores share too, so a key
+  // typed into a popup is seen by the guards of any card that opens next.
+  const notifications = createNotificationChannel();
+  // What the Home itself says on that channel (its `announce`, a provider run's last word) carries this as its source, so the controller can
+  // withdraw it when a chat comes in front: the Home's words are not the chat's (MVP-11 unit 7, round 1: CO76). No popup is this source.
+  const homeAnnouncements: NotificationSource = {};
+  let popups: PopupHost | undefined;
+  // The `/doctor` popup's host identity (ADR-0148 §8): one per Home, so a completed deep result and a deep run in flight are the Home's,
+  // whether the popup was opened on the landing or in a chat it hosts.
+  const doctorScope = {};
   let lastSavedSessionId: string | undefined;
-  let finalSetupNote: string | undefined;
-  const promptFlow = {
-    ...nativePrompt.flow,
-    begin: () => {
-      finalSetupNote = undefined;
-      return nativePrompt.flow.begin();
-    },
-    end: async () => {
-      finalSetupNote = nativePrompt.ui.getSnapshot().note || undefined;
-      await nativePrompt.flow.end();
-    },
-  };
+  // The Home's one prompt flow. A flow's card note is not kept as a Home notice any more (ADR-0148 §6, MVP-11 unit 6): the provider popup ends
+  // in its Done step or one notification, so nothing a step said outlives it.
+  const promptFlow = { ...nativePrompt.flow };
   const keyPolicy = createStandardEnvKeyPolicy(globalConfig?.preferences);
   let invocationDefault: InvocationModelDefault | undefined;
   // One OS-keychain accessor shared by the provider key resolver (2.C) + the MCP named-secret resolver (2.R) — the
@@ -394,6 +424,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   let ownedMount: SessionInkMount | undefined;
   let ownedJob: SessionTerminalOwner | undefined;
   let homeInputSealed = false;
+  /** Cancels the wait for room that the automatic first-run setup is in while the terminal is below the minimum (see `onRendererReady`). */
+  let stopWaitingForRoom: (() => void) | undefined;
   let stopHomeInput = (): void => {
     homeInputSealed = true;
     promptFlow.cancel();
@@ -427,7 +459,6 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   };
   let unsubscribeSignals: (() => void) | undefined;
   let unsubscribeProcessExit: (() => void) | undefined;
-  let unsubscribeOnboardingInput: (() => void) | undefined;
   let disposeJobControl: (() => void) | undefined;
   let dbClosed = false;
   const closeDb = (): void => {
@@ -450,115 +481,6 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     else process.stdout.write(sequence);
   };
 
-  // Before Ink mounts, the first-run wizard owns raw input and cursor visibility through `@clack/prompts`. It is a
-  // real full-screen-adjacent terminal owner: a raw Ctrl-Z becomes a SUB byte (not a kernel SIGTSTP), while an
-  // external SIGTSTP would otherwise stop the process with Clack's raw mode and hidden cursor still live. Keep its
-  // state separate from Ink's SuspendPort, then hand it off reversibly through the same job-control coordinator.
-  const onboardingTerminal =
-    deps.onboardingTerminalLifecycle ??
-    (ownership === undefined
-      ? defaultOnboardingTerminalLifecycle
-      : {
-          onInput: (listener: (input: string) => void) => {
-            const input = deps.io.nativeStdin;
-            if (input === undefined) throw new CliError('cli_internal', '');
-            const onData = (chunk: Buffer | string): void =>
-              listener(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
-            input.on('data', onData);
-            return () => {
-              input.removeListener('data', onData);
-            };
-          },
-          isRawMode: () => deps.io.nativeStdin?.isRaw === true,
-          setRawMode: (enabled: boolean) => {
-            const input = deps.io.nativeStdin;
-            if (input === undefined) throw new CliError('cli_internal', '');
-            input.setRawMode(enabled);
-          },
-        });
-  let onboardingActive = false;
-  let onboardingFinalized = false;
-  let onboardingRawReleased = false;
-  let onboardingCursorReleased = false;
-
-  const reclaimOnboardingTerminal = (): void => {
-    if (ownership?.surface.work.signal.aborted === true) {
-      onboardingFinalized = true;
-      return;
-    }
-    if (!onboardingActive || onboardingFinalized) return;
-    // Restore raw input before Clack redraws/reads again. Each latch is independent: a transient cursor-write fault
-    // must remain retryable and cannot make us incorrectly claim that the terminal is wholly reclaimed.
-    if (onboardingRawReleased) {
-      try {
-        onboardingTerminal.setRawMode(true);
-        onboardingRawReleased = false;
-      } catch (cause) {
-        ownership?.surface.work.failure(cause);
-        // A future recovery opportunity gets another exact retry.
-      }
-    }
-    if (onboardingCursorReleased) {
-      try {
-        void writeControl(HIDE_CURSOR);
-        onboardingCursorReleased = false;
-      } catch {
-        // A future recovery opportunity gets another exact retry.
-      }
-    }
-  };
-
-  const releaseOnboardingTerminal = (): boolean => {
-    if (!onboardingActive) return true; // no Ink and no Clack ownership (the tiny pre-mount handoff window)
-    if (onboardingFinalized) return false;
-    // A prior partial release may have restored raw input but failed while hiding the cursor. Retry that exact
-    // reclaim before refusing a later stop request: terminal writes are fallible and retaining the latches without a
-    // recovery attempt would turn one transient stdout fault into a permanently unsuspendable Clack prompt.
-    if (onboardingRawReleased || onboardingCursorReleased) {
-      reclaimOnboardingTerminal();
-      if (onboardingRawReleased || onboardingCursorReleased) return false;
-    }
-    // `runOnboardingWizard` also awaits keychain/config work after Clack has stopped its spinner. Do not manufacture
-    // raw mode + a hidden cursor when a stop lands in that ordinary cooked-input interval: Clack has nothing to
-    // hand over there, so a default SIGTSTP is already terminal-safe.
-    if (!onboardingTerminal.isRawMode()) return true;
-    try {
-      onboardingTerminal.setRawMode(false);
-      onboardingRawReleased = true;
-      // Mark before the write: a TTY write can throw after emitting a partial escape sequence. The rollback must
-      // conservatively re-hide the cursor in that case; a harmless extra HIDE is far safer than returning Clack to a
-      // live prompt with its cursor visible.
-      onboardingCursorReleased = true;
-      void writeControl(SHOW_CURSOR);
-      return true;
-    } catch (cause) {
-      ownership?.surface.work.failure(cause);
-      // We did not stop the process, so put any partial release back immediately rather than leaving Clack half-owned.
-      reclaimOnboardingTerminal();
-      return false;
-    }
-  };
-
-  const restoreOnboardingTerminal = (): void => {
-    // On a normal wizard handoff Clack restores itself before `onboardingActive` is cleared. This path is only for a
-    // signal/process-exit net while the wizard still owns the terminal; it deliberately leaves cooked input + a
-    // visible cursor, never a reversible Clack reclaim behind a terminal teardown.
-    if (!onboardingActive && !onboardingRawReleased && !onboardingCursorReleased) return;
-    onboardingFinalized = true;
-    try {
-      onboardingTerminal.setRawMode(false);
-      onboardingRawReleased = false;
-    } catch {
-      // The overlapping exit net/finally retries the exact operation.
-    }
-    try {
-      void writeControl(SHOW_CURSOR);
-      onboardingCursorReleased = false;
-    } catch {
-      // The overlapping exit net/finally retries the exact operation.
-    }
-  };
-
   /**
    * Undo every terminal mode this command turned on, in reverse order: unmount ink FIRST (leaving raw mode and the
    * alternate buffer), then disable bracketed paste (DECSET 2004, enabled by ink 7's `usePaste`) and mouse reporting
@@ -579,7 +501,6 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   let pasteDisabled = false;
   let mouseDisabled = false;
   const restoreTerminalControls = (): void => {
-    restoreOnboardingTerminal();
     if (!unmounted) {
       try {
         instance?.unmount(); // restore the terminal from raw mode BEFORE anything else
@@ -701,9 +622,13 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     const homeStore = createHomeStore({
       sessions: opened.store,
       runs: runReader,
-      // A run of another project is marked `other project` in the strip (the same project root the Defined and History tabs use).
-      projectRoot: deps.global.cwd,
-      homeDir: deps.homeDir,
+      // The Home lists THIS directory only (MVP-11 unit 7): its runs by the root a run records and its sessions by the workspace a chat
+      // records, one canonical value (`here`), the directory `/resume` calls "this directory" and the root the parked rows, the `/workflows` popup's catalogue
+      // and the History tabs use. Another directory's work stays in `/resume` (Tab) and `/history`.
+      projectRoot: here,
+      workingDir: here,
+      // The failed-run window's clock (a failed run is under Attention for seven days).
+      now,
     });
 
     // The `/models` catalog port (2.5.G S7, ADR-0064) — built over the ONE already-open db handle (`opened.db`, the
@@ -743,14 +668,22 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       mcpSecretResolver,
       consent: createNativeConsentPrompter(promptFlow),
       renderer: runFeed.renderer,
+      // The runs it answers are this directory's, by the one root the lists use; its legs still work in the cwd as spelled.
+      projectRoot: here,
     }));
-    let keyless = !sampleProviderSetup(providers).some(
-      ({ availability }) => availability.status === 'usable',
-    );
+    // The key presence the Home last sampled (when it opened, and after a provider run): the `/doctor` popup falls back on it for a key it could
+    // not read in time. Booleans only, never a value.
+    let keySample: readonly DoctorKeySample[] = [];
+    const sampleKeys = (): boolean => {
+      keySample = sampleProviderSetup(providers).map(({ id, availability }) => ({
+        id,
+        usable: availability.status === 'usable',
+      }));
+      return !keySample.some((entry) => entry.usable);
+    };
+    let keyless = sampleKeys();
     const refreshKeyless = (): boolean => {
-      keyless = !sampleProviderSetup(providers).some(
-        ({ availability }) => availability.status === 'usable',
-      );
+      keyless = sampleKeys();
       return keyless;
     };
     const assertHomeAdmitting = (): void => {
@@ -766,7 +699,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         assertAdmitting();
         const native = nativePrompt.ui.getSnapshot().active;
         if (prepared.rewriteNeeded || native) {
-          if (flushVisible === undefined)
+          // A rewrite is published only behind its disclosure on the open card or popup (ADR-0148 §6): with none open there is nowhere to
+          // draw it that is not a Home notice (residue), so the write is refused, as it is when nothing can be drawn at all.
+          if (flushVisible === undefined || !native)
             throw new CliError(
               'output_unavailable',
               'The config rewrite notice could not be displayed.',
@@ -774,10 +709,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           await flushVisible(() => {
             const notice =
               'Saving preferences rewrites the global config and removes its comments and ordering.';
-            if (native) {
-              if (prepared.rewriteNeeded) promptFlow.note(notice);
-              else promptFlow.busy('Saving preferences…');
-            } else controller?.setProviderState(keyless, notice);
+            if (prepared.rewriteNeeded) promptFlow.note(notice);
+            else promptFlow.busy('Saving preferences…');
           });
         }
         const snapshot = native ? nativePrompt.ui.getSnapshot() : undefined;
@@ -798,18 +731,22 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       model: string,
       provider: Parameters<ProviderResolver['keyFor']>[0],
       assertAdmitting: () => void = assertHomeAdmitting,
+      // The setup run's view of its own writes: a config the run created a moment before draws no rewrite notice (W7 item 5).
+      runWrite: (prepared: PreparedConfigWrite) => PreparedConfigWrite = (prepared) => prepared,
     ): Promise<OnboardingDefaultResult> => {
       for (;;) {
         try {
           const saved = await publishPreference(
-            prepareGlobalPreferences(
-              {
-                defaultModel: model,
-                defaultProvider: provider,
-              },
-              homeDir,
-              deps.global.configPath === undefined ? undefined : globalConfigPath,
-              configReadObserver,
+            runWrite(
+              prepareGlobalPreferences(
+                {
+                  defaultModel: model,
+                  defaultProvider: provider,
+                },
+                homeDir,
+                deps.global.configPath === undefined ? undefined : globalConfigPath,
+                configReadObserver,
+              ),
             ),
             assertAdmitting,
           );
@@ -829,7 +766,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             message: 'How would you like to continue?',
             options: [
               ...(refused ? [] : [{ value: 'retry', label: 'Retry saving' }]),
-              { value: 'once', label: 'Use this model for this invocation only' },
+              { value: 'once', label: `Use ${model} for this invocation only` },
               { value: 'cancel', label: 'Cancel' },
             ],
           });
@@ -856,6 +793,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       assertAdmitting: assertHomeAdmitting,
       endpointContext: (id) => providerEndpointContext(providers, id),
       publishPreference,
+      // The Home draws the setup as its `/providers` popup (ADR-0148 §1, ADR-0146 §6) and remembers a skip of the automatic first run.
+      popup: true,
+      rememberSkip: true,
       wizard: {
         store: providerStore,
         keychain,
@@ -865,15 +805,25 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       },
     });
     let providerRun: Promise<void> | undefined;
-    const openProviders = (mode: 'automatic' | 'explicit'): Promise<void> => {
+    /**
+     * The one first-run offer that opens by itself, spent (ADR-0146 §6): it opened, or a provider run of any kind (the explicit list, a
+     * `/providers`, a skip) has finished, so a terminal that grows later does not open it over a person who has already been there.
+     */
+    let automaticSetupStarted = false;
+    const openProviders = (mode: 'automatic' | 'explicit', intro?: string): Promise<void> => {
       if (providerRun !== undefined) return providerRun;
       const operation = async (): Promise<void> => {
-        const result = await providerSetup.run(mode);
-        if (homeInputSealed) return;
-        keyless = !sampleProviderSetup(providers).some(
-          ({ availability }) => availability.status === 'usable',
-        );
-        controller?.setProviderState(keyless, result.notice ?? finalSetupNote);
+        try {
+          const result = await providerSetup.run(mode, intro);
+          if (homeInputSealed) return;
+          keyless = sampleKeys();
+          controller?.setProviderState(keyless);
+          // What the popup did not say itself (a skip, a setup that could not show its Done step) is ONE notification on the Home's channel,
+          // never a Home notice or a transcript line (ADR-0148 §6).
+          if (result.notice !== undefined) notifications.notify(result.notice, homeAnnouncements);
+        } finally {
+          automaticSetupStarted = true; // finished, however it ended: the offer that waited for room is not spent a second time (round 2, K4)
+        }
       };
       const run = operation();
       providerRun = run;
@@ -888,11 +838,12 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       return run;
     };
 
-    // The Home's `/doctor` probes (built here, over the store-aware resolver). The zero-config default agent has no
-    // `mcp_servers`, so the `--deep` MCP tier reports "none configured" (and the Home palette runs only the fast tier).
+    // The Home's `/doctor` probes (built here, over the store-aware resolver), for the Home's `/doctor` popup below. The zero-config
+    // default agent has no `mcp_servers`, and the Home has no session, so the popup's deep tier shows no MCP rows here.
     const doctorProbes =
       deps.doctorProbes ??
       assembleDoctorProbes({
+        noticeSurface: noticeSurfaceOf('home'), // the Home is a TTY surface: `/import`, never a shell command
         readConfig: () => {
           startingModes.read(deps.global.cwd);
         },
@@ -902,6 +853,26 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
         resolver: providers,
       });
+    // The Home's `/doctor` popup (ADR-0148 §8): the same probes, no MCP rows (the Home has no session), the Home's owner and clipboard.
+    const homeDoctor: DoctorPort = {
+      scope: doctorScope,
+      surface: 'home',
+      resultKey: 'home',
+      probes: doctorProbes,
+      ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
+      clipboard,
+      cachedKeys: () => keySample,
+      plainGlyphs: !deps.global.color,
+      // The doctor's remedy is a HAND-OFF (maintainer, 2026-11-25; MVP-11 unit 6): `Enter` on a failing key row closes the doctor and opens
+      // `/providers` on the Home, through the Home's own opening gate (a refusal is one notification); `Esc` there returns to the Home. The
+      // provider popup cannot be the doctor's child: the channel's flow is a sheet source that would close every open popup unanswered.
+      openRemedy: (remedy, context) => {
+        if (remedy.kind !== 'providers' || controller === undefined) return false;
+        context.close();
+        controller.openProviderSetup();
+        return true;
+      },
+    };
     // The `✓`-marked current default is the EFFECTIVE default — `[chat].default_model` resolves project → workspace
     // → global `[preferences].default_model` (ADR-0063 §1). It is re-read FRESH from disk each call (not the loaded
     // `config` snapshot) so it reflects a same-session `/models` write AND a project/workspace override AND an edit
@@ -928,13 +899,13 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
       }),
       currentDefault: readEffectiveDefault,
+      currentDefaultProvider: () => readEffectiveChat().defaultProvider,
       currentEffort: readEffectiveEffort,
       // Write to the SAME file the picker re-reads + the started session resolves (honors `--config`), so a `/models`
       // write is never a silent no-op to a different file (2.5.G S7). The effort rides the SAME atomic write; an
       // absent `reasoningEffort` (a non-reasoning model) leaves any prior effort default unchanged.
       writeDefault: async (modelId, provider, reasoningEffort) => {
         ownership?.surface.work.assertAdmitting();
-        let signal: AbortSignal | undefined;
         try {
           const prepared = prepareGlobalPreferences(
             {
@@ -946,27 +917,47 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             deps.global.configPath === undefined ? undefined : globalConfigPath,
             configReadObserver,
           );
-          // A plain Home picker write needs the same real disclosure evidence
-          // as setup, without adding another confirmation or terminal owner.
-          if (prepared.rewriteNeeded) {
-            signal = promptFlow.begin();
-            promptFlow.busy('Saving default model…');
-          }
-          const saved = await publishPreference(prepared, () => {
+          // A plain Home picker write needs the same real disclosure evidence as setup, without adding another confirmation or terminal
+          // owner: a rewrite is published behind the card the stand-alone chat's writer uses (`withDefaultModelCard`), a new file with none.
+          const assertPublishing = (signal?: AbortSignal): void => {
             ownership?.surface.work.assertAdmitting();
             if (homeInputSealed) throw new CliError('invalid_invocation', 'Home is closing.');
             signal?.throwIfAborted();
-          });
+          };
+          const saved = prepared.rewriteNeeded
+            ? await withDefaultModelCard(promptFlow, (signal) =>
+                publishPreference(prepared, () => {
+                  assertPublishing(signal);
+                }),
+              )
+            : await publishPreference(prepared, () => {
+                assertPublishing();
+              });
           invocationDefault = undefined;
           return saved;
         } catch (cause) {
-          if (signal?.aborted && cause === signal.reason)
-            throw new CliError('invalid_invocation', 'Default model change cancelled.');
-          ownership?.surface.work.failure(cause);
+          if (!isDefaultModelCancelled(cause)) ownership?.surface.work.failure(cause);
           throw cause;
-        } finally {
-          if (signal !== undefined) await promptFlow.end();
         }
+      },
+    };
+
+    // What the landing's status line says about the NEXT chat (ADR-0146 §2), from the SAME sources a new chat starts from: the effective `[chat]`
+    // block read fresh (`readEffectiveChat`'s own read, with the model this invocation chose), the startup snapshot as the fallback, the starting
+    // mode `startChat` resolves, and the Home's cached key sample (never the keychain: the controller reads this at its refresh events and never
+    // on a draw). A strict reload that fails throws, and the controller then drops the facts (the line is blank until a read succeeds): that
+    // reload has revoked the starting mode's authority, and a line that kept `auto mode` would say what the next chat will not do.
+    const statusLabel = statusDirectory(deps.global.cwd, homeDir);
+    const statusFacts: HomeStatusReader = {
+      read: () => {
+        const start = startingModes.resolve(deps.global.cwd);
+        const effective = applyInvocationDefault(start.loaded, invocationDefault).config.chat;
+        return nextChatFacts({
+          settings: nextChatSettings(effective, config.chat),
+          mode: start.startingMode.mode,
+          hasKey: (id) => keySample.some((entry) => entry.id === id && entry.usable),
+          directory: statusLabel,
+        });
       },
     };
 
@@ -1005,14 +996,19 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         built.workOwner?.assertAdmitting();
         ownership?.surface.work.assertAdmitting();
         // Surface any config-level MCP tools the build skipped through the chat's ⚠ warnings channel (NOT stderr,
-        // which would corrupt the live TUI) — parity with `relavium chat`'s surfaceMcpSkipped.
+        // which would corrupt the live TUI) — parity with `relavium chat`'s surfaceMcpSkipped. It holds for the whole session (the tool stays
+        // skipped), so it is not consumed by the first message the way a turn's warning is.
         for (const tool of built.mcpSkipped) {
-          store.note(`MCP tool '${tool.name}' (server '${tool.server}') skipped — ${tool.reason}`);
+          store.note(
+            `MCP tool '${tool.name}' (server '${tool.server}') skipped — ${tool.reason}`,
+            'session',
+          );
         }
         // The chat's `/doctor` probes reflect THIS session's MCP status (derived from `built`, not the Home defaults).
         const chatDoctorProbes =
           deps.doctorProbes ??
           assembleDoctorProbes({
+            noticeSurface: noticeSurfaceOf('home-chat'), // the Home-hosted chat is read in the TUI
             readConfig: () => {
               startingModes.read(built.context.workingDir);
             },
@@ -1029,9 +1025,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         const sendGuard = (): string | undefined => {
           built.workOwner?.assertAdmitting();
           ownership?.surface.work.assertAdmitting();
-          return providerHasKey(providers, built.agent.provider)
-            ? undefined
-            : 'This session’s provider has no usable key. Use /providers to connect it or /models to switch provider.';
+          return providerHasKey(providers, built.agent.provider) ? undefined : NO_USABLE_KEY_NOTICE;
         };
         const initialKeyRefusal = sendGuard();
         if (!opts.open && initialKeyRefusal !== undefined) store.notice(initialKeyRefusal);
@@ -1081,8 +1075,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           onAbort,
           onModeChange,
           onSetEffort,
-          permissions,
-          boundAgent,
+          reports,
+          settings,
+          setAnnouncer,
           resumeAfterFailedClear,
         } = createChatLineHandler(
           {
@@ -1096,29 +1091,50 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           },
           {
             ...deps,
+            surface: 'home-chat', // `/help` and the unknown-slash hint list this chat's own commands, as its palette does
             hatchPorts,
-            openModeSettings: (currentMode, onCurrentMode, notice) =>
-              runModeSettings({
-                runtime: startingModes,
-                cwd: built.context.workingDir,
-                interactive: true,
-                flow: promptFlow,
-                currentMode,
-                onCurrentMode,
-                notice,
-                assertAdmitting: () => {
-                  assertHomeAdmitting();
-                  built.workOwner?.assertAdmitting();
-                  if (controller?.getSnapshot().session?.sessionId !== built.sessionId)
-                    throw new CliError(
-                      'invalid_invocation',
-                      'This conversation is no longer active.',
-                    );
+            // The `/mode` popup's `[s]` (ADR-0148 §3, §6; MVP-11 unit 8, OD-25): the startup-default writer's own flow on the Home's native
+            // prompt, framed as the popup's confirmation (`Mode · Confirm · Done`), while this conversation is the one in front; what it came
+            // to is returned for the popup to say or draw, and a fault after it is this chat's work owner's. Loaded when first asked for.
+            saveStartupDefault: async (mode, inChat) => {
+              const { saveChatStartupDefault } = await import('../popups/mode-confirm.js');
+              return saveChatStartupDefault(
+                {
+                  runtime: startingModes,
+                  cwd: built.context.workingDir,
+                  interactive: true,
+                  flow: promptFlow,
+                  target: flowText(
+                    displayPath(
+                      startingModes.configPath,
+                      displayRoots(built.context.workingDir, homeDir),
+                    ),
+                  ),
+                  failure: (cause) => built.workOwner?.failure(cause),
+                  assertAdmitting: () => {
+                    assertHomeAdmitting();
+                    built.workOwner?.assertAdmitting();
+                    if (controller?.getSnapshot().session?.sessionId !== built.sessionId)
+                      throw new CliError(
+                        'invalid_invocation',
+                        'This conversation is no longer active.',
+                      );
+                  },
+                  publish: publishPreference,
                 },
-                publish: publishPreference,
-              }),
+                mode,
+                inChat,
+              );
+            },
+            readStartupDefault: () => readStartupDefault(startingModes, built.context.workingDir),
           },
         );
+        // The session's announcements (its typed settings, its mode control and its settings popups) are the Home's own notifications
+        // (ADR-0148 §2, §6): raised with no popup as their source, so a setting's word outlives the popup that applied it, and never written
+        // into the transcript or the Home's notice. Unbound when this chat is torn down.
+        setAnnouncer((text, topic) => {
+          notifications.notify(text, undefined, topic);
+        });
         // Subscribe the view store BEFORE opening the session so the synchronous session:started is observed.
         const subscribeView = (): (() => void) =>
           built.handle.subscribe(
@@ -1142,15 +1158,14 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         if (opts.open) {
           built.session.start();
         }
-        // The `@`-mention completion reader (2.5.D, ADR-0061): a READ-ONLY fs jail at the session's fs-scope tier.
-        const mentionFs = assembleToolEnv({
-          profile: 'chat-read-only',
+        // The `@`-mention completion reader (2.5.D, ADR-0061): a READ-ONLY fs jail at the session's fs-scope tier, from the one factory the
+        // Home's own prompts use too (`mention-reader.ts`).
+        const mentionReader = scopedMentionReader({
           operatorHomeDir: homeDir,
           fsScopeTier: built.context.fsScopeTier,
           workspaceDir: built.context.workingDir,
-          ...(built.fsPolicy === undefined ? {} : { fsPolicy: built.fsPolicy }),
-        }).host.fs;
-        const mentionReader = mentionFs === undefined ? undefined : createMentionReader(mentionFs);
+          fsPolicy: built.fsPolicy,
+        });
         // The `!`-shell runner (2.5.D step 5, ADR-0061) — a thin wrapper over the session's `runUserCommand`.
         const runShellCommand = (
           command: string,
@@ -1168,6 +1183,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
               };
         let torn = false;
         const teardown = async (): Promise<void> => {
+          setAnnouncer(undefined);
           if (ownedTeardown !== undefined) return ownedTeardown();
           if (torn) return; // idempotent — an error-path teardown racing an endChat must not double-close the MCP child
           torn = true;
@@ -1200,6 +1216,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           shouldStop,
           stopReason,
           sessionId: built.sessionId,
+          provider: built.agent.provider,
           teardown,
           onActivated: (isActive: () => boolean) => {
             if (isActive() && persister?.hasSavedTurns === true)
@@ -1244,10 +1261,43 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           onModeChange,
           // ADR-0066 §5: the in-Home `/models` effort sub-step + `/effort` push the SESSION override (no reseat).
           onSetEffort,
-          // ADR-0137 §2: the in-Home chat opens the `/permissions` sheet over its own store and session approvals.
-          ...(permissions === undefined ? {} : { permissions }),
-          // ADR-0140 §3: `/agent` opens the sheet of the agent THIS session holds (a reseat or a `/clear` wires a new chat, so a new view).
-          boundAgent,
+          // ADR-0148 §10: `/agent`, `/cost`, `/workflows` and `/help` open report popups over THIS session (a reseat or a `/clear` wires a
+          // new chat, so a new port): its bound agent, its cost, its project's catalog and the keys of a chat.
+          ...(reports === undefined
+            ? {}
+            : {
+                reports: {
+                  ...reports,
+                  surface: 'home-chat' as const,
+                  ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
+                  // `[c] copy` rides the Home's one clipboard closure, as `/copy` and the doctor's `[c]` do.
+                  clipboard,
+                  plainGlyphs: !deps.global.color,
+                },
+              }),
+          // ADR-0148 §3, §6: the settings popups (`/mode`, `/effort`, `/models`, `/permissions`: ADR-0137 §2 as a popup, over this session's
+          // own remembered commands and approvals) open over THIS session, applying through its own setters and announcing on the Home's
+          // channel.
+          ...(settings === undefined
+            ? {}
+            : {
+                settings: {
+                  ...settings,
+                  surface: 'home-chat' as const,
+                  ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
+                },
+              }),
+          // ADR-0148 §8: `/doctor` opens the popup over this chat, with THIS session's read-only MCP report and owner.
+          doctor: {
+            scope: doctorScope,
+            surface: 'home-chat',
+            resultKey: built.sessionId,
+            probes: chatDoctorProbes,
+            ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
+            clipboard,
+            cachedKeys: () => keySample,
+            plainGlyphs: !deps.global.color,
+          },
           ...(mentionReader === undefined ? {} : { mentionReader }),
           runShellCommand,
         };
@@ -1308,6 +1358,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           deps.global.color,
           undefined,
           transcriptBoundFor(altScreenActive),
+          { history: chordHistory },
         );
         // TRIPWIRE (2.6.C): the store's transcript bound and the renderer both derive from `altScreenActive`, so they
         // agree BY CONSTRUCTION here — this pins that, loudly, if a future edit ever gives them separate sources.
@@ -1322,12 +1373,10 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         // fresh read supplies a model, take ITS provider (undefined ⇒ infer from the model id, NEVER back-filled from
         // startup); only with no fresh model (a genuinely unset default) fall back
         // to the startup PAIR. The other `[chat]` settings keep the startup snapshot.
+        // The same rule the Home's status line reads (`nextChatSettings`), so the line says what this chat is built from.
         const effectiveChat = applyInvocationDefault(start.loaded, invocationDefault).config.chat;
-        const freshModel = effectiveChat?.defaultModel;
-        const [defaultModel, defaultProvider] =
-          freshModel !== undefined
-            ? [freshModel, effectiveChat?.defaultProvider]
-            : [config.chat.defaultModel, config.chat.defaultProvider];
+        const nextChat = nextChatSettings(effectiveChat, config.chat);
+        const { defaultModel, defaultProvider } = nextChat;
         // The Home is always a terminal with a person at it: it can always ask (ADR-0132).
         const askPort = createAskUserPort();
         askPort.bind(store);
@@ -1365,7 +1414,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
               ...(bound === undefined ? {} : { fsScope: bound.context.fsScopeTier }),
               defaultModel,
               defaultProvider,
-              reasoningEffort: effectiveChat?.reasoningEffort ?? config.chat.reasoningEffort,
+              reasoningEffort: nextChat.reasoningEffort,
             },
             ...(config.maxTokensEstimate === undefined
               ? {}
@@ -1402,6 +1451,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             // saying so on raw stderr would land on the alt buffer for one frame. `onceEffortNotice` keeps a standing
             // condition — a stale `off` on a model that cannot disable thinking — from repeating every single turn.
             onEffortWithheld: onceEffortNotice((note) => store.notice(note)),
+            noticeSurface: noticeSurfaceOf('home-chat'), // the Home's chat has /models and /pricing: its remedies name them, never a shell command
             onEffectAttention: noteEffectAttention,
             onListenerError: (note) => store.notice(note),
             onUnpriced: (note) => store.notice(note),
@@ -1551,6 +1601,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             // A RESEAT binds a different model — precisely when a tier that was fine a moment ago stops being accepted.
             // Through `noteToStore`, like every sink here, so none can TDZ on the store declared below.
             onEffortWithheld: onceEffortNotice(noteToStore),
+            noticeSurface: noticeSurfaceOf('home-chat'),
             onEffectAttention: noteEffectAttention,
             onListenerError: noteToStore,
             onUnpriced: noteToStore,
@@ -1583,6 +1634,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
               ...(initialRestore ? { initialRestore: true } : {}),
             },
             transcriptBoundFor(altScreenActive),
+            { history: chordHistory },
           );
           // TRIPWIRE (2.6.C): the store's transcript bound and the renderer both derive from `altScreenActive`, so they
           // agree BY CONSTRUCTION here — this pins that, loudly, if a future edit ever gives them separate sources.
@@ -1609,32 +1661,60 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       target: ReseatTarget,
       transcript: readonly TranscriptEntry[],
     ) => restoreChat(sessionId, target, transcript);
+    /** The `/resume` popup while the controller holds it open ({@link resumeFrame}): the picker and the restore are its two stages. */
+    let resumeFlow: FramedFlow | undefined;
+    /**
+     * `/resume` as ONE popup (ADR-0148 §1, MVP-11 unit 6): the controller runs its resume's stages (the picker, the check that the session is
+     * not the one open, the restore) inside this frame, so nothing closes between the picker and the restore and the popup's opening settle runs
+     * once. The frame is the Home's channel framed by `resumePopup`, its origin the surface `/resume` was typed on. It resolves only once the
+     * frame is closed and the channel idle: the controller adopts the restored conversation only then, because its activation waits until a
+     * disclosure is visible, and a wait on this popup would be aborted by its own close (`resume-real-channel.test.ts`).
+     */
+    const resumeFrame = async (
+      origin: 'home' | 'chat',
+      run: () => Promise<void>,
+    ): Promise<void> => {
+      const framed = resumePopup(promptFlow, origin);
+      framed.begin();
+      resumeFlow = framed;
+      try {
+        await run();
+      } finally {
+        resumeFlow = undefined;
+        await framed.end();
+      }
+    };
     const resumeChat = async (
       sessionId: string,
     ): Promise<HomeChatSession | { readonly notice: string } | undefined> => {
       assertHomeAdmitting();
       const loaded = opened.store.loadFull(sessionId);
+      // What a resume that cannot start says, in one notification (54 columns): the popup closes on it (ADR-0148 §6).
       if (loaded === undefined || loaded.session.agentSnapshot === undefined)
-        return { notice: 'This saved session is unavailable or has no agent snapshot.' };
+        return { notice: 'This saved session is unavailable.' };
       // Discovery scope never grants authority. Check the canonical context, not the indexed picker column.
       if (loaded.session.context.workingDir !== fsPolicyWorkspace(fsPolicy))
-        return {
-          notice:
-            'This session belongs to another directory. Open Home there, or use relavium chat resume and Tab to browse all directories.',
-        };
-      const transcript = await prepareRestoredHistory({
-        messages: loaded.messages,
-        memory: loaded.session.agentSnapshot.memory,
-        transcriptBound: transcriptBoundFor(altScreenActive),
-        readDisplay: (sequences) => opened.store.loadUserDisplayTexts(sessionId, sequences),
-        assertAdmitting: assertHomeAdmitting,
-        retry: () => retryRestoredHistory(promptFlow),
-      });
-      if (transcript === undefined) return undefined;
-      assertHomeAdmitting();
-      const signal = promptFlow.begin();
-      promptFlow.note('Restoring session… Esc to return.');
+        return { notice: RESUME_ANOTHER_DIRECTORY };
+      // The restore is the `/resume` popup's second step (MVP-11 unit 6): inside the one frame the controller holds from the picker to here
+      // (`resumeFrame`), or a frame of its own when it is asked directly. Its wait and its retry question are drawn there, `Esc` cancels it.
+      const flow = resumeFlow ?? resumePopup(promptFlow, 'home');
+      const signal = flow.begin();
       try {
+        const restoring = flow.at(RESUME_STEP.restore);
+        restoring.busy(RESUME_RESTORING);
+        const transcript = await prepareRestoredHistory({
+          messages: loaded.messages,
+          memory: loaded.session.agentSnapshot.memory,
+          transcriptBound: transcriptBoundFor(altScreenActive),
+          readDisplay: (sequences) => opened.store.loadUserDisplayTexts(sessionId, sequences),
+          assertAdmitting: assertHomeAdmitting,
+          retry: () => retryRestoredHistory(flow),
+        });
+        if (transcript === undefined) return undefined;
+        assertHomeAdmitting();
+        // The retry question's sentence belongs to it, not to the wait that follows.
+        flow.note('');
+        restoring.busy(RESUME_RESTORING);
         const built = await restoreChat(sessionId, undefined, transcript, true, loaded, signal);
         if (signal.aborted) {
           await built.teardown();
@@ -1649,7 +1729,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         }
         throw cause;
       } finally {
-        await promptFlow.end();
+        await flow.end();
       }
     };
 
@@ -1671,9 +1751,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
 
     // One external-signal lifecycle covering the Home, the in-Home chat, and MCP teardown.
     //
-    // This is deliberately established BEFORE first-run onboarding. Its key-validation probe is network-bound; a
-    // signal arriving while that promise is pending must still restore the terminal / close the db, rather than
-    // falling through a listener-free window (#50). `controller` is optional below, so the pre-mount path is safe.
+    // This is deliberately established BEFORE the awaits that precede the mount (the run reconciliation below): a
+    // signal arriving while one is pending must still restore the terminal / close the db, rather than falling
+    // through a listener-free window (#50). `controller` is optional below, so the pre-mount path is safe.
     let signaled = false;
     const onSignal = (signo: number): void => {
       // A KEYBOARD Ctrl-C during a `/scrollback` or `/edit` hatch arrives here as a REAL SIGINT: the suspension turns
@@ -1784,18 +1864,16 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             },
             waitForContinue,
           ),
-        releaseWithoutInk: releaseOnboardingTerminal,
-        reclaimWithoutInk: reclaimOnboardingTerminal,
+        // With no Ink tree (before the mount, after the unmount) there is no terminal state of the Home's to release; an owned Home
+        // still lets its entered control writes land before the process stops, and after it continues.
         ...(controls === undefined
           ? {}
           : {
               releaseWithoutInkAcknowledged: async () => {
-                const released = releaseOnboardingTerminal();
                 await controls.joinEntered();
-                return released;
+                return true;
               },
               reclaimWithoutInkAcknowledged: async () => {
-                reclaimOnboardingTerminal();
                 await controls.joinEntered();
               },
             }),
@@ -1821,59 +1899,10 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     }
     disposeJobControl = jobControl.dispose;
 
-    // Retain the injected legacy prompter seam; production setup starts inside the mounted Ink tree.
-    // A scripted key-less embedding can still drive the established wizard without a native renderer.
-    // BEFORE mounting ink — clack + ink both take the terminal's raw mode, so the wizard must fully settle (and
-    // clack restore the terminal) before `render()`. The signal and job-control nets above are already live before
-    // the wizard can reach its network-bound key-validation request.
-    if (deps.onboardingPrompter !== undefined && isProviderKeyless(providers)) {
-      onboardingActive = true;
-      onboardingFinalized = false;
-      // Clack's raw-mode listener is registered after this one, so this sees SUB first. Clack itself treats Ctrl-Z as
-      // neither submit nor cancel, but consuming the byte here makes the intended POSIX handoff explicit and keeps it
-      // out of every wizard prompt/secret field.
-      const onboardingView = ownership?.view(ownership.surface.work);
-      const registerInput = () =>
-        onboardingTerminal.onInput((input) => {
-          if (input.includes('\x1a')) jobControl.requestSuspend();
-        });
-      if (onboardingView === undefined) unsubscribeOnboardingInput = registerInput();
-      else onboardingView.acquire(registerInput);
-      try {
-        await runOnboardingWizard({
-          ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
-          store: providerStore,
-          keychain,
-          resolver: providers,
-          io: deps.io,
-          // Reuse the SAME config-write target as the `/models` port (honors `--config`) so the wizard's starter
-          // model + a later `/models` pick + the started session all agree on one file (2.5.G S7/S8).
-          writeDefaultModel: (modelId, provider) =>
-            writeGlobalPreferences(
-              { defaultModel: modelId, defaultProvider: provider },
-              homeDir,
-              deps.global.configPath,
-            ),
-          ...(deps.onboardingPrompter === undefined ? {} : { prompter: deps.onboardingPrompter }),
-        });
-      } finally {
-        onboardingView?.release();
-        unsubscribeOnboardingInput?.();
-        unsubscribeOnboardingInput = undefined;
-        // A real process cannot execute this while stopped. It makes an injected/failing lifecycle safe, and is a
-        // no-op after a normal continue where the reversible coordinator already reclaimed Clack's state.
-        reclaimOnboardingTerminal();
-        onboardingActive = false;
-      }
-    }
-
-    refreshKeyless(); // an injected legacy setup may have just changed the available source
-
     // **Liveness (2.6.G, #229): settle what a dead process left `running` before the first read of the runs**,
     // so the first frame does not show a crashed run as `running` once its dead owner's lease has expired
     // (until then the lease still claims it, and it reads `running` for up to a minute). Here, after the signal
-    // and exit nets, for the same reason as the onboarding wizard above (#50): an await before mount must not
-    // open a listener-free window. Best-effort and never rejects. The opener supplies it, so the database and the outbox belong to
+    // and exit nets (#50): an await before mount must not open a listener-free window. Best-effort and never rejects. The opener supplies it, so the database and the outbox belong to
     // one home; an injected test store has none and mounts without the extra turn.
     if (opened.reconcileInterruptedRuns !== undefined) await opened.reconcileInterruptedRuns();
 
@@ -1903,6 +1932,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       stopHomeInput = (): void => {
         if (homeInputSealed) return;
         homeInputSealed = true;
+        stopWaitingForRoom?.();
         promptFlow.cancel();
         rendererActive = false;
         flushVisible = undefined;
@@ -1944,7 +1974,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         catalog: launchCatalog,
         assertAdmitting: assertHomeAdmitting,
       });
-      // The Defined tab (ADR-0140 §2, MVP-8 step 4): the very catalog `/run` offers, and the project's workflow pins, read every time the
+      // The `/workflows` popup's catalogue (ADR-0140 §2, MVP-11 unit 8): the very catalog `/run` offers, and the project's workflow pins, read every time the
       // tab is entered. The pins are keyed by the project's real path; the project is found afresh, as the catalog's is.
       const definedPins = createRunPinStore(opened.db);
       // The directory a workflow pin is keyed by, found afresh for every read and every toggle (a `/init` in this Home is seen at once).
@@ -1957,20 +1987,31 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         }
         return commandGrantRoot(deps.global.cwd, configDir);
       };
+      /** The latest run of each workflow in this directory, by slug, by the canonical root the runs recorded (`here`). */
+      const latestRunPerWorkflow = () =>
+        runReader
+          .loadLatestRunPerWorkflowInProject(here)
+          .map((summary) => [summary.slug, summary.lastRun] as const);
       const defined = createDefinedPort({
         catalog: launchCatalog,
-        // The latest run of each workflow in this project, as the runs recorded it (the working directory, as `status` reads them).
-        lastRuns: () =>
+        // The latest run of each workflow in this directory: its status and when it was last written (the age the catalogue draws beside it), from
+        // ONE read.
+        latestRuns: () =>
           new Map(
-            runReader
-              .loadLatestRunPerWorkflowInProject(deps.global.cwd)
-              .map((summary): [string, RunStatus] => [summary.slug, summary.lastRun.status]),
+            latestRunPerWorkflow().map(
+              ([slug, run]): [string, { status: RunStatus; at: string }] => [
+                slug,
+                { status: run.status, at: run.updatedAt },
+              ],
+            ),
           ),
         pins: () => definedPins.listPins({ kind: 'workflow', projectRoot: workflowPinRoot() }),
         // Every pin the store holds, so the tab lists the workflow pins of other projects and names the stored total at the cap.
         allPins: () => definedPins.listPins(),
+        // Another project's root is shortened against this Home's directory and the operator's home (never an absolute path inside either).
+        paths: displayRoots(deps.global.cwd, homeDir),
       });
-      // `p` on a Defined row or a History row: the pin store behind the tab host's toggle. The keys are the store's (a workflow under
+      // `[p]` in the `/workflows` popup or a History row: the pin store behind both toggles. The keys are the store's (a workflow under
       // its project root and slug, a run under its full id); nothing is written until the key is pressed.
       const pins = createPinPort({ store: definedPins, workflowRoot: workflowPinRoot, now });
       // The History tab (ADR-0140 §2, MVP-8 step 4): finished runs a page at a time over the Home's own connection, the pinned runs, and one
@@ -1983,13 +2024,16 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         ...createHistorySource({
           reader: runReader,
           listRunPins: () => definedPins.listPins({ kind: 'run' }),
-          projectRoot: deps.global.cwd,
+          projectRoot: here,
+          paths: displayRoots(deps.global.cwd, homeDir),
           now,
         }),
         loadDetail: createRunDetailLoader({
           reader: runReader,
           listHeld: () => createFileTerminalOutbox(terminalOutboxPath(homeDir)).list(),
           loadSnapshot: frozenSnapshot,
+          // Where a run was started, against this directory: what `r` on the detail needs to run it again (the list's own `this project`).
+          projectRoot: here,
         }),
         loadNode: createNodeDetailLoader({ reader: runReader, loadSnapshot: frozenSnapshot }),
       };
@@ -1999,7 +2043,17 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         ...changeProbe.token(),
         hostedRunId: hostedRuns.snapshot().active?.runId,
       });
-      // `x` on a Defined row: the export card over the command's own prepare and commit, on the Home's native flow.
+      // The Home's one open adapter for a popup the controller routed (ADR-0148 §2): on the Home's popup host, while the Home takes input. The
+      // popup's code is loaded the first time it is asked for, never at start, and a load that fails is the Home's own fault (its work owner),
+      // never swallowed.
+      const openOnHome = (open: (host: PopupHost) => Promise<void>): void => {
+        const host = popups;
+        if (host === undefined || homeInputSealed) return;
+        void open(host).catch((cause: unknown) => {
+          ownership?.surface.work.failure(cause);
+        });
+      };
+      // `[x]` in the `/workflows` popup: the export card over the command's own prepare and commit, on the Home's native flow.
       const exportPort = createExportPort({ global: deps.global, homeDir });
       // `/import` (ADR-0140 §9): the import card over `relavium import`'s own prepare and commit, on the same native flow.
       const importPort = createImportPort({ global: deps.global, homeDir });
@@ -2012,23 +2066,75 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         models: () => models.load().entries,
       });
       controller = createHomeController({
+        plainGlyphs: !deps.global.color,
+        // The alternate screen slides between the Home's two pages; inline swaps them (MVP-11 unit 7).
+        slideTransitions: renderMode === 'alt' && deps.pageSlide !== false,
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
         chordHistory,
-        launchRun: (slug, path) => runLaunch.open(slug, path),
+        popupOpen: () => popups?.getSnapshot().open === true,
+        // `/doctor` opens its popup on the Home's host (ADR-0148 §8): the Home's own doctor, or the chat's in front.
+        openDoctor: ({ deep, chat }) => {
+          openOnHome((host) =>
+            openDoctor({
+              host,
+              port: chat ?? homeDoctor,
+              deep,
+              origin: chat === undefined ? 'home' : 'chat',
+            }),
+          );
+        },
+        // `/agent`, `/cost`, `/workflows` and `/help` open their report popup on the Home's host (ADR-0148 §10) over the chat in front, with its
+        // port.
+        openReport: ({ line, chat, turnInFlight }) => {
+          openOnHome((host) =>
+            openReport({ host, port: chat, line, origin: 'chat', turnInFlight }),
+          );
+        },
+        // The settings popups (ADR-0148 §3, §6) open on the Home's host: over the chat in front with its port, or (`/models`) over the bare
+        // Home with the Home's own, the origin said by the port's surface.
+        openSettings: ({ command, chat, closed }) => {
+          openOnHome((host) =>
+            openSettings({
+              host,
+              port: chat,
+              command,
+              origin: chat.surface === 'home' ? 'home' : 'chat',
+              ...(closed === undefined ? {} : { closed }),
+            }),
+          );
+        },
+        // `Enter` on an unreadable run's row opens its read-only card on the Home's host (MVP-11 unit 7): the run as the snapshot holds it, the
+        // Home's own clock for its age; `[c] copy` rides the Home's one clipboard closure, as the reports' and the doctor's do.
+        openUnreadableRun: ({ run }) => {
+          openOnHome((host) =>
+            openUnreadableRun({
+              host,
+              run,
+              origin: 'home',
+              now,
+              clipboard,
+              plainGlyphs: !deps.global.color,
+            }),
+          );
+        },
+        // What a setting the bare Home applied says, and a chat's model switch that could not be built: the Home's own channel (ADR-0148 §6).
+        announce: (text) => {
+          notifications.notify(text, homeAnnouncements);
+        },
+        // ... and withdrawn when a chat comes in front: the chat's hint row is the chat's own at once (CO76).
+        withdrawAnnouncements: () => {
+          notifications.discard(homeAnnouncements);
+        },
+        launchRun: (slug, path, options) => runLaunch.open(slug, path, options),
         defined,
         history,
         pins,
-        // The `/agents` strip (ADR-0140 §3, MVP-8 step 5): the project's agent catalog, found afresh and read every time its tab is entered, and
-        // this project's saved conversations, the very page the `/resume` picker lists (the same store and working directory).
+        // The `/agents` popup (ADR-0140 §3, MVP-11 unit 8): the project's agent catalog, found afresh and read every time the popup is opened.
+        // The saved conversations are `/resume`'s (the strip's Sessions tab went with the strip).
         agents: createAgentsPort({
           projectConfigDir: currentProjectConfigDir,
           cwd: deps.global.cwd,
           homeDir,
-        }),
-        sessions: createSessionsPort({
-          store: opened.store,
-          cwd: fsPolicyWorkspace(fsPolicy),
-          now,
         }),
         // The Active tab (ADR-0140 §2): the runs that are not finished, this project's paused ones read for their gates, polled read-only
         // while the tab is in front. The terminal outbox is the file `status` reads; the database is read on the Home's own connection.
@@ -2036,13 +2142,14 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           token: changeToken,
           read: createActiveReader({
             reader: runReader,
-            projectRoot: deps.global.cwd,
+            projectRoot: here,
             hostedRunId: () => hostedRuns.snapshot().active?.runId,
             listHeld: () => createFileTerminalOutbox(terminalOutboxPath(homeDir)).list(),
             outboxStamp: () => terminalOutboxStamp(terminalOutboxPath(homeDir)),
             isClosed: () => dbClosed,
             now,
             leaseTtlMs: RUN_LEASE_TTL_MS,
+            paths: displayRoots(deps.global.cwd, homeDir),
             // The three reads of one tick (the page, the gate states, the leases) are one snapshot of the database.
             snapshot: readSnapshotOf(opened.db),
           }),
@@ -2050,11 +2157,46 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         },
         // The strip's idle refresh (ADR-0140 §6): the same probe, so a tick that finds the token where the last read left it reads nothing.
         strip: { token: changeToken, isClosed: () => dbClosed },
-        exportDefined: (slug) =>
+        exportDefined: (slug, origin) =>
           runExportCard(
             { flow: promptFlow, port: exportPort, assertAdmitting: assertHomeAdmitting },
             slug,
+            origin,
           ),
+        // What the `/workflows` popup's detail reads beyond the catalogue (MVP-11 unit 8): one file's description, inputs and nodes through the
+        // very catalog `/run` offers, and the workflow's last runs for THIS directory (the summaries index, the canonical root the runs recorded).
+        workflowReads: {
+          describe: launchCatalog.describe,
+          lastRuns: (slug, limit) => {
+            // A run holds its workflow's UUID, never the slug: the UUID is the one the catalogue's own latest-run read gives for this slug (a
+            // workflow that has no run here has none to list), and the summaries index then pages that workflow's runs, whatever other
+            // workflows ran since.
+            const workflowId = latestRunPerWorkflow().find(([name]) => name === slug)?.[1]
+              .workflowId;
+            if (workflowId === undefined) return [];
+            return runReader
+              .listRunSummaries({ projectRoot: here, workflowId, limit })
+              .map((run) => ({ runId: run.id, status: run.status, at: run.updatedAt }));
+          },
+        },
+        epochNow: now,
+        // The Home's management popups (`/help`, `/agents`, `/workflows`; ADR-0148 §10, MVP-11 unit 8) open on the Home's popup host with the port
+        // the controller built; the host adds the clipboard `[c] copy` writes through and the glyph form.
+        openHomePopup: ({ kind, port, at }) => {
+          openOnHome((host) =>
+            openHomePopup({
+              host,
+              port: { ...port, clipboard, plainGlyphs: !deps.global.color },
+              kind,
+              origin: 'home',
+              at,
+            }).then((result) => {
+              // A reopen the host refused still owes the word of the flow it came back from: it is the Home's own then.
+              if (!result.opened && at?.said !== undefined)
+                notifications.notify(at.said, homeAnnouncements);
+            }),
+          );
+        },
         importDefined: () =>
           runImportCard({
             flow: promptFlow,
@@ -2075,8 +2217,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         // run's gates when it opens, and an answer is the run host's `resume` with the native flow around it, so a masked slot and the
         // MCP consent card of a resumed leg open on the same prompt channel. A run recorded for another directory is never read or answered.
         gateCards: {
-          list: () => readParkedRuns(runReader, deps.global.cwd),
-          read: (runId) => readRunGates(runReader, deps.global.cwd, runId),
+          list: () => readParkedRuns(runReader, here),
+          read: (runId) => readRunGates(runReader, here, runId),
           resume: createGateResumer({ host: hostedRuns, flow: promptFlow }),
         },
         // A run parked on media jobs alone has no gate to answer: `Enter` on it asks whether to continue it here (default No), and a Yes is the
@@ -2086,10 +2228,10 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             { host: hostedRuns, flow: promptFlow, assertAdmitting: assertHomeAdmitting },
             runId,
           ),
-        // The bare Home's `/permissions` (ADR-0137 §3, ADR-0140 §3): the Permissions tab of the tab host. The project's remembered commands,
+        // The bare Home's `/permissions` (ADR-0137 §3, ADR-0140 §3): its popup. The project's remembered commands,
         // over the very store a chat and `relavium permissions` read, and the repository's `[chat]` allowlist as a chat started now would
-        // resolve it (read again from disk, like the `/models` readers above), listed read-only. Nothing is read until the tab is entered,
-        // and it is read again every time it is.
+        // resolve it (read again from disk, like the `/models` readers above), listed read-only. Nothing is read until the popup opens,
+        // and it is read again every time it does.
         permissions: createPermissionsPort(
           {
             allowlist: () => {
@@ -2118,29 +2260,58 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           }),
         reseatChat,
         resumeChat,
+        resumeFrame,
+        // The picker is the `/resume` popup's first step, inside the frame `resumeFrame` holds (the raw card only when asked outside it).
         pickSession: () =>
           runSessionPicker({
-            flow: promptFlow,
+            flow: resumeFlow ?? promptFlow,
             store: opened.store,
             cwd: fsPolicyWorkspace(fsPolicy),
+            paths: displayRoots(fsPolicyWorkspace(fsPolicy), homeDir),
             now,
             assertAdmitting: assertHomeAdmitting,
             runRead: (operation) =>
               ownership === undefined ? operation() : ownership.surface.work.enter(operation),
           }),
         homeStore,
-        doctorProbes,
         models,
-        openModeSettings: () =>
-          runModeSettings({
-            runtime: startingModes,
-            cwd: deps.global.cwd,
-            interactive: true,
-            flow: promptFlow,
-            notice: (text) => controller?.setProviderState(keyless, text),
-            assertAdmitting: assertHomeAdmitting,
-            publish: publishPreference,
+        statusFacts,
+        // `@` on the Home's own two prompts (ADR-0061; the maintainer's question of 2026-11-26): the chat's picker over a reader the SAME factory
+        // builds, at the tier and in the directory the next chat runs at (`[chat].fs_scope`, clamped as a chat's is, under this invocation's
+        // policy), built on first use. The jail, the floor and the guards are a chat's; nothing is read until a row is chosen.
+        mentionReader: lazyMentionReader(() =>
+          scopedMentionReader({
+            operatorHomeDir: homeDir,
+            fsScopeTier: clampChatTier(config.chat.fsScope ?? 'sandboxed'),
+            workspaceDir: here,
+            fsPolicy,
           }),
+        ),
+        // The bare Home's `/mode` (ADR-0148 §1, §3, §6; MVP-11 unit 8, OD-25): the list is the popup host's (the saved startup default marked
+        // `startup`, read through the invocation's own runtime); saving is the startup-default writer's own flow, framed as the confirmation
+        // popup (`Mode · Confirm · Done`: the chord confirmation, the Done step that names the file). Loaded when first asked for, as the
+        // popups are. What it resolves with is what the popup says: its Done step, ONE notification (a declined confirmation) or a step back.
+        startupMode: {
+          read: () => readStartupDefault(startingModes, deps.global.cwd),
+          save: async (mode) => {
+            const { saveHomeStartupDefault } = await import('../popups/mode-home.js');
+            return saveHomeStartupDefault(
+              {
+                runtime: startingModes,
+                cwd: deps.global.cwd,
+                interactive: true,
+                flow: promptFlow,
+                target: flowText(
+                  displayPath(startingModes.configPath, displayRoots(deps.global.cwd, homeDir)),
+                ),
+                failure: (cause) => ownership?.surface.work.failure(cause),
+                assertAdmitting: assertHomeAdmitting,
+                publish: publishPreference,
+              },
+              mode,
+            );
+          },
+        },
         initializeProject: () => {
           if (flushVisible === undefined)
             throw new CliError(
@@ -2158,7 +2329,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         },
         providerSetup: {
           initialKeyless: keyless,
-          open: () => openProviders('explicit'),
+          open: (options) => openProviders('explicit', options?.note),
           readKeyless: refreshKeyless,
         },
         onExit: () => {
@@ -2179,11 +2350,18 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           );
         },
       });
-      // A bare `relavium permissions` on a terminal (ADR-0137 §3, ADR-0140 §1): the Home opens with the Permissions tab open and ends when it is closed.
-      if (deps.openPermissions === true) controller.openPermissionsAsCommand();
+      // A bare `relavium permissions` on a terminal (ADR-0137 §3, ADR-0140 §1; MVP-11 unit 8): the Home opens with the `/permissions` popup open and
+      // ends when it is closed. A popup opens on a host that is mounted (it refuses every open before its gate is bound), so it is asked for
+      // once the renderer is ready (`onRendererReady`), not here.
+      let permissionsCommandOpened = false;
       const alternateScreen = renderMode === 'alt';
       const interactive = outputMode === 'tui';
       altScreenActive = alternateScreen; // the hatch ports read this lazily (see `terminal()` above)
+      popups = createPopupHost({
+        history: chordHistory,
+        notifications,
+        placement: alternateScreen ? 'overlay' : 'replace',
+      });
       // Mouse reporting (Step 5e, ADR-0068 §e) — resolved from the SAME render mode, so the two cannot disagree.
       mouseActive = resolveMouseMode({
         renderMode,
@@ -2239,35 +2417,87 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
                 if (!homeInputSealed) actualController.handlePaste(text);
               },
             };
-      let automaticSetupStarted = false;
+      let waitingForRoom = false;
+      const homeIsClearForSetup = (): boolean =>
+        homeClearForFirstRun(actualController.getSnapshot(), popups?.getSnapshot().open === true);
+      /** The setup's failure is the Home's: recorded on its owner and rejecting the Home, as every other setup error does. */
+      const failSetup = (cause: unknown): void => {
+        ownership?.surface.work.failure(cause);
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- Preserve the owned cause after observing it; ownerless embeddings receive an Error.
+        reject(
+          ownership === undefined
+            ? cause instanceof Error
+              ? cause
+              : new Error('Provider setup failed.')
+            : cause,
+        );
+      };
+      const openAutomaticSetup = (): void => {
+        automaticSetupStarted = true;
+        const operation = () => openProviders('automatic');
+        // Admission is synchronous: `enter` throws when the owner has stopped admitting before the Home's input was sealed, and this runs
+        // inside a resize listener, where an escaping throw would be an uncaught exception out of the terminal's emit (round 2, B4).
+        const started = tryCall(() =>
+          ownership === undefined ? operation() : ownership.surface.work.enter(operation),
+        );
+        if (!started.ok) {
+          if (!homeInputSealed) failSetup(started.cause);
+          return;
+        }
+        void started.value.catch(failSetup);
+      };
+      /**
+       * Whether the first-run offer may open now: it opens once, never while it waits for room, never after the Home began leaving, never when
+       * the embedding turned it off (`HomeDeps.firstRunSetup: 'off'`), never for a bare `relavium permissions`, which is not a first run: no
+       * provider card or key consent may open on top of the screen it came for, and never again once the person skipped it (ADR-0146 §6, the
+       * remembered skip read at start-up from the global config: `/providers` and the keyless `Enter` still open it).
+       */
+      const mayOfferFirstRunSetup = (): boolean =>
+        !automaticSetupStarted &&
+        !waitingForRoom &&
+        !homeInputSealed &&
+        deps.firstRunSetup !== 'off' &&
+        deps.openPermissions !== true &&
+        globalConfig?.preferences?.first_run_setup_skipped !== true;
+      /**
+       * Below the minimum the card cannot be shown, and the one first-run offer must not be spent on a message that says "Esc cancels"
+       * (observed: that `Esc` ended the setup for good, and resizing up did not bring it back). It waits for room, with the offer unspent, and
+       * opens once the terminal is large enough (ADR-0146 §6).
+       */
+      const waitForRoom = (): void => {
+        waitingForRoom = true;
+        const unsubscribe = subscribeResize(() => {
+          if (homeInputSealed) {
+            unsubscribe();
+            return;
+          }
+          if (!nativePromptFits(getSize())) return;
+          // Room, but the Home is not clear: the offer stays unspent and waits for the next resize.
+          if (!homeIsClearForSetup()) return;
+          unsubscribe();
+          stopWaitingForRoom = undefined;
+          waitingForRoom = false;
+          if (!automaticSetupStarted) openAutomaticSetup();
+        });
+        stopWaitingForRoom = unsubscribe;
+      };
       const props: RootAppProps = {
         nativePrompt: nativePrompt.ui,
+        popups,
+        notifications,
         inputEnabled: () => !homeInputSealed,
         onRendererReady: (flush) => {
           if (!homeInputSealed) flushVisible = flush;
-          // A bare `relavium permissions` is not a first run: no provider card or key consent may open on top of the screen it came for.
-          if (
-            !automaticSetupStarted &&
-            !homeInputSealed &&
-            deps.onboardingPrompter === undefined &&
-            deps.openPermissions !== true
-          ) {
-            automaticSetupStarted = true;
-            const operation = () => openProviders('automatic');
-            const pending =
-              ownership === undefined ? operation() : ownership.surface.work.enter(operation);
-            void pending.catch((cause: unknown) => {
-              ownership?.surface.work.failure(cause);
-              // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- Preserve the owned cause after observing it; ownerless embeddings receive an Error.
-              reject(
-                ownership === undefined
-                  ? cause instanceof Error
-                    ? cause
-                    : new Error('Provider setup failed.')
-                  : cause,
-              );
+          if (deps.openPermissions === true && !permissionsCommandOpened && !homeInputSealed) {
+            permissionsCommandOpened = true;
+            // After this commit, so the popup host's gate (bound as the view mounts) is in place when the popup asks to open.
+            setImmediate(() => {
+              if (!homeInputSealed) actualController.openPermissionsAsCommand();
             });
           }
+          if (!mayOfferFirstRunSetup()) return;
+          if (nativePromptFits(getSize())) openAutomaticSetup();
+          else waitForRoom();
         },
         onRendererError: (error) => {
           rendererActive = false;
@@ -2290,7 +2520,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         onSuspend: () => {
           if (!homeInputSealed) jobControl.requestSuspend();
         },
-        // The branded banner's durable switch (Step 5g); `HomeView` owns the empty-Home rule when it is absent.
+        // The landing's block switch (Step 5g): absent or `true` draws the block on page 1, `false` the one-line wordmark (`showsLandingBlock`).
         showBanner: config.showBanner,
         // Armed only while the in-Home chat owns the screen (Step 6g). `mouseActive` is the RESOLVED mode
         // (`--no-mouse` / `[preferences].mouse`); when it is off, no port is passed and nothing is ever captured.
@@ -2319,6 +2549,16 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
                     stdout: deps.io.nativeStdout,
                     stderr: deps.io.nativeStderr,
                   }),
+              // ink writes the alternate-screen enter without a cursor home: on the alternate screen its stream is ours, which does.
+              ...(alternateScreen
+                ? {
+                    stdout: homeAfterInkEnter(
+                      ownership === undefined
+                        ? process.stdout
+                        : (deps.io.nativeStdout ?? process.stdout),
+                    ),
+                  }
+                : {}),
               exitOnCtrlC: false, // the controller drives Ctrl-C, not ink's process.exit
               patchConsole: false,
               maxFps: Math.max(1, Math.round(1000 / FRAME_MS)),
@@ -2362,6 +2602,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     ownership?.surface.work.failure(cause);
     throw cause;
   } finally {
+    stopWaitingForRoom?.();
     promptFlow.cancel();
     if (ownership !== undefined) {
       stopHomeInput();
@@ -2406,7 +2647,6 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       // terminal can never leak the session or the db handle.
       unsubscribeSignals?.();
       unsubscribeProcessExit?.();
-      unsubscribeOnboardingInput?.();
       disposeJobControl?.();
       restoreTerminalControls();
       await controller?.teardownActive().catch(() => undefined); // always reclaim a live session
@@ -2419,6 +2659,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       if (runHost?.abandoned !== true) closeDb();
     }
     nativePrompt.ui.dispose();
+    popups?.dispose();
+    notifications.dispose();
     ownership?.surface.work.signal.removeEventListener('abort', stopProviderSetup);
     if (
       lastSavedSessionId !== undefined &&

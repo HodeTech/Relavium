@@ -84,7 +84,7 @@ describe('createInkRenderer', () => {
     expect(waitUntilExit).toHaveBeenCalledTimes(1);
     expect(summaries).toHaveLength(1); // written exactly once
     expect(summaries[0]).toContain('run completed');
-    expect(summaries[0]).toContain('✓ a');
+    expect(summaries[0]).toContain('ok completed a');
   });
 
   it('writes the summary via the injected writeSummary, not stdout', async () => {

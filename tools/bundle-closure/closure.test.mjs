@@ -409,6 +409,42 @@ test('third-party implementations and CommonJS inputs are refused', () => {
   refuses(other, 'INPUT_FORMAT');
 });
 
+for (const path of [
+  'src/chat/chat.test.ts',
+  'src/render/tui/question-card.test.tsx',
+  'src/test-support.ts',
+  'src/chat/test-support.ts',
+  'src/commands/chat-mode-control.test-support.ts',
+  'src/render/tui/surface-matrix/registry.ts',
+  'src/render/tui/legend-golden/golden.ts',
+  'src/engine/fixtures/worker.ts',
+  'fixtures/x.ts',
+]) {
+  test(`a test, a fixture or a test harness among the inputs is refused: ${path}`, () => {
+    const value = candidate();
+    value.metafile.inputs[path] = JSON.parse(
+      JSON.stringify(value.metafile.inputs['src/authority.ts']),
+    );
+    refuses(value, 'HARNESS_INPUT');
+  });
+}
+
+test('a product source whose name only resembles a harness is not refused', () => {
+  const value = candidate();
+  for (const path of [
+    'src/chat/fixture.ts',
+    'src/render/tui/matrix.ts',
+    'src/protests.ts',
+    'src/fixturesque.ts',
+  ]) {
+    value.metafile.inputs[path] = JSON.parse(
+      JSON.stringify(value.metafile.inputs['src/authority.ts']),
+    );
+  }
+  // the extra inputs are not part of any output, which the closure check does not require of an input: only the harness names are refused
+  assert.doesNotThrow(() => checkBundleClosure(value));
+});
+
 test('entry inventory requires exactly the configured entry', () => {
   const value = candidate();
   value.metafile.outputs['dist/index.js'].entryPoint = 'src/runtime.ts';

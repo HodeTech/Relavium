@@ -99,11 +99,6 @@ it.each(['notice', 'store-listener'] as const)(
           onContinue: () => () => {},
           suspendSelf: () => {},
         },
-        onboardingTerminalLifecycle: {
-          onInput: () => () => {},
-          isRawMode: () => false,
-          setRawMode: () => {},
-        },
       });
       try {
         if (props === undefined) throw new Error('Expected Home controller.');

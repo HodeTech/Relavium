@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { discoverCatalog, type CatalogEntry } from './catalog.js';
 
 /**
- * The node count of a catalog entry (MVP-8 step 4, the Defined tab's "how big is it"): the number of nodes the parsed
+ * The node count of a catalog entry (MVP-8 step 4, the `/workflows` popup's "how big is it"): the number of nodes the parsed
  * workflow declares, present on a valid workflow entry and nowhere else. A file that does not parse keeps its refusal
  * and gets no count: there is no document to count, and a guessed number would be shown as if it were read.
  */

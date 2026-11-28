@@ -16,6 +16,7 @@ import type { RunHostSnapshot } from '../../home/run-host.js';
 import type { ParkedRunRow } from './home-attention.js';
 import {
   createHomeController,
+  RELATIVE_WORDS_REPAINT_MS,
   STRIP_REFRESH_MS,
   type HomeChatSession,
   type HomeController,
@@ -43,7 +44,6 @@ const runRow = (runId: string, status: HomeRunRow['status'] = 'completed'): Home
 });
 const sessionRow = (sessionId: string): HomeSessionRow => ({
   sessionId,
-  workingDir: '/work',
   title: undefined,
   agentSlug: 'chat',
   modelId: undefined,
@@ -51,15 +51,26 @@ const sessionRow = (sessionId: string): HomeSessionRow => ({
   updatedAt: '2026-11-23T00:00:00.000Z',
   totalCostMicrocents: 0,
 });
-const snapshotOf = (over: Partial<HomeSnapshot>): HomeSnapshot => ({
-  attention: { gates: [], failedRuns: [] },
-  recentSessions: [],
-  recentRuns: [],
-  recentAgents: [],
-  unreadableRunIds: [],
-  isEmpty: false,
-  ...over,
-});
+/** A snapshot with `over`'s rows, its totals counted from them (the parked rows are the controller's own read, counted by the test). */
+const snapshotOf = (over: Partial<HomeSnapshot>): HomeSnapshot => {
+  const rows = {
+    failedRuns: [],
+    recentSessions: [],
+    recentRuns: [],
+    recentAgents: [],
+    unreadableRuns: [],
+    isEmpty: false,
+    ...over,
+  };
+  return {
+    totals: {
+      attention: rows.failedRuns.length + rows.unreadableRuns.length,
+      sessions: rows.recentSessions.length,
+      runs: rows.recentRuns.length,
+    },
+    ...rows,
+  };
+};
 
 /** `failed` runs, then `sessions`, then `recent` runs, which is the order the strip draws them. */
 const strip = (
@@ -68,7 +79,7 @@ const strip = (
   recent: readonly string[] = [],
 ): HomeSnapshot =>
   snapshotOf({
-    attention: { gates: [], failedRuns: failed.map((id) => runRow(id, 'failed')) },
+    failedRuns: failed.map((id) => runRow(id, 'failed')),
     recentSessions: sessions.map(sessionRow),
     recentRuns: recent.map((id) => runRow(id)),
   });
@@ -98,8 +109,6 @@ interface RigOptions {
   readonly history?: boolean;
   /** A session resume that never finishes: the Home's native form stays open for as long as the test lasts. */
   readonly resumeHangs?: boolean;
-  /** The Home was given the model catalog, so its `/models` picker can open. */
-  readonly models?: boolean;
   /** What building the chat answers (default: never, so the Home stays in its `loading` build window). */
   readonly startChat?: () => Promise<HomeChatSession>;
   /** `onError` is called and returns (a fault ends the Home) instead of rethrowing the fault into the test. */
@@ -115,7 +124,7 @@ function rig(options: RigOptions) {
   let closed = false;
   let now = 0;
   let nextTimer = 1;
-  const timers = new Map<number, { at: number; run: () => void }>();
+  const timers = new Map<number, { at: number; run: () => void; delayMs: number }>();
   let readsFail = false;
   const read = vi.fn(() => {
     if (options.commitDuringFirstRead === true && read.mock.calls.length === 1)
@@ -149,24 +158,14 @@ function rig(options: RigOptions) {
   const onError = vi.fn((cause: unknown) => {
     if (options.faultsEndTheHome !== true) throw cause;
   });
+  // The Home's one notification channel (ADR-0148 §6): what a resume says when it ends without a conversation.
+  const announced: string[] = [];
   const deps: HomeControllerDeps = {
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: options.startChat ?? (() => new Promise(() => {})),
-    ...(options.models === true
-      ? {
-          models: {
-            load: () => ({ entries: [], refreshedAt: undefined }),
-            refreshIfStale: () => Promise.resolve(undefined),
-            refresh: () => Promise.resolve({ providers: [] }),
-            currentDefault: () => undefined,
-            currentEffort: () => undefined,
-            writeDefault: () => undefined,
-          },
-        }
-      : {}),
     homeStore: { read },
     ...(options.history === false ? {} : { history }),
     resumeChat,
+    announce: (text) => announced.push(text),
     hostedRuns: {
       snapshot: () => options.hosted ?? IDLE,
       cancel: () => true,
@@ -180,7 +179,7 @@ function rig(options: RigOptions) {
     schedule: (run, delayMs) => {
       const id = nextTimer;
       nextTimer += 1;
-      timers.set(id, { at: now + delayMs, run });
+      timers.set(id, { at: now + delayMs, run, delayMs });
       return () => {
         timers.delete(id);
       };
@@ -212,6 +211,7 @@ function rig(options: RigOptions) {
     loads,
     loadDetail,
     resumeChat,
+    announced,
     readGates,
     resumeRun,
     onExit,
@@ -232,7 +232,10 @@ function rig(options: RigOptions) {
     failReads: (fails: boolean): void => {
       readsFail = fails;
     },
-    pending: (): number => timers.size,
+    // The strip's own timers: the repaint for the clock (`RELATIVE_WORDS_REPAINT_MS`, the Home's second timer while a relative word is on
+    // screen: `home-relative-words-tick.test.ts` owns it) is not the strip's, and every claim here is about the strip's tick.
+    pending: (): number =>
+      [...timers.values()].filter((timer) => timer.delayMs !== RELATIVE_WORDS_REPAINT_MS).length,
   };
 }
 type Rig = ReturnType<typeof rig>;
@@ -298,6 +301,16 @@ describe('the idle tick reads the strip only when the change token moved', () =>
     expect(r.controller.getSnapshot().parkedRuns).toEqual([row]);
   });
 
+  it('shows the later time of a run that parked again, though nothing else of its row moved (`parkedSince`, round 2)', async () => {
+    const before: ParkedRunRow = { runId: 'p1', kind: 'approval', gates: 1, parkedSince: '2026-11-23T00:00:00.000Z' };
+    const r = rig({ snapshot: strip([], ['s1']), parked: [before] });
+    const after: ParkedRunRow = { ...before, parkedSince: '2026-11-23T05:00:00.000Z' };
+    r.show(strip([], ['s1']), [after]);
+    r.moveToken();
+    await r.advance(STRIP_REFRESH_MS);
+    expect(r.controller.getSnapshot().parkedRuns).toEqual([after]);
+  }); // prettier-ignore
+
   it('keeps the rows it has when a read fails, and reads again at the next tick', async () => {
     const r = rig({ snapshot: strip([], ['s1']) });
     const first = r.controller.getSnapshot().snapshot;
@@ -335,7 +348,7 @@ describe('the tick is paused while anything else has the screen', () => {
   const FRONT: readonly (readonly [string, (r: Rig) => void, (r: Rig) => void])[] = [
     [
       'the help sheet',
-      (r) => expect(r.controller.openScreen('help')).toBe(true),
+      (r) => expect(r.controller.openScreen('tab-host', { tab: 'history' })).toBe(true),
       (r) => r.controller.closeScreen(),
     ],
     [
@@ -434,17 +447,7 @@ describe('the tick is paused while anything else has the screen', () => {
     expect(r.read).toHaveBeenCalledTimes(1);
   });
 
-  it('reads nothing while the model picker is open, though the token moved', async () => {
-    const r = rig({ snapshot: strip([], ['s1']), models: true });
-    r.controller.handleKey('/', {});
-    for (const letter of 'models') r.controller.handleKey(letter, {});
-    press(r.controller, ENTER);
-    expect(r.controller.getSnapshot().modelPicker).toBeDefined();
-    expect(r.controller.getSnapshot().screen).toBeUndefined();
-    r.moveToken();
-    await r.advance(STRIP_REFRESH_MS * 3);
-    expect(r.read).toHaveBeenCalledTimes(1);
-  });
+  // `/models` is a popup now: the strip's pause under an open popup is the `popup` flag's (`overlay-flags.test.ts` pins its gates).
 
   it('reads nothing while the first chat is being built, though the token moved', async () => {
     const r = rig({ snapshot: strip([], ['s1']) });
@@ -493,7 +496,7 @@ describe('the tick is paused while anything else has the screen', () => {
 
   it('reads the strip once when the landing comes back from a screen, without waiting for a tick', async () => {
     const r = rig({ snapshot: strip([], ['s1']) });
-    r.controller.openScreen('help');
+    r.controller.openScreen('tab-host', { tab: 'history' });
     const next = strip([], ['s1', 's2']);
     r.show(next);
     r.moveToken();
@@ -603,7 +606,11 @@ describe('the focus is the identity of a row, not its index', () => {
     expect(r.loadDetail).not.toHaveBeenCalled();
     expect(r.controller.getSnapshot().screen).toBeUndefined();
 
-    // From the prompt `↓` starts again at the first row.
+    // The focus is the work page's docked prompt now (MVP-11 unit 7): `↑` goes back onto the list at its last row, and from the landing `↓`
+    // starts again at the first row.
+    press(r.controller, UP);
+    expect(focusOf(r)?.id).toBe('s2');
+    press(r.controller, ESC);
     press(r.controller, DOWN);
     expect(focusOf(r)?.id).toBe('f1');
   });
@@ -634,7 +641,9 @@ describe('the focus is the identity of a row, not its index', () => {
 });
 
 describe('↑ and ↓ walk the rows in the order the strip draws them', () => {
-  it('goes parked runs, failed runs, sessions, recent runs; the last row stays; ↑ from the first returns to the prompt', () => {
+  // The rows are the work page's (MVP-11 unit 7): `↓` past the last row goes onto the docked prompt under them, `↑` from there goes back onto
+  // the last row, and `↑` from the first row goes back up to the landing.
+  it('goes parked runs, failed runs, sessions, recent runs; past the last row the docked prompt; ↑ from the first returns to the landing', () => {
     const r = rig({
       snapshot: strip(['f1'], ['s1'], ['r1']),
       parked: [{ runId: 'p1', kind: 'approval', gates: 1 }],
@@ -644,29 +653,39 @@ describe('↑ and ↓ walk the rows in the order the strip draws them', () => {
       press(r.controller, DOWN);
       walked.push(focusOf(r)?.id ?? '-');
     }
-    expect(walked).toEqual(['p1', 'f1', 's1', 'r1', 'r1']);
+    expect(walked).toEqual(['p1', 'f1', 's1', 'r1', '-']);
+    expect(r.controller.getSnapshot().homePage, 'the docked prompt').toBe('work');
+    press(r.controller, UP);
+    expect(focusOf(r)?.id, 'back onto the last row').toBe('r1');
     press(r.controller, UP, 3); // from the last row up to the first
     expect(focusOf(r)?.id).toBe('p1');
     press(r.controller, UP);
-    expect(focusOf(r), 'back at the prompt').toBeUndefined();
+    expect(focusOf(r), 'back at the landing’s prompt').toBeUndefined();
+    expect(r.controller.getSnapshot().homePage).toBe('start');
   });
 
   it('skips a run whose log could not be read: it stays a display row', () => {
     const r = rig({
       snapshot: snapshotOf({
-        attention: { gates: [], failedRuns: [runRow('u1', 'failed'), runRow('f1', 'failed')] },
-        unreadableRunIds: ['u1'],
+        failedRuns: [runRow('u1', 'failed'), runRow('f1', 'failed')],
+        unreadableRuns: [{ runId: 'u1', reason: 'corrupt-row' }],
       }),
     });
     press(r.controller, DOWN);
     expect(focusOf(r)?.id).toBe('f1');
   });
 
-  it('only starts from an empty prompt, and Esc or any other key leaves the focus', () => {
+  // MVP-11 unit 7: `↓` with a draft goes down too (the draft is the ONE draft, kept), to the FIRST row; a key that types on a row moves to the
+  // docked prompt and is typed there, after what was typed before.
+  it('starts from the landing with a draft or without one (the draft kept), and Esc or any other key leaves the focus', () => {
     const r = rig({ snapshot: strip(['f1'], ['s1']) });
     r.controller.handleKey('a', {});
     press(r.controller, DOWN);
-    expect(focusOf(r), 'a draft is not left for the rows').toBeUndefined();
+    expect(focusOf(r)?.id, 'the first row, the draft kept').toBe('f1');
+    expect(r.controller.getSnapshot().input.text).toBe('a');
+    press(r.controller, ESC);
+    expect(focusOf(r)).toBeUndefined();
+    expect(r.controller.getSnapshot().homePage).toBe('start');
     r.controller.handleKey('', { backspace: true });
 
     press(r.controller, DOWN);
@@ -677,6 +696,7 @@ describe('↑ and ↓ walk the rows in the order the strip draws them', () => {
     r.controller.handleKey('x', {});
     expect(focusOf(r), 'a key that is typing starts typing').toBeUndefined();
     expect(r.controller.getSnapshot().input.text).toBe('x');
+    expect(r.controller.getSnapshot().homePage, 'on the docked prompt').toBe('work');
   });
 });
 
@@ -693,7 +713,7 @@ describe('Enter does what the row says', () => {
     'on %s it opens its detail in History, and Esc goes back to the list and then to the landing',
     async (_name, snapshot) => {
       const r = rig({ snapshot });
-      const id = snapshot.attention.failedRuns[0]?.runId ?? snapshot.recentRuns[0]?.runId ?? '';
+      const id = snapshot.failedRuns[0]?.runId ?? snapshot.recentRuns[0]?.runId ?? '';
       press(r.controller, DOWN);
       expect(focusOf(r)?.id).toBe(id);
       press(r.controller, ENTER);
@@ -946,13 +966,14 @@ describe('the Enter after a refresh dropped the focused row is not the empty pro
 });
 
 describe('a resume the person cancelled says so', () => {
-  it('on a strip session whose resume returns nothing, the landing shows the fixed notice', async () => {
+  it('on a strip session whose resume returns nothing, the fixed sentence is one notification, never the landing`s notice', async () => {
     const r = rig({ snapshot: strip([], ['s1']) });
     press(r.controller, DOWN);
     press(r.controller, ENTER);
     await settle();
     expect(r.resumeChat).toHaveBeenCalledWith('s1');
-    expect(r.controller.getSnapshot().notice).toBe('Resume cancelled.');
+    expect(r.announced).toEqual(['Resume cancelled.']);
+    expect(r.controller.getSnapshot().notice).toBeUndefined();
     expect(r.controller.getSnapshot().mode).toBe('home');
     expect(r.controller.getSnapshot().nativeActionBusy).toBe(false);
   });

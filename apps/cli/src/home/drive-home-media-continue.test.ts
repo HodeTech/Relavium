@@ -10,7 +10,7 @@
  *
  * Nothing sleeps and no operator home is read: every home is a temporary directory handed to the Home.
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -27,7 +27,7 @@ import type { GlobalOptions } from '../process/options.js';
 import type { JobControlLifecycle } from '../render/suspend.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
 import { captureIo, seedRun } from '../test-support.js';
-import { driveHome, type HomeDeps, type OnboardingTerminalLifecycle } from './drive-home.js';
+import { driveHome, type HomeDeps } from './drive-home.js';
 import { RunHost, type HostedLaunch } from './run-host.js';
 
 /** The bound of every wait in this file, in turns of the event loop. */
@@ -66,11 +66,6 @@ const INERT_JOB_CONTROL: JobControlLifecycle = {
   onContinue: () => () => undefined,
   suspendSelf: () => undefined,
 };
-const INERT_ONBOARDING_TERMINAL: OnboardingTerminalLifecycle = {
-  onInput: () => () => undefined,
-  isRawMode: () => false,
-  setRawMode: () => undefined,
-};
 const STARTED: HostedLaunch = {
   kind: 'started',
   leg: 'resume',
@@ -108,7 +103,10 @@ async function until(predicate: () => boolean, what: string): Promise<void> {
 async function mountHome() {
   // A run parked on an async media job and on nothing else: `seedRun` leaves a `media_job:submitted` and a `run:paused` that names it.
   await seedRun(client.db, { slug: 'wf', runId: RUN, state: 'paused' });
-  client.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?').run(root, RUN);
+  // A run records the canonical spelling of its directory (MVP-11 unit 7, round 2): a temp directory and its realpath differ on macOS.
+  client.sqlite
+    .prepare('UPDATE runs SET project_root = ? WHERE id = ?')
+    .run(realpathSync.native(root), RUN);
 
   const run = new RunHost({
     invocation: invocationFixture().invocation,
@@ -178,17 +176,11 @@ async function mountHome() {
     subscribeSignals: () => () => undefined,
     subscribeProcessExit: () => () => undefined,
     jobControlLifecycle: INERT_JOB_CONTROL,
-    onboardingTerminalLifecycle: INERT_ONBOARDING_TERMINAL,
     writeControl: () => undefined,
     exit: () => undefined,
-    onboardingPrompter: {
-      intro: () => undefined,
-      outro: () => undefined,
-      note: () => undefined,
-      select: () => Promise.resolve(Symbol('cancel')),
-      password: () => Promise.resolve(Symbol('cancel')),
-      isCancel: (v): v is symbol => typeof v === 'symbol',
-    },
+    firstRunSetup: 'off',
+    // the keys are driven with no renderer: the Home's pages swap instead of sliding (MVP-11 unit 7)
+    pageSlide: false,
     run,
   };
   const running = driveHome(deps);
@@ -217,9 +209,13 @@ async function mountHome() {
 describe('driveHome asks about a media park, and a Yes is the run host`s media resume', () => {
   it('the row says it waits for media, `Enter` opens the question on the prompt channel, and a Yes sends the media form for that run', async () => {
     const h = await mountHome();
-    expect(h.props.controller.getSnapshot().parkedRuns).toEqual([
-      { runId: RUN, kind: 'media', gates: 0, workflow: 'wf' },
-    ]);
+    // the row also carries when the run parked (the run record's own time, `parkedSince`: round 2)
+    expect(
+      h.props.controller.getSnapshot().parkedRuns.map(({ parkedSince, ...rest }) => ({
+        ...rest,
+        timed: typeof parkedSince === 'string',
+      })),
+    ).toEqual([{ runId: RUN, kind: 'media', gates: 0, workflow: 'wf', timed: true }]);
 
     h.ask();
     await until(() => h.props.nativePrompt?.getSnapshot().active === true, 'the question');

@@ -53,6 +53,12 @@ export const REPO_LOCAL_CHECKOUTS = [
 export default defineConfig({
   test: {
     environment: 'node',
+    // Vitest's defaults (5 s a test, 10 s a hook) are the limits of the author's ten-core machine, not of CI. The runner has about a sixth of those
+    // cores and its speed moves by a third from one run to the next (the CLI suite took 1,260 s, 1,323 s and 1,677 s on three runs of the same code),
+    // so a test that takes 1.2 s here reached 5 s there and failed: a different test in most of PR #103's runs, each fixed alone until the next
+    // one fell. A hang is still caught, 25 s later; a test that needs longer names its own limit, as the few that do already say.
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
     // Pin tests to `*.test.ts` only — the project's single test-file convention
     // (docs/standards/testing.md). Vitest's *default* include also collects `*.spec.ts`; we do
     // not use that suffix, so pinning keeps the runner aligned with the convention. A file

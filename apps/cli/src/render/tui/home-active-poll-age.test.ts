@@ -33,11 +33,12 @@ const RUN = 'run-lease-lapsing';
 
 const IDLE: RunHostSnapshot = { launching: false, active: undefined, last: undefined };
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: false,
 };
 
@@ -55,6 +56,8 @@ beforeEach(async () => {
     state: 'running',
     atMs: BASE - 5 * RUN_LEASE_TTL_MS,
   });
+  // The Active tab lists THIS directory's runs by default (MVP-11 unit 8, OD-24 D4): the run was started in the project the Home is in.
+  client.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?').run(HERE, RUN);
   client.sqlite
     .prepare(
       'INSERT INTO run_leases (run_id, owner_id, generation, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
@@ -82,7 +85,6 @@ function mount() {
   const reads = vi.fn((): Promise<ActiveRead> => reader());
   const active: HomeActivePort = { token: probe.token, read: reads, isClosed: () => false };
   const deps: HomeControllerDeps = {
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => new Promise(() => {}),
     homeStore: { read: () => EMPTY },
     active,

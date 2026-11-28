@@ -222,3 +222,5 @@ change.
 ### Amendment note — 2026-11-22 (ADR-0139 and ADR-0140, MVP-8)
 
 §10 is answered by [ADR-0139](0139-a-workflow-run-is-hosted-inside-the-home.md) (running a workflow and answering its gates inside the Home, and the Ctrl+C rule of its run) and [ADR-0140](0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) (the management browsers, the run drill-down and the durable record). The browsers are Home-tree commands and are not offered in the standalone chat's palette, which keeps §10's rule. §7 applies to the run view and its cards ([ADR-0139](0139-a-workflow-run-is-hosted-inside-the-home.md) §3 and §4).
+
+> Amended 2026-11-24 ([ADR-0145](0145-the-cli-has-one-surface-language.md) §7 and [ADR-0148](0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §3, accepted the same day). **§9:** the availability §9 asks for is implemented with the registry's availability function, a dim row names its reason (never hidden), and `/help` is listed in both palettes. **§7.4:** a popup's `Esc` steps back one step and closes on its first; `Ctrl+C` closes it; neither confirms anything.

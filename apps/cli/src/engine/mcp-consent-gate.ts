@@ -4,6 +4,7 @@ import { CliError } from '../process/errors.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { isInteractiveTerminal } from '../process/output-mode.js';
+import { INVISIBLE_CHARS } from '../render/invisible-chars.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import type { ResolvedServerRef, StdioConsentGate } from './mcp-servers.js';
 import {
@@ -70,7 +71,9 @@ export type ConsentPrompter = (
  * A user cannot consent to "the exact declaration" while half of it is invisible, and the environment is
  * exactly the half that changes what an executable does. Each field is sanitized and bounded at composition,
  * because `command`, `args` and the env names are artifact-controlled and a prompt showing a different
- * command than the one that will run is precisely the attack this gate exists to prevent.
+ * command than the one that will run is precisely the attack this gate exists to prevent. The three PATHS
+ * (`resolvedCommand`, `cwd`, `previouslyApprovedIn`) are the one exception: each is the path exactly as it is,
+ * or no subject is made at all ({@link CONSENT_PATH_UNSHOWN}).
  */
 export interface ConsentSubject {
   readonly serverId: string;
@@ -211,7 +214,7 @@ function undecided(
  */
 function refuseWithDigests(pending: readonly Subject[], deps: ConsentGateDeps): never {
   for (const { spawn, digest } of pending) {
-    deps.io.writeErr(`  ${safe(spawn.serverId)}: ${safe(spawn.resolvedCommand)}  ${digest}\n`);
+    deps.io.writeErr(listedProgram(spawn.serverId, spawn.resolvedCommand, digest));
   }
   throw new CliError(
     'invalid_invocation',
@@ -392,7 +395,10 @@ function canAsk(deps: ConsentGateDeps): boolean {
   });
 }
 
-/** Compose what the prompt shows — sanitized and bounded at the point of composition (§7). */
+/**
+ * Compose what the prompt shows — sanitized and bounded at the point of composition (§7), except the three paths, which are shown
+ * exactly or refused ({@link exactPath}).
+ */
 function subjectOf(
   spawn: ResolvedStdioSpawn,
   digest: string,
@@ -409,7 +415,7 @@ function subjectOf(
     serverId: safe(spawn.serverId),
     provenance: spawn.provenance.kind === 'inline' ? 'inline' : safe(spawn.provenance.name),
     artifact: spawn.artifact === undefined ? undefined : safe(spawn.artifact),
-    resolvedCommand: safe(spawn.resolvedCommand),
+    resolvedCommand: exactPath(spawn.resolvedCommand),
     authoredCommand: spawn.command === spawn.resolvedCommand ? undefined : safe(spawn.command),
     // **The COUNT is bounded, not just each field's length.** A review measured a 406-argument declaration
     // producing a 415-line block whose visible tail — the only part above the confirm prompt on any normal
@@ -423,12 +429,113 @@ function subjectOf(
         safe(displayValue(value)),
       ]),
     ),
-    cwd: safe(spawn.cwd),
+    cwd: exactPath(spawn.cwd),
     digest,
     total,
     index,
-    previouslyApprovedIn: elsewhere === undefined ? undefined : safe(elsewhere.cwd),
+    previouslyApprovedIn: elsewhere === undefined ? undefined : exactPath(elsewhere.cwd),
   };
+}
+
+/**
+ * What a start says when a program's path cannot be shown as it is on any surface: fixed words, no path, and no command, because no
+ * prompt can approve it (the Home's card says its own sentence, which names the shell, for a path only a card must refuse).
+ */
+export const CONSENT_PATH_UNSHOWN =
+  'Not started: a local program has a path that cannot be shown as it is, so it cannot be approved.';
+
+/**
+ * A path as it is, or a refusal before any prompt is made.
+ *
+ * A path is the decision itself (what runs, where, where it was approved before), and a repository ships the program it names, so
+ * `tools/srv` with a zero-width space, a word joiner, a byte-order mark, a bidi override, a bell, an escape, a no-break space or a
+ * trailing space in its name is a different file from `tools/srv`. {@link clean} would strip some of those, and the rest draw nothing
+ * or a blank, so a prompt would name the visible twin while the real file runs. Such a path reaches no prompter: not the Home's card,
+ * not the shell's question. Refusing here, before the subject exists, is what keeps every surface's check on the raw text; a check in
+ * a prompter only ever saw the cleaned one.
+ */
+function exactPath(path: string): string {
+  if (!shownExactly(path)) throw new CliError('invalid_invocation', CONSENT_PATH_UNSHOWN);
+  return path;
+}
+
+/**
+ * Whether every surface can show `path` exactly as it is and whole: no longer than {@link MAX_PATH_CHARS}, nothing {@link clean} would
+ * change (a control, a bidi or zero-width character, a secret-shaped part), no {@link HIDDEN_CHAR}, and no space at either end, where
+ * a row draws it as nothing. An ordinary space between visible characters (`My  Tools`) is shown as it is.
+ */
+function shownExactly(path: string): boolean {
+  return (
+    path.length <= MAX_PATH_CHARS &&
+    !HIDDEN_CHAR.test(path) &&
+    !EDGE_SPACE.test(path) &&
+    clean(path) === path
+  );
+}
+
+/**
+ * The part of {@link HIDDEN_CHAR} the shared {@link INVISIBLE_CHARS} does not hold. A regular expression literal, so the Braille blank is
+ * written as its escape and no string of this file spells the character itself.
+ */
+const CONTROL_OR_BLANK = /\p{Cc}|[^\S ]|\u2800/u;
+
+/**
+ * A character no prompt may show inside a path, because a person cannot see it or cannot tell it from another: a control, one that draws
+ * nothing ({@link INVISIBLE_CHARS}: the format characters and every default-ignorable one), a blank other than the ordinary space (a
+ * no-break space, an ideographic space, a line separator: any `\s` but U+0020), and the Braille blank U+2800, which draws a space and
+ * is none of those. No global flag, so `test` keeps no position between calls.
+ */
+const HIDDEN_CHAR = new RegExp(`${CONTROL_OR_BLANK.source}|${INVISIBLE_CHARS.source}`, 'u');
+
+/** The ordinary space where a row draws it as nothing: at the end of a path (and, for a stored path, at its start). */
+const EDGE_SPACE = /^ | $/u;
+
+/**
+ * The longest path a prompt shows, whole. Neither surface cuts a path: the shell writes it on one line the terminal wraps, and the
+ * card wraps its row (`hardWrap`) or, when the card does not fit the terminal, draws no card but `Prompt does not fit — enlarge the
+ * terminal`. So the bound is where an ordinary card stops fitting the smallest terminal the Home supports: at 80 columns a detail row
+ * holds 76 (the gutter and its margin take 4), a labelled path row takes ceil((12 + length) / 76) rows, and an 80×24 card with no
+ * arguments keeps 14 rows for the executable and its directory, 7 each: 7 * 76 - 12 = 520. Measured by painting the card at 80×24:
+ * with both paths at 520 characters it is drawn whole, at 521 it does not fit. Real `node_modules/.pnpm` paths (whose store names pnpm
+ * keeps to 120 characters) are well inside it; the 200 the gate keeps for the author's words is not a path's bound.
+ */
+const MAX_PATH_CHARS = 520;
+
+/**
+ * One program of the non-interactive list a script's author picks a digest from (§6), as `  <id>: <path>  <digest>`.
+ *
+ * The path is the one thing the author reads to decide, so it is never a visible twin: a path every prompt could show is written as it
+ * is (whole, so a long one keeps its file name), and any other is written with each hidden character as a `\uXXXX` escape (and each
+ * backslash doubled, so an escape cannot be forged by a name that spells one), then a note that says so and that only the digest can
+ * approve it.
+ */
+function listedProgram(serverId: string, path: string, digest: string): string {
+  if (shownExactly(path)) return `  ${safe(serverId)}: ${path}  ${digest}\n`;
+  const escaped = escapeHidden(path);
+  const note =
+    escaped === path
+      ? 'no prompt can show this path as it is, so only its digest can approve it'
+      : 'this path holds characters that do not show, written here as \\u escapes; only its digest can approve it';
+  return `  ${safe(serverId)}: ${sanitizeUntrustedInline(escaped)}  ${digest}  (${note})\n`;
+}
+
+/** `path` with every {@link HIDDEN_CHAR} and an edge space as a visible escape and every backslash doubled; `path` itself when it has none. */
+function escapeHidden(path: string): string {
+  if (!HIDDEN_CHAR.test(path) && !EDGE_SPACE.test(path)) return path;
+  const points = [...path];
+  return points
+    .map((point, at) => {
+      if (point === '\\') return '\\\\';
+      const edge = point === ' ' && (at === 0 || at === points.length - 1);
+      return edge || HIDDEN_CHAR.test(point) ? escapeOf(point) : point;
+    })
+    .join('');
+}
+
+/** `\uXXXX`, or `\u{XXXXX}` past the Basic Multilingual Plane. */
+function escapeOf(point: string): string {
+  const hex = (point.codePointAt(0) ?? 0).toString(16).toUpperCase();
+  return hex.length > 4 ? `\\u{${hex}}` : `\\u${hex.padStart(4, '0')}`;
 }
 
 /**
@@ -475,12 +582,17 @@ const MAX_DISPLAYED_ENTRIES = 12;
 
 /** Every displayed field goes through this: terminal controls stripped, length bounded. */
 function safe(text: string): string {
+  const cleaned = clean(text);
+  return cleaned.length <= MAX_FIELD_CHARS ? cleaned : `${cleaned.slice(0, MAX_FIELD_CHARS)}…`;
+}
+
+/** {@link safe} before its length bound: terminal controls stripped, secrets masked, zero-width characters removed. */
+function clean(text: string): string {
   // **Zero-width too**, which §7 says these fields strip and the first implementation did not.
   // `sanitizeUntrustedInline` deliberately KEEPS ZWJ/ZWNJ — correct for prose, wrong for a structured field
   // in a trust decision, where `--safe\u200b--evil` and `--safe--evil` render identically and an executable
   // name is exactly the kind of field the provider surface already rejects them from.
-  const cleaned = sanitizeUntrustedInline(text).replace(ZERO_WIDTH, '');
-  return cleaned.length <= MAX_FIELD_CHARS ? cleaned : `${cleaned.slice(0, MAX_FIELD_CHARS)}…`;
+  return sanitizeUntrustedInline(text).replace(ZERO_WIDTH, '');
 }
 
 /** ZWSP/ZWNJ/ZWJ, word joiner, Mongolian vowel separator, BOM — invisible, and identity-bearing here. */

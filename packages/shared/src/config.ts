@@ -210,6 +210,10 @@ export const GlobalConfigSchema = z
           .strict()
           .optional(),
         keychain_unavailable_acknowledged: z.boolean().optional(),
+        // Operator-owned onboarding state (ADR-0112; ADR-0146 §6, ruled 2026-11-24): the person SKIPPED the first-run provider setup, so the
+        // Home does not open it by itself again (`/providers` and the keyless `Enter` still open it at any time). Written only by its own
+        // closed setter (`prepareFirstRunSetupSkipped`); it records the skip, never anything the person typed.
+        first_run_setup_skipped: z.boolean().optional(),
         theme: z.string().optional(),
         // The GLOBAL default reasoning-effort tier (ADR-0066 §6) — the effort counterpart of `default_model`, the
         // write target of the `/models` picker's effort sub-step. Resolved BELOW project/workspace
@@ -233,9 +237,10 @@ export const GlobalConfigSchema = z
         // copied elsewhere. `/copy` still copies the whole transcript on demand. Meaningless without `mouse`, and
         // ignored when it is off: there is no selection to copy.
         copy_on_select: z.boolean().optional(),
-        // The branded Home BANNER (2.6.F Step 5g, ADR-0068). `true` ⇒ always shown, `false` ⇒ never.
-        // ABSENT ⇒ shown only while the Home is EMPTY (no sessions/runs/agents to continue) — an empty Home is the
-        // "first opens" signal the ADR wanted, without a durable counter. Cosmetic: it gates no feature.
+        // The branded Home BANNER (2.6.F Step 5g, ADR-0068; meaning revised by ADR-0146 §1 and §3). `true` or ABSENT ⇒
+        // the landing's block (wordmark, rail, taglines) on page 1 of the Home, in both states of the Home. `false` ⇒ the
+        // one-line spaced wordmark in its place, whatever the Home holds. (Before MVP-11 an ABSENT key showed the banner
+        // only while the Home was empty, and `false` meant never.) Cosmetic: it gates no feature.
         show_banner: z.boolean().optional(),
         // The operator's base for the four chat limits (ADR-0136 §1): what a repository's `[chat]` values may not exceed.
         // The same four keys as `[chat]`, hand-edited (no typed writer), each bounded by `CHAT_LIMITS`.

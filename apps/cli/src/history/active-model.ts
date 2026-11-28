@@ -1,7 +1,9 @@
 import type { RunLeaseSummary, RunSummaryRecord } from '@relavium/db';
 import type { RunStatus } from '@relavium/shared';
 
-import { RUN_STATUS_GLYPH } from './history-model.js';
+import type { DisplayPathRoots } from '../render/notation.js';
+import { RUN_STATUS_GLYPH, storedPlace } from './history-model.js';
+import { isProjectRootHere, recordedProjectRoot } from './project-root.js';
 import { MAX_PROJECT_ROOT_CHARS, scrubbedBounded, shortRunId } from './run-detail-model.js';
 
 /**
@@ -77,6 +79,11 @@ export interface ActiveRow {
   readonly createdAt: string;
   /** Through the one-line floor: for display, never for comparison (the class decision used the stored value). */
   readonly projectRoot?: string;
+  /**
+   * Present (`true`) when the run was NOT started in this directory: its recorded root is not this directory's canonical root (`isProjectRootHere`), or
+   * none was recorded. The Runs screen lists this directory's runs by default (MVP-11 unit 8, OD-24 D4) and these only under `[a] all`, read-only.
+   */
+  readonly elsewhere?: true;
 }
 
 export interface ClassifyActiveInput {
@@ -97,6 +104,8 @@ export interface ClassifyActiveInput {
   readonly pendingMediaJobCounts?: ReadonlyMap<string, number>;
   /** Workflow id to slug (`loadWorkflowSlugs`). */
   readonly workflowLabels?: ReadonlyMap<string, string>;
+  /** What a run's project root is shortened against (the Home's directory and the operator's home); absent, the root is shown as stored. */
+  readonly paths?: DisplayPathRoots;
 }
 
 const ACTIVE_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
@@ -129,10 +138,14 @@ function verdictFor(run: RunSummaryRecord, input: ClassifyActiveInput): Verdict 
   if (run.status !== 'paused') {
     return READ_ONLY('other-running', 'running in another process');
   }
-  if (run.projectRoot !== input.currentProjectRoot) {
+  // A paused run is this Home's to answer only when its recorded root is this directory's canonical root (`isProjectRootHere`); a stored
+  // root that is not an absolute path (`.`, written before roots were canonical) is unrecorded, never "another project" that has a place.
+  if (!isProjectRootHere(run.projectRoot, input.currentProjectRoot)) {
     return READ_ONLY(
       'other-paused-elsewhere',
-      run.projectRoot === undefined ? 'project not recorded' : 'another project',
+      recordedProjectRoot(run.projectRoot) === undefined
+        ? 'project not recorded'
+        : 'another project',
     );
   }
   const gates = input.pendingGateCounts?.get(run.id);
@@ -227,6 +240,8 @@ export function classifyActiveRuns(input: ClassifyActiveInput): ActiveRow[] {
         nowMs: input.nowMs,
         leaseTtlMs: input.leaseTtlMs,
       });
+    // Only a root that names a directory is shown: an unrecorded one (none, or relative) is said in words by the row.
+    const recorded = recordedProjectRoot(run.projectRoot);
     rows.push({
       runId: run.id,
       shortId: shortRunId(run.id),
@@ -237,12 +252,18 @@ export function classifyActiveRuns(input: ClassifyActiveInput): ActiveRow[] {
       actionable: verdict.actionable,
       enter: verdict.enter,
       ...(verdict.reason === undefined ? {} : { reason: verdict.reason }),
+      ...(run.id !== input.hostedRunId &&
+      !isProjectRootHere(run.projectRoot, input.currentProjectRoot)
+        ? { elsewhere: true as const }
+        : {}),
       stalled,
       ...(stalled ? { stalledReason: STALLED_REASON } : {}),
       createdAt: run.createdAt,
-      ...(run.projectRoot === undefined
+      ...(recorded === undefined
         ? {}
-        : { projectRoot: scrubbedBounded(run.projectRoot, MAX_PROJECT_ROOT_CHARS) }),
+        : {
+            projectRoot: storedPlace(recorded, input.paths, MAX_PROJECT_ROOT_CHARS),
+          }),
     });
   }
   return rows.sort((a, b) => groupRank(a.class) - groupRank(b.class) || newestFirst(a, b));

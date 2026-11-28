@@ -14,6 +14,8 @@ import {
   budgetPromptContext,
   budgetPromptDetails,
 } from '../../gate/budget.js';
+import { formatDuration, formatUsdExact } from '../notation.js';
+import { glyph, wordOf } from './glyphs.js';
 
 /**
  * The pure, framework-free view model for the `ink` streaming TUI (workstream **2.E**). It reduces the
@@ -377,13 +379,19 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
     case 'agent:tool_call':
       return {
         ...base,
-        toolLines: pushBounded(base.toolLines, `→ ${event.toolId}`, MAX_TOOL_LINES),
+        toolLines: pushBounded(
+          base.toolLines,
+          `${glyph('toolCall')} ${event.toolId}`,
+          MAX_TOOL_LINES,
+        ),
       };
 
     case 'agent:tool_result': {
-      const mark = event.success ? '✓' : '✗';
+      const role = event.success ? 'completed' : 'failed';
+      // The glyph is never alone: its word stands beside it, and the row (cut at the terminal's edge) loses the summary first.
+      const mark = `${glyph(role)} ${wordOf(role)}`;
       const summary = clip(event.outputSummary);
-      // Omit the `: <summary>` suffix for an empty summary (no dangling "✓ toolId: ").
+      // Omit the `: <summary>` suffix for an empty summary (no dangling "✓ completed toolId: ").
       const line =
         summary === '' ? `${mark} ${event.toolId}` : `${mark} ${event.toolId}: ${summary}`;
       return { ...base, toolLines: pushBounded(base.toolLines, line, MAX_TOOL_LINES) };
@@ -500,7 +508,7 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
         ...base,
         warnings: pushBounded(
           base.warnings,
-          `budget: ~${event.estimateMicrocents}µ¢ held as an estimate (possibly billed; ~${event.cumulativeConservativeMicrocents}µ¢ total)`,
+          `budget: ~${formatUsdExact(event.estimateMicrocents)} held as an estimate (possibly billed; ~${formatUsdExact(event.cumulativeConservativeMicrocents)} total)`,
           MAX_WARNINGS,
         ),
       };
@@ -540,9 +548,13 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
         ...base,
         summary: {
           outcome: 'failed',
-          errorMessage: `run timed out after ${event.elapsedMs}ms (limit ${event.timeoutMs}ms)`,
+          errorMessage: `run timed out after ${formatDuration(event.elapsedMs)} (limit ${formatDuration(event.timeoutMs)})`,
         },
-        warnings: pushBounded(base.warnings, `run timed out (${event.elapsedMs}ms)`, MAX_WARNINGS),
+        warnings: pushBounded(
+          base.warnings,
+          `run timed out (${formatDuration(event.elapsedMs)})`,
+          MAX_WARNINGS,
+        ),
       };
 
     // Coverage is folded by the run store; approval is owned by the active gate prompter.

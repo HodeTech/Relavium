@@ -79,6 +79,7 @@ export {
   SessionMessageBoundaryError,
   type SessionStore,
   type SessionMessageMeta,
+  type SessionRecordSlot,
   LEGACY_COST_SENTINEL,
 } from './session-store.js';
 
@@ -126,6 +127,7 @@ export {
   type InterruptedRunInfo,
   type RunRecord,
   type RunSummaryRecord,
+  type RunSummaryFilter,
   type RunDetailRecord,
   type StepRecord,
   type StepSummaryRecord,

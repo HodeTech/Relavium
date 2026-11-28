@@ -1,270 +1,630 @@
-import { Box, Text, type DOMElement } from 'ink';
-import { useLayoutEffect, useRef, type ReactElement } from 'react';
+import { Box, type DOMElement } from 'ink';
+import { Text } from './text.js';
+import { useLayoutEffect, useRef, type ReactElement, type RefObject } from 'react';
 
-import type { ReplCommand } from '../../commands/repl-commands.js';
+import type { HomeStatusFacts } from '../../home/home-status-facts.js';
 import type { HomeSnapshot } from '../../home/home-store.js';
 import type { RunHostSnapshot } from '../../home/run-host.js';
-import { bannerLines, shouldShowBanner } from './banner.js';
 import type { EditorState } from './chat-input.js';
-import { sanitizeInline } from './chat-projection.js';
-import type { StatusColor } from './format.js';
+import { EmphText } from './emphasis-view.js';
+import { withGlyphForm } from './glyphs.js';
 import {
-  agentLabel,
   exitGuardLines,
-  gateExpired,
-  gateLabel,
   homeFitsTerminal,
   homeIsEmpty,
-  HOSTED_RUN_ENTER_CUE,
+  HOSTED_RUN_ENTER_ITEM,
   hostedRunCanBeShown,
   hostedRunLabel,
-  runLabel,
-  sessionLabel,
   tooSmallMessage,
-  unreadableRunLabel,
   type ExitGuardPhase,
 } from './home-projection.js';
+import { attentionOrder, urgentHeadOf, type ParkedRunRow } from './home-attention.js';
+import { keyHint, legend } from './legend.js';
+import { HomeLanding, LandingPalette, type LandingStatus } from './home-landing.js';
+import { LandingMention, landingMentionRows } from './mention-home.js';
+import { MENTION_WINDOW } from './mention-view.js';
+import type { MentionState } from './mention.js';
 import {
-  PARKED_ROW_INDENT_COLUMNS,
-  parkedRunLabel,
-  parkedRunOverdue,
-  type ParkedRunKind,
-  type ParkedRunRow,
-} from './home-attention.js';
-import { PaletteView } from './palette-view.js';
-import type { PaletteState } from './palette-reducer.js';
-import { PALETTE_MIN_ROWS, paletteRowBudget } from './palette-window.js';
+  frameRows,
+  LANDING_FOOT_ROWS,
+  landingEditorRows,
+  landingRowsAbovePrompt,
+  landingTopGap,
+  showsLandingBlock,
+} from './home-layout.js';
+import {
+  EXIT_AGAIN,
+  EXIT_TWICE,
+  landingHint,
+  MENTION_CHROME_ROWS,
+  mentionListRows,
+  workCounts,
+  workHint,
+  type HintRow,
+  type HomePage,
+  type UrgentHead,
+  type WorkCounts,
+  type WorkRowCue,
+} from './home-pages.js';
+import { buildSections, HomeWorkPage, workBottomBlock, workListBudget } from './home-work-page.js';
+import { paletteQueryEditor } from './palette-block.js';
+import { chatPaletteRows } from './palette-view.js';
+import type { OpenPalette } from './palette-reducer.js';
+import {
+  PALETTE_CHROME_ROWS,
+  PALETTE_MIN_ROWS,
+  paletteGapCount,
+  paletteLines,
+  paletteRowBudget,
+} from './palette-window.js';
 import { colorProps, dimProps } from './projection.js';
-import { PromptEditor } from './prompt-view.js';
-import { homePromptRows, layoutHomeNotice } from './home-notice.js';
-import {
-  isFocused,
-  stripReach,
-  stripRows,
-  type StripFocus,
-  type StripRole,
-} from './strip-focus.js';
+import { sheetRule } from './sheet-frame.js';
+import { homeContentColumns, homePromptRows, layoutHomeNotice } from './home-notice.js';
+import { stripReach, stripRows, isFocused, type StripFocus } from './strip-focus.js';
 import { HOSTED_RUN_EXIT_BOUND_MS } from './tui-constants.js';
+import { displayWidth } from './viewport.js';
 
 /**
- * The PURE render of the bare-invocation Home (2.5.B / ADR-0054): a management strip — an "Attention
- * required" section (pending human gates, then failed runs) above a "Continue" list (recent sessions / runs /
- * agents) — with a live prompt below it. No `useInput`, no state, no store: the single raw-mode owner is the
- * Home's `RootApp`, which passes the snapshot + the prompt buffer + the terminal size + a clock here. Below the
- * 80×24 minimum the whole view degrades to a single resize line (the `RootApp` holds it until a resize). The
- * strip labels come from the unit-tested `home-projection`; the prompt echo is sanitized at this boundary.
+ * The PURE render of the bare-invocation Home as TWO PAGES (MVP-11 unit 7, ADR-0146 §1 with the maintainer's 2026-11-26 choice): page 1 is
+ * ALWAYS the calm landing (the block or the one-line title, the prompt with its example, the one status line, the hint; with the INDICATOR in the
+ * hint when there is something to continue, and the hosted run's one row while a leg executes); page 2 is the work page (`home-work-page.tsx`:
+ * the strip's sections over a docked prompt). No `useInput`, no state, no store: the single raw-mode owner is the Home's `RootApp`, which passes
+ * the controller's state, the terminal size and a clock here. Below the 80×24 minimum the whole view degrades to a single resize line.
  *
- * Every dynamic line is `wrap="truncate-end"` — a long title / slug / message truncates with an ellipsis at the
- * terminal edge rather than soft-wrapping into a second physical row (which would shatter the glanceable strip),
- * mirroring the sibling run TUI. Sessions have a separate directory line. An overdue (expired) gate is escalated yellow → red so the most time-critical
- * item in "Attention required" catches the eye. A build-failure banner is rendered adjacent to the prompt (not
- * at the top) so it stays in view even when a full strip scrolls the header off a short terminal.
+ * In the alternate screen a change of page SLIDES: while the controller's slide is in progress this view draws a window of `rows − 1` rows onto
+ * the two pages stacked (each exactly `rows − 1` tall), the inner column moved up by the slide's offset; the window clips what is outside it, so
+ * every frame is the rows of one document and never taller than the screen. At rest, and always inline, only the page in front is drawn.
  */
 
 interface HomeViewProps {
   readonly onFrame?: ((node: DOMElement | null) => void) | undefined;
   readonly snapshot: HomeSnapshot;
-  /** The current prompt editor — text + cursor (owned by the `RootApp`). */
+  /** The current prompt editor — text + cursor (owned by the `RootApp`): the ONE draft both pages' prompts draw. */
   readonly editor: EditorState;
-  /** A build-failure message to show above the prompt (cleared on the next submit / a clean return). */
-  readonly errorText?: string | undefined;
-  /** Transient command output — the `/doctor` report (2.5.C S5), shown above the prompt, cleared on the next
-   *  edit/submit. Multi-line + already secret-free (the doctor formatter sanitizes). */
+  /** Transient command output (a refusal, a flow's closing sentence, a failed build), shown on the page in front, cleared on the next
+   *  edit/submit. Multi-line; each line is sanitised as it is laid out (`layoutHomeNotice`). */
   readonly notice?: string | undefined;
   /** Injected clock for the relative-time labels (the projection is clock-free). */
   readonly nowMs: number;
   readonly cols: number;
   readonly rows: number;
   readonly color: boolean;
-  /** When the `/` palette is open it owns the bottom of the view, so the prompt + footer hint are suppressed (2.5.C S3c). */
+  /** When the `/` palette (or the model picker the host draws) owns the bottom of the view, the prompt block is not drawn. */
   readonly paletteOpen?: boolean;
   /**
-   * The bare Home's open `/` palette, drawn here in the prompt's place so that the strip and the notice can leave it the rows it needs: the
-   * landing and the palette together are never taller than the terminal (`paletteRowBudget`, `paletteLines`). Absent ⇒ no palette is drawn
-   * here (`paletteOpen` alone only suppresses the prompt, as it does for the model picker, which the host draws).
+   * The Home's open `/` palette, drawn here in the prompt's place: under the landing's prompt (it runs down), above the work page's docked prompt
+   * (it runs up, as a chat's does). Absent ⇒ no palette is drawn here (`paletteOpen` alone only suppresses the prompt).
    */
-  readonly palette?: { readonly commands: readonly ReplCommand[]; readonly state: PaletteState };
-  /** `[preferences].show_banner` (2.6.F Step 5g). `undefined` ⇒ `shouldShowBanner`'s empty-Home rule. */
+  readonly palette?: OpenPalette;
+  /**
+   * The Home's open `@` file picker (ADR-0061 on the Home's own prompts), drawn as the palette is: under the landing's prompt row, which does not
+   * move, and above the work page's docked prompt. Absent ⇒ none is open.
+   */
+  readonly mention?: MentionState | undefined;
+  /** `[preferences].show_banner` (2.6.F Step 5g). `undefined` and `true` ⇒ the landing's block; `false` ⇒ its one-line title (`showsLandingBlock`). */
   readonly showBanner?: boolean | undefined;
+  /** The alternate screen draws the landing's top gap and slides between the pages; inline draws no gap and swaps them. Absent ⇒ inline. */
+  readonly alternateScreen?: boolean | undefined;
+  /** What the next chat would use and where it would work (ADR-0146 §2), read by the controller: both pages draw it as the one status line. */
+  readonly status?: HomeStatusFacts | undefined;
   /** Cached key availability, sampled by the host on opening and changes. */
   readonly keyless?: boolean;
   readonly noticePage?: number;
   /** The interrupt keymap is armed (ADR-0115 §1): a second `Ctrl+C` exits the Home, and the hint says so. */
   readonly interruptArmed?: boolean | undefined;
-  /** The run host's snapshot (ADR-0139 §3): the `▶` row shows the active run, and nothing when none is active. */
+  /** The run host's snapshot (ADR-0139 §3): the landing's run row shows the active run, and nothing when none is active. */
   readonly hostedRun?: RunHostSnapshot | undefined;
-  /** The exit-guard card (ADR-0139 §6), open while the person is asked whether to leave with a run executing. It owns the bottom of
-   *  the view, so the prompt and the hint bar are not drawn, and it holds the notice back until it is closed. */
+  /** The exit-guard card (ADR-0139 §6): it takes the place of the prompt block of the page in front and holds the notice back. */
   readonly exitGuard?: ExitGuardPhase | undefined;
-  /**
-   * The runs of THIS project that are parked ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §3, §7): one
-   * Attention row each, with the key that opens its card. A run that has a row here is not repeated by the strip's own gate rows or
-   * its *Continue* runs. Absent or empty ⇒ no such row.
-   */
+  /** The exit guard's lockout holds its `Ctrl+Y` (the controller's `exitGuardLock`, a display value): it reads `(wait)` (ADR-0145 §3). */
+  readonly exitGuardLocked?: boolean | undefined;
+  /** The runs of THIS project that are parked ([ADR-0139] §3, §7): one Attention row each on the work page. */
   readonly parkedRuns?: readonly ParkedRunRow[] | undefined;
-  /**
-   * The strip row `↓` moved onto, or `undefined` (ADR-0140 §6): a run row (parked, failed or recent) or a session row, named by its identity.
-   * The focused row is marked `>` and is always one of the rows drawn; the hint bar says what `Enter` does on it.
-   */
+  /** The work page's focused row (ADR-0140 §6), by its identity: marked `›` and always one of the rows drawn. `undefined`: no row. */
   readonly stripFocus?: StripFocus | undefined;
+  /** The one notification of the Home's channel, drawn on the hint row in place of the hint for its few seconds (ADR-0148 §2). */
+  readonly notification?: string | undefined;
+  /** Which page is in front (MVP-11 unit 7): the landing, or the work page. Absent ⇒ the landing. */
+  readonly page?: HomePage | undefined;
+  /**
+   * The slide in progress (alternate screen only): the window's offset in whole rows from the top of the landing (`slideFrames`). Absent ⇒ at
+   * rest. Ignored inline, where the pages swap.
+   */
+  readonly slideOffset?: number | undefined;
 }
 
 const NO_PARKED: readonly ParkedRunRow[] = [];
+const NOTHING_TO_COUNT: WorkCounts = { attention: 0, sessions: 0, runs: 0 };
+
+/** What the exit guard's rule says it is (ADR-0147 §1): fixed host text. */
+export const EXIT_GUARD_RULE_LABEL = 'Leaving the Home';
 
 /**
  * The exit-guard card (ADR-0139 §6): a title line, what leaving does and the keys, each in words so it reads with colour off. It is
- * the same card in the loaded Home, in the loading echo and in the below-minimum degrade.
+ * the same card on both pages, in the loading echo and in the below-minimum degrade.
  */
 export function ExitGuardCard(
   props: Readonly<{
     phase: ExitGuardPhase;
     hostedRun: RunHostSnapshot | undefined;
     color: boolean;
+    /** The columns the card's rule is drawn across (the content column it stands in). Default: the 80-column floor's. */
+    columns?: number | undefined;
+    /** Its lockout holds `Ctrl+Y` now (a display value): the key reads `(wait)`. */
+    locked?: boolean | undefined;
   }>,
 ): ReactElement {
-  const lines = exitGuardLines(props.phase, props.hostedRun, HOSTED_RUN_EXIT_BOUND_MS / 1000);
+  // The sheet's heavy rule (ADR-0147 §1): the exit guard takes the prompt block's place and wears the frame the other sheets wear. Its lines
+  // are fitted to the rule's width, so no row runs past the rule's end (unit 8 fix wave, S-11).
+  const width = Math.max(1, (props.columns ?? 80) - 2);
+  const lines = withGlyphForm(!props.color, () =>
+    exitGuardLines(
+      props.phase,
+      props.hostedRun,
+      HOSTED_RUN_EXIT_BOUND_MS / 1000,
+      props.locked === true,
+      width,
+    ),
+  );
+  const rule = withGlyphForm(!props.color, () => sheetRule(EXIT_GUARD_RULE_LABEL, '', width).text);
   return (
     <Box flexDirection="column">
+      <Text {...colorProps(props.color, 'yellow')} wrap="truncate-end">
+        {rule}
+      </Text>
       {lines.map((line, row) => (
-        <Text
+        <EmphText
           key={line}
           {...(row === 0 ? colorProps(props.color, 'yellow') : dimProps(props.color))}
-          {...(row === 0 ? { bold: true } : {})}
+          emphasis={row === 0 ? 'bold' : undefined}
           wrap="truncate-end"
         >
           {line}
-        </Text>
-      ))}
-    </Box>
-  );
-}
-
-/** A glanceable strip row — a stable `key` (the row's durable id, not its array index) + the rendered line. */
-interface StripRow {
-  readonly key: string;
-  readonly line: string;
-  readonly hint?: string;
-  readonly selected?: boolean;
-}
-
-/** A labeled list section ("Sessions", "Runs", …) — renders nothing when empty so the strip stays compact. An
- *  empty `title` renders just the lines (the attention sub-lists sit under one "Attention required" heading). */
-function Section(
-  props: Readonly<{ title: string; rows: readonly StripRow[]; color: boolean; tint?: StatusColor }>,
-): ReactElement | null {
-  if (props.rows.length === 0) return null;
-  return (
-    <Box flexDirection="column" marginLeft={2}>
-      {props.title.length > 0 && (
-        <Text {...dimProps(props.color)} wrap="truncate-end">
-          {props.title}
-        </Text>
-      )}
-      {props.rows.map((row) => (
-        <Box key={row.key} flexDirection="column">
-          <Text
-            {...(props.tint === undefined ? {} : colorProps(props.color, props.tint))}
-            wrap="truncate-end"
-          >
-            {row.selected === true ? '> ' : '  '}
-            {row.line}
-          </Text>
-          {row.hint !== undefined && (
-            <Text {...dimProps(props.color)} wrap="truncate-end">
-              {'    '}
-              {row.hint}
-            </Text>
-          )}
-        </Box>
+        </EmphText>
       ))}
     </Box>
   );
 }
 
 /**
- * What the hint bar says `Enter` does on the focused parked row: a row with a gate opens it, a media park asks whether to continue the
- * run here, and a run with nothing to answer says why (the bar must not promise a gate where there is none).
+ * The standing call to action of a Home with no key (ADR-0146 §5): `Enter` opens the provider setup. A key and a command word, so it has no leaving
+ * key of its own: the hint bar under it carries that. On both pages it takes the place of the status line.
  */
-function parkedHintCue(kind: ParkedRunKind | undefined): string {
-  if (kind === 'none') return 'Enter says why';
-  if (kind === 'media') return 'Enter continue it';
-  // An input gate's card takes no typed value: it shows how to answer in a shell, and offers a rejection.
-  if (kind === 'input') return 'Enter shows how';
-  return 'Enter open the gate';
-}
+const KEYLESS_SETUP_LINE = keyHint([
+  { text: 'No provider key yet' },
+  { keys: 'Enter', verb: 'connect' },
+  { text: '/providers' },
+]);
+/** The same call to action while something else owns `Enter` (a focused row, a live run, a command being typed): only the command word is promised. */
+const KEYLESS_SETUP_LINE_ENTER_TAKEN = 'No provider key yet · /providers connects one';
 
-/** The one more door the hint bar names while a run can be shown: a parked run, else the saved sessions, else the chat itself. */
-function runHintNext(hasParkedRuns: boolean, hasRecentSessions: boolean): string {
-  if (hasParkedRuns) return '↓ Open a parked run';
-  return hasRecentSessions ? '↓ Continue' : 'type a message to chat';
+/**
+ * What the status row says (ADR-0146 §2, §5): with no provider key the call to connect (promising `Enter` only where `Enter` does connect),
+ * else the facts of the next chat when the controller holds them, else nothing.
+ */
+function landingStatusOf(view: HomeViewProps, enterIsTaken: boolean): LandingStatus {
+  if (view.keyless === true)
+    return {
+      kind: 'keyless',
+      line: enterIsTaken ? KEYLESS_SETUP_LINE_ENTER_TAKEN : KEYLESS_SETUP_LINE,
+    };
+  return view.status === undefined ? { kind: 'none' } : { kind: 'facts', facts: view.status };
 }
 
 /**
- * The context-aware hint bar of the Home (2.5.C S6): the second `Ctrl+C` while the first is armed, the session picker's keys while one
- * is open, at an empty prompt the `/` palette beside the start-a-chat affordance, and once composing the submit hint.
+ * The rows an open palette's block needs of the landing beyond the prompt block it replaces, so a notice (a `/doctor` report that was started before
+ * the palette opened) gives them up and the palette keeps the rows it is budgeted: half the terminal, as a chat's palette has (`paletteRowBudget`),
+ * where the prompt block is the prompt row and the four rows under it. Read from EVERY entry, not the ones the query matches, so the notice does not
+ * grow and shrink under the person's typing. Nothing without a palette.
  */
-function homeHint(state: {
-  readonly interruptArmed: boolean;
-  /** What the focused strip row is (`↓` moved onto it), or `undefined` when none is: it says what `Enter` does on that kind of row. */
-  readonly focusedRole: StripRole | undefined;
-  readonly emptyDraft: boolean;
-  readonly hasRecentSessions: boolean;
-  readonly hasParkedRuns: boolean;
-  /** What the focused parked row waits on, when that is the focused row: `Enter` opens its gate, or says why it cannot. */
-  readonly parkedFocusKind: ParkedRunKind | undefined;
-  /** A leg is executing and has a run `Enter` shows (the `▶` row says so too). */
+function paletteExtra(palette: OpenPalette | undefined, rows: number): number {
+  if (palette === undefined) return 0;
+  const entries = palette.list.entries;
+  const budget = paletteRowBudget(
+    rows,
+    entries.length,
+    paletteGapCount(entries.map((entry) => entry.groupStart)),
+  );
+  return Math.max(0, budget - 1 - LANDING_FOOT_ROWS);
+}
+
+/**
+ * The picker's list window on the landing and the blank rows that keep its hint on the frame's last row in the alternate screen: what the frame
+ * leaves under the prompt row (`room`), less the rule, the header and the hint, at most the size {@link mentionListRows} gives it (half the
+ * terminal, as the palette's), never under one. Nothing above the prompt row gives way for it: a long draft leaves the list fewer rows.
+ */
+function landingMentionFit(
+  mention: MentionState,
+  rows: number,
+  room: number,
+  alternateScreen: boolean,
+): { readonly listRows: number; readonly fillRows: number } {
+  const listRows = Math.max(
+    1,
+    Math.min(mentionListRows(rows, MENTION_WINDOW), room - MENTION_CHROME_ROWS),
+  );
+  const fillRows = alternateScreen ? Math.max(0, room - landingMentionRows(mention, listRows)) : 0;
+  return { listRows, fillRows };
+}
+
+/**
+ * The rows an open palette's block takes on the landing, from its prompt row down to its legend (OB72): half the terminal at most, as a chat's
+ * palette is ({@link chatPaletteRows}: 12 rows at 80×24, a window of eight entries and a marker), never what the terminal leaves under the prompt
+ * row, and never fewer than a window with both markers (`PALETTE_MIN_ROWS`). `rowsAbove` is the rows above the prompt row, the top gap included.
+ */
+function landingPaletteRows(palette: OpenPalette, rows: number, rowsAbove: number): number {
+  return Math.max(
+    PALETTE_MIN_ROWS,
+    Math.min(chatPaletteRows(rows, palette.list), frameRows(rows) - rowsAbove),
+  );
+}
+
+/**
+ * The blank rows that keep the palette's legend on the frame's last row in the alternate screen (the study's frame 11: the hint row does not
+ * walk up the screen as the query narrows the list); none inline, where the block is only as tall as it is. The list's lines are the window the
+ * palette draws for `budget` rows.
+ */
+function landingPaletteFill(
+  palette: OpenPalette,
+  budget: number,
+  room: number,
+  alternateScreen: boolean,
+): number {
+  if (!alternateScreen) return 0;
+  const entries = palette.list.rows;
+  const listLines =
+    entries.length === 0
+      ? 1
+      : paletteLines(
+          entries.length,
+          palette.state.index,
+          budget,
+          entries.map((entry) => entry.groupStart),
+          palette.list.layout,
+        ).length;
+  return Math.max(0, room - PALETTE_CHROME_ROWS - listLines);
+}
+
+/** The editor as a prompt that does not have the focus draws it: the same text, no cursor (`-1` is before the text: no row carries it). */
+function withoutCursor(editor: EditorState): EditorState {
+  return editor.cursor < 0 ? editor : { text: editor.text, cursor: -1 };
+}
+
+/** What both pages are built from, once per draw. */
+interface PageInput {
+  readonly view: HomeViewProps;
+  readonly page: HomePage;
+  readonly canContinue: boolean;
+  readonly counts: WorkCounts;
   readonly runCanBeShown: boolean;
-}): string {
-  if (state.interruptArmed) return 'Press Ctrl+C again to exit';
-  if (state.focusedRole === 'parked')
-    // The same words as the row's own cue: a row that has no gate to decide says why on `Enter`, and the bar must not promise a gate.
-    return `↑/↓ select · ${parkedHintCue(state.parkedFocusKind)} · Esc return to prompt · Ctrl+C twice to exit`;
-  if (state.focusedRole === 'session')
-    return '↑/↓ select session · Enter resume · Esc return to prompt · Ctrl+C twice to exit';
-  // A failed or recent run opens its detail (the run this Home hosts opens its view): read-only either way.
-  if (state.focusedRole !== undefined)
-    return '↑/↓ select · Enter open the run · Esc return to prompt · Ctrl+C twice to exit';
-  if (!state.emptyDraft) return 'Enter to start the chat · Ctrl+J newline · Ctrl+C twice to exit';
-  if (state.runCanBeShown) {
-    // With a run to come back to, `Enter` is the first thing to say; the line keeps one more door, and the chat is one keystroke away anyway.
-    const next = runHintNext(state.hasParkedRuns, state.hasRecentSessions);
-    return `/ commands · ${HOSTED_RUN_ENTER_CUE} · ${next} · Ctrl+C twice to exit`;
-  }
-  if (state.hasParkedRuns)
-    return '/ commands · ↓ Open a parked run · type a message to chat · Ctrl+C twice to exit';
-  return state.hasRecentSessions
-    ? '/ commands · ↓ Continue · type a message to chat · Ctrl+C twice to exit'
-    : '/ for commands · type a message to start a chat · Ctrl+C twice to exit';
+  readonly slashDraft: boolean;
 }
 
+/** What the landing's rows are made of, worked out once from the page, the notice and the palette (`home-layout.ts`'s one accounting). */
+interface LandingGeometry {
+  readonly noticeLayout: ReturnType<typeof layoutHomeNotice>;
+  readonly editorRows: number;
+  readonly topGap: number;
+  /** The rows above the prompt row, the top gap included: where the palette's block begins. */
+  readonly rowsAbove: number;
+}
+
+/**
+ * The landing's geometry: the notice laid out in the room the head, the prompt block and (while the palette is open) the palette's rows leave it,
+ * the editor's window in what the notice then leaves, and the top gap, which is the resting one unless the room runs out (then it is the first thing
+ * to go, and the palette's rows count in that room too). `promptEditor` is what the prompt row holds, `runRows` the hosted run's row as at rest.
+ */
+function landingGeometry(
+  input: PageInput,
+  palette: OpenPalette | undefined,
+  promptEditor: EditorState,
+  runRows: number,
+): LandingGeometry {
+  const { view } = input;
+  const { cols, rows } = view;
+  const showBlock = showsLandingBlock(view.showBanner);
+  const blockExtra = paletteExtra(palette, rows);
+  const noticeLayout = layoutHomeNotice({
+    notice: view.exitGuard === undefined ? view.notice : undefined,
+    editor: promptEditor,
+    cols,
+    rows,
+    showBanner: view.showBanner,
+    onLanding: true,
+    reservedRows: runRows + blockExtra,
+    ...(view.noticePage === undefined ? {} : { page: view.noticePage }),
+  });
+  const noticeRows = noticeLayout?.rowCount ?? 0;
+  // The editor's window leaves the notice its rows too: the head, the notice, the window and the four rows under it fit `rows − 1`.
+  const editorRows = landingEditorRows(rows, showBlock, { noticeRows, runRows });
+  const parts = {
+    promptRows: homePromptRows(promptEditor, homeContentColumns(cols), editorRows),
+    noticeRows,
+    runRows,
+  };
+  const topGap = landingTopGap(rows, view.alternateScreen === true, showBlock, {
+    ...parts,
+    runRows: runRows + blockExtra,
+  });
+  return {
+    noticeLayout,
+    editorRows,
+    topGap,
+    rowsAbove: topGap + landingRowsAbovePrompt(showBlock, parts),
+  };
+}
+
+/**
+ * The most urgent item of "Attention required" as page 1 names it (MVP-11 unit 7): the first of the one urgency order (`attentionOrder`), in
+ * the words `urgentHeadOf` builds (its stored name scrubbed and bounded there), marked as only the most urgent of those READ when more items
+ * wait than the Home read (the snapshot's true count against the items in hand), or none with nothing to continue or nothing under Attention.
+ */
+function urgentOf(input: PageInput): UrgentHead | undefined {
+  if (!input.canContinue) return undefined;
+  const { view } = input;
+  const items = attentionOrder(view.parkedRuns ?? NO_PARKED, view.snapshot, view.nowMs);
+  return urgentHeadOf(items, view.snapshot.totals.attention, view.nowMs);
+}
+
+/** The landing's hint row: the one notification of the Home's channel in its place for its few seconds, else the hint of the draft and the Home's state. */
+function landingHintOf(input: PageInput, editor: EditorState): HintRow {
+  const { view } = input;
+  if (view.notification !== undefined) return { text: view.notification };
+  return landingHint(
+    {
+      interruptArmed: view.interruptArmed === true,
+      draft: editor,
+      keyless: view.keyless === true,
+      runCanBeShown: input.runCanBeShown,
+      counts: input.counts,
+      urgent: urgentOf(input),
+      columns: homeContentColumns(view.cols),
+    },
+    displayWidth,
+  );
+}
+
+/**
+ * The landing (page 1, ADR-0146 §1): the block or the title, the notice, the prompt block with the hosted run's row under the status line, and
+ * the exit-guard card or the `/` palette where the prompt block would be. The landing's height is accounted in one place (`home-layout.ts`), and
+ * the things that size it from here (the notice's room, the top gap, the editor's window and the palette's rows) read that one accounting, so the
+ * landing is never taller than `rows − 1`.
+ *
+ * - The prompt is a window of at most `landingEditorRows` rows (OB71): a long draft shows the rows around the cursor and a `▲/▼ N more` marker.
+ * - The palette opens BELOW the prompt row and moves nothing above it (OB72, the study's frame 11): the top gap and the head are what they are
+ *   at rest, the query is typed on the prompt row, and the list takes the rows under the rule, at most half the terminal.
+ * - A notice stands in the blank rows above the prompt and leaves an open palette the rows its block needs.
+ *
+ * A plain function and not a component: it builds the run row's label from the glyph table, which reads the form in force while the view
+ * is built (`withGlyphForm` in {@link HomeView}), and a component renders after that scope has closed.
+ */
+function landingPage(
+  input: PageInput,
+  frame: RefObject<DOMElement | null> | undefined,
+): ReactElement {
+  const { view } = input;
+  const { cols, rows, color, exitGuard } = view;
+  // The palette opened on the page in front: the landing draws it only when it is that page (on the work page it runs up over the docked prompt).
+  const palette = input.page === 'start' ? view.palette : undefined;
+  // The `@` picker opened on the page in front: the landing draws it under its prompt row (on the work page it runs up over the docked prompt).
+  const mention = input.page === 'start' && palette === undefined ? view.mention : undefined;
+  const editor = input.page === 'start' ? view.editor : withoutCursor(view.editor);
+  const runRow = hostedRunLabel(view.hostedRun);
+  const promptShown = view.paletteOpen !== true && exitGuard === undefined && mention === undefined;
+  // The run's row is part of the prompt block (under the status line): the exit-guard card takes its place with the block's. The palette's
+  // and the picker's blocks take its place too, but the head must not move when one opens, so the row is counted as at rest.
+  const runRows =
+    runRow !== undefined && (promptShown || palette !== undefined || mention !== undefined) ? 1 : 0;
+  // What the prompt row holds: the draft, or the query typed on it while the palette is open.
+  const promptEditor = palette === undefined ? editor : paletteQueryEditor(palette.state.query);
+  // The `@` picker reserves nothing above the prompt row: the head and the top gap stay as they are at rest (the prompt row does not move), and
+  // the picker's list takes what the frame leaves under the prompt row (`landingMentionFit`).
+  const geometry = landingGeometry(input, palette, promptEditor, runRows);
+  const paletteRows =
+    palette === undefined ? 0 : landingPaletteRows(palette, rows, geometry.rowsAbove);
+  // `Enter` does something else first on the landing when the draft is a command or a run can be shown: the keyless line then promises only the word.
+  const enterIsTaken = input.slashDraft || (input.runCanBeShown && editor.text.length === 0);
+  return (
+    <Box ref={frame} flexDirection="column">
+      <HomeLanding
+        cols={cols}
+        color={color}
+        topGap={geometry.topGap}
+        showBlock={showsLandingBlock(view.showBanner)}
+        editor={editor}
+        editorRows={geometry.editorRows}
+        status={landingStatusOf(view, enterIsTaken)}
+        hint={landingHintOf(input, editor)}
+        runRow={runRow}
+        notice={geometry.noticeLayout}
+        promptShown={promptShown}
+      >
+        {exitGuard !== undefined && (
+          <ExitGuardCard
+            phase={exitGuard}
+            hostedRun={view.hostedRun}
+            color={color}
+            columns={homeContentColumns(cols)}
+            locked={view.exitGuardLocked}
+          />
+        )}
+        {mention !== undefined && exitGuard === undefined && (
+          <LandingMention
+            mention={mention}
+            editor={editor}
+            editorRows={geometry.editorRows}
+            cols={cols}
+            color={color}
+            {...landingMentionFit(
+              mention,
+              rows,
+              frameRows(rows) -
+                geometry.rowsAbove -
+                homePromptRows(editor, homeContentColumns(cols), geometry.editorRows),
+              view.alternateScreen === true,
+            )}
+          />
+        )}
+        {palette !== undefined && (
+          <LandingPalette
+            palette={palette}
+            cols={cols}
+            color={color}
+            maxRows={paletteRows}
+            fillRows={landingPaletteFill(
+              palette,
+              paletteRows,
+              frameRows(rows) - geometry.rowsAbove,
+              view.alternateScreen === true,
+            )}
+          />
+        )}
+      </HomeLanding>
+    </Box>
+  );
+}
+
+/** What the focused row is, for the hint's `Enter`: its role, and for a parked run what it waits on. */
+function rowCueOf(
+  focus: StripFocus | undefined,
+  view: HomeViewProps,
+  parked: readonly ParkedRunRow[],
+): WorkRowCue | undefined {
+  const row = stripRows(parked, view.snapshot).find((candidate) => isFocused(candidate, focus));
+  if (row === undefined) return undefined;
+  if (row.role === 'parked')
+    return { role: 'parked', waits: parked.find((run) => run.runId === row.id)?.kind };
+  return { role: row.role };
+}
+
+/**
+ * The work page (page 2): `home-work-page.tsx` draws it; this builds what it is told (the focused row's cue for the hint, the status row, the
+ * notice laid out for the work page, the block at the bottom and the exit-guard card).
+ */
+function workPage(input: PageInput, frame: RefObject<DOMElement | null> | undefined): ReactElement {
+  const { view } = input;
+  const { cols, rows, color, exitGuard } = view;
+  const palette = input.page === 'work' ? view.palette : undefined;
+  const mention = input.page === 'work' && palette === undefined ? view.mention : undefined;
+  const parked = view.parkedRuns ?? NO_PARKED;
+  const focus = input.page === 'work' ? view.stripFocus : undefined;
+  const cue = rowCueOf(focus, view, parked);
+  const promptFocused = input.page === 'work' && cue === undefined;
+  const editor = promptFocused ? view.editor : withoutCursor(view.editor);
+  const bottom = workBottomBlock({
+    exitGuard,
+    hostedRun: view.hostedRun,
+    palette,
+    paletteMaxRows: palette === undefined ? 0 : chatPaletteRows(rows, palette.list),
+    mention:
+      mention === undefined
+        ? undefined
+        : { state: mention, listRows: mentionListRows(rows, MENTION_WINDOW) },
+    editor,
+    cols,
+    rows,
+    color,
+  });
+  // The notice leaves an open palette what its block needs beyond the docked prompt's.
+  const docked = workBottomBlock({
+    exitGuard: undefined,
+    hostedRun: undefined,
+    palette: undefined,
+    paletteMaxRows: 0,
+    editor,
+    cols,
+    rows,
+    color,
+  });
+  const noticeLayout = layoutHomeNotice({
+    notice: exitGuard === undefined ? view.notice : undefined,
+    editor,
+    cols,
+    rows,
+    showBanner: view.showBanner,
+    onLanding: false,
+    hasSessions: view.snapshot.recentSessions.length > 0,
+    ...stripReach(parked, view.snapshot),
+    reservedRows: Math.max(0, bottom.rows - docked.rows),
+    ...(view.noticePage === undefined ? {} : { page: view.noticePage }),
+  });
+  const enterIsTaken =
+    cue !== undefined || input.slashDraft || (input.runCanBeShown && view.editor.text.length === 0);
+  const hint: HintRow =
+    view.notification === undefined
+      ? workHint(
+          {
+            interruptArmed: view.interruptArmed === true,
+            row: cue,
+            draft: view.editor,
+            keyless: view.keyless === true,
+            runCanBeShown: input.runCanBeShown,
+            hasRows: stripRows(parked, view.snapshot).length > 0,
+            columns: homeContentColumns(cols),
+          },
+          HOSTED_RUN_ENTER_ITEM,
+          displayWidth,
+        )
+      : { text: view.notification };
+  const budget = workListBudget(rows, bottom, noticeLayout);
+  // Built here, in the glyph form in force (`withGlyphForm` in `HomeView`): the rows carry the table's glyphs.
+  const sections = buildSections({
+    snapshot: view.snapshot,
+    parked,
+    focus,
+    budget,
+    columns: homeContentColumns(cols),
+    nowMs: view.nowMs,
+    color,
+  });
+  return (
+    <HomeWorkPage
+      frame={frame}
+      sections={sections}
+      budget={budget}
+      editor={editor}
+      promptFocused={promptFocused}
+      status={landingStatusOf(view, enterIsTaken)}
+      hint={hint}
+      notice={noticeLayout}
+      bottom={bottom}
+      guardCard={
+        exitGuard === undefined ? undefined : (
+          <ExitGuardCard
+            phase={exitGuard}
+            hostedRun={view.hostedRun}
+            color={color}
+            columns={homeContentColumns(cols)}
+            locked={view.exitGuardLocked}
+          />
+        )
+      }
+      cols={cols}
+      rows={rows}
+      color={color}
+    />
+  );
+}
+
+/**
+ * The Home's two pages. The rows are built in the glyph form the colour setting asks for (the plain forms when colour is off, ADR-0145 §5): the
+ * body runs inside {@link withGlyphForm}, so every table glyph a row carries is the form that is drawn and every row is measured on it.
+ */
 export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
-  const { snapshot, editor, errorText, notice, nowMs, cols, rows, color, paletteOpen } = props;
+  return withGlyphForm(!props.color, () => HomeViewBody(props));
+}
+
+function HomeViewBody(props: Readonly<HomeViewProps>): ReactElement {
+  const { snapshot, editor, cols, rows, color } = props;
   const interruptArmed = props.interruptArmed === true;
   const exitGuard = props.exitGuard;
   const parked = props.parkedRuns ?? NO_PARKED;
-  const parkedIds = new Set(parked.map((row) => row.runId));
-  const focus = props.stripFocus;
-  // The focused row, by identity, among the rows the strip lets `↓` reach (the controller keeps its focus on the same list).
-  const focusedRow = stripRows(parked, snapshot).find((row) => isFocused(row, focus));
-  const focusedParked =
-    focusedRow?.role === 'parked' ? parked.find((row) => row.runId === focusedRow.id) : undefined;
-  const runFocused = (runId: string): boolean => focus?.kind === 'run' && focus.id === runId;
-  const runCanBeShown = hostedRunCanBeShown(props.hostedRun);
-  // `Enter` at the empty prompt shows a live run, or opens the row of a focused run (a parked run's gate, a failed or recent run's detail),
-  // BEFORE it sets a provider up: while either is on offer the keyless line's own `Enter` would promise what the key does not do, so the
-  // line waits until neither is.
-  const keylessLine =
-    props.keyless === true &&
-    !runCanBeShown &&
-    (focusedRow === undefined || focusedRow.kind === 'session');
-  // Nothing to show means no parked run either: a run of this project that waits on an answer is something to show.
-  const isEmpty = homeIsEmpty(snapshot, parked);
   const frame = useRef<DOMElement | null>(null);
   useLayoutEffect(() => {
     props.onFrame?.(frame.current);
   });
 
-  // Below the minimum, render ONLY the resize line (+ the exit affordance) — the RootApp suspends the strip
+  // Below the minimum, render ONLY the resize line (+ the exit affordance) — the RootApp suspends the pages
   // until a resize arrives, so the user must still be able to leave without resizing.
   if (!homeFitsTerminal(cols, rows)) {
     return (
@@ -274,334 +634,51 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
         </Text>
         {exitGuard === undefined ? (
           <Text {...dimProps(color)} wrap="truncate-end">
-            {interruptArmed ? 'Press Ctrl+C again to exit' : 'Ctrl+C twice to exit'}
+            {legend([], interruptArmed ? EXIT_AGAIN : EXIT_TWICE)}
           </Text>
         ) : (
-          <ExitGuardCard phase={exitGuard} hostedRun={props.hostedRun} color={color} />
+          <ExitGuardCard
+            phase={exitGuard}
+            hostedRun={props.hostedRun}
+            color={color}
+            columns={cols}
+            locked={props.exitGuardLocked}
+          />
         )}
       </Box>
     );
   }
 
-  // Keyed by each row's durable id (gate: run+gate; run: runId; session: sessionId; agent: slug) — never the
-  // array index, so React reconciliation is stable as the strip's contents change between reads.
-  // Reserve terminal space for the keyless action and prompt; trim management rows first.
-  const showBanner = shouldShowBanner({
-    configShowBanner: props.showBanner,
-    isEmpty,
-    rows,
-  });
-  const promptHeight = homePromptRows(editor, cols);
-  // The `▶` row costs one row above the strip; the exit-guard card takes the place of the prompt block and holds the notice back.
-  const runRow = hostedRunLabel(props.hostedRun);
-  const runRows = runRow === undefined ? 0 : 1;
-  const guardRows =
-    exitGuard === undefined
-      ? undefined
-      : exitGuardLines(exitGuard, props.hostedRun, HOSTED_RUN_EXIT_BOUND_MS / 1000).length;
-  const palette = props.palette;
-  const paletteRows =
-    palette === undefined ? undefined : paletteRowBudget(rows, palette.commands.length);
-  // The notice leaves the palette what the prompt block would have left it (`homePromptRows + 3 + keyless`, the notice's own slack included)
-  // and the rest of the palette's rows (`paletteRows + 2`: the budget, the unused row and the same slack).
-  const keylessRows = keylessLine ? 1 : 0;
-  const paletteNoticeRows =
-    paletteRows === undefined ? 0 : Math.max(0, paletteRows + 2 - (promptHeight + 3 + keylessRows));
-  const noticeLayout = layoutHomeNotice({
-    notice: guardRows === undefined ? notice : undefined,
-    editor,
-    cols,
-    rows,
-    keyless: keylessLine,
-    errorText,
-    showBanner: props.showBanner,
-    isEmpty,
-    hasSessions: snapshot.recentSessions.length > 0,
-    ...stripReach(parked, snapshot),
-    reservedRows: runRows + paletteNoticeRows,
-    ...(props.noticePage === undefined ? {} : { page: props.noticePage }),
-  });
-  // Reserve all headings/margins and the whole editor before allocating management rows. An open palette takes the prompt's place and the
-  // rows `paletteRowBudget` names (and the one row no frame uses): the strip is trimmed to what is left, as it is for a long prompt.
-  const promptBlockRows = palette === undefined ? promptHeight + 2 + keylessRows : 0;
-  const reservedBelow =
-    (guardRows === undefined ? promptBlockRows : guardRows + 1) +
-    (paletteRows === undefined ? 0 : paletteRows + 1);
-  const welcomeRows = noticeLayout === undefined ? 4 : 0;
-  const fixedRows =
-    (showBanner ? 4 : 1) +
-    runRows +
-    (errorText === undefined ? 0 : 2) +
-    (noticeLayout === undefined ? 0 : noticeLayout.rowCount + 1) +
-    (isEmpty ? welcomeRows : 1);
-  const stripBudget = Math.max(0, rows - reservedBelow - fixedRows);
-  let remaining = stripBudget;
-  let attentionRemaining = Math.max(
-    0,
-    remaining - (snapshot.recentSessions.length > 0 ? 4 : 0) - 2,
-  );
-  // A focused failed run is drawn after the rows above it, so they leave it one row: the focused row is always one of the rows drawn.
-  const failedFocusIndex = snapshot.attention.failedRuns.findIndex((run) => runFocused(run.runId));
-  let attentionReserve = failedFocusIndex >= 0 ? 1 : 0;
-  const takeAttention = <T,>(items: readonly T[], max = attentionRemaining): readonly T[] => {
-    const room = Math.max(0, attentionRemaining - attentionReserve);
-    const selected = items.slice(0, Math.min(room, max));
-    attentionRemaining -= selected.length;
-    return selected;
+  // Nothing to continue: there is no work page, and the landing is the Home (ADR-0146 §1); a page the controller still names falls back to it.
+  const canContinue = !homeIsEmpty(snapshot, parked);
+  const page: HomePage = canContinue ? (props.page ?? 'start') : 'start';
+  const input: PageInput = {
+    view: props,
+    page,
+    canContinue,
+    counts: canContinue ? workCounts(snapshot) : NOTHING_TO_COUNT,
+    runCanBeShown: hostedRunCanBeShown(props.hostedRun),
+    // dispatch trims, so a line with blanks before its slash is a command too
+    slashDraft: editor.text.trimStart().startsWith('/'),
   };
-  // The parked runs of this project come first: they are the rows the person can act on from here. The window follows the focus, so the
-  // focused row is always one of the rows drawn.
-  const parkedFocusIndex = parked.findIndex((row) => runFocused(row.runId));
-  const parkedCapacity = Math.max(0, attentionRemaining - attentionReserve);
-  const parkedStart = Math.max(0, parkedFocusIndex - parkedCapacity + 1);
-  const parkedRows: (StripRow & { readonly overdue: boolean })[] = takeAttention(
-    parked.slice(parkedStart),
-  ).map((row) => ({
-    key: `parked:${row.runId}`,
-    line: `${runFocused(row.runId) ? '> ' : '  '}${parkedRunLabel(row, runFocused(row.runId), cols - PARKED_ROW_INDENT_COLUMNS, nowMs)}`,
-    overdue: parkedRunOverdue(row, nowMs),
-  }));
-  const unreadable = takeAttention(snapshot.unreadableRunIds, 3);
-  const gateRows = takeAttention(
-    snapshot.attention.gates.filter((g) => !parkedIds.has(g.runId)),
-  ).map((g) => ({
-    key: `${g.runId}:${g.gateId}`,
-    line: `⚠ ${gateLabel(g, nowMs)}`,
-    expired: gateExpired(g, nowMs),
-  }));
-  attentionReserve = 0; // the failed runs are the last of the Attention rows: what is left is theirs
-  const failedStart = Math.max(0, failedFocusIndex - attentionRemaining + 1);
-  const failed: StripRow[] = takeAttention(snapshot.attention.failedRuns.slice(failedStart)).map(
-    (r) => ({
-      key: r.runId,
-      line: `✗ ${runLabel(r, nowMs)}`,
-      selected: runFocused(r.runId),
-    }),
-  );
-  const attentionCount = parkedRows.length + unreadable.length + gateRows.length + failed.length;
-  if (attentionCount > 0) remaining -= attentionCount + 2;
-  let continueHeading = false;
-  const takeSection = <T,>(items: readonly T[], cost = 1, reserve = 0): readonly T[] => {
-    const chrome = continueHeading ? 1 : 2;
-    const selected = items.slice(0, Math.max(0, Math.floor((remaining - chrome - reserve) / cost)));
-    if (selected.length > 0) {
-      remaining -= chrome + selected.length * cost;
-      continueHeading = true;
-    }
-    return selected;
-  };
-  const recentRuns = snapshot.recentRuns.filter((r) => !parkedIds.has(r.runId));
-  const runFocusIndex = recentRuns.findIndex((r) => runFocused(r.runId));
-  // A focused recent run is drawn after the sessions, so they leave it its section's title and its own row.
-  const sessionReserve = runFocusIndex >= 0 ? 2 : 0;
-  const sessionCapacity = Math.max(0, Math.floor((remaining - 2 - sessionReserve) / 2));
-  const focusedIndex = snapshot.recentSessions.findIndex(
-    (s) => focus?.kind === 'session' && s.sessionId === focus.id,
-  );
-  const sessionStart = Math.max(0, focusedIndex - sessionCapacity + 1);
-  const sessions: StripRow[] = takeSection(
-    snapshot.recentSessions.slice(sessionStart),
-    2,
-    sessionReserve,
-  ).map((s) => ({
-    key: s.sessionId,
-    line: sessionLabel(s, nowMs),
-    hint: sanitizeInline(s.workingDir),
-    selected: focus?.kind === 'session' && s.sessionId === focus.id,
-  }));
-  const runCapacity = Math.max(0, remaining - (continueHeading ? 1 : 2));
-  const runStart = Math.max(0, runFocusIndex - runCapacity + 1);
-  const runs: StripRow[] = takeSection(recentRuns.slice(runStart)).map((r) => ({
-    key: r.runId,
-    line: runLabel(r, nowMs),
-    selected: runFocused(r.runId),
-  }));
-  const agents: StripRow[] = takeSection(snapshot.recentAgents).map((a) => ({
-    key: a.agentSlug,
-    line: agentLabel(a, nowMs),
-  }));
-
-  // What the landing above the palette draws, by the very accounting that sized it; the palette may take the rest, less the unused row.
-  const bodyRows =
-    fixedRows + (stripBudget - remaining) + (guardRows === undefined ? 0 : guardRows + 1);
-  const paletteMaxRows = Math.max(PALETTE_MIN_ROWS, rows - 1 - bodyRows);
-
-  // Nothing to show: a welcome in the strip's place, unless a notice (a `/doctor` report) holds its rows.
-  const welcome =
-    noticeLayout === undefined ? (
-      <Box flexDirection="column" marginLeft={2} marginTop={1}>
-        <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
-          Welcome to Relavium.
-        </Text>
-        <Text wrap="truncate-end">
-          Start an agent chat, then graduate it into a saved workflow.
-        </Text>
-        <Text {...dimProps(color)} wrap="truncate-end">
-          e.g. “summarize the files in this folder”
-        </Text>
-      </Box>
-    ) : null;
-
+  const offset = props.slideOffset;
+  if (offset === undefined || props.alternateScreen !== true || !canContinue)
+    return page === 'work' ? workPage(input, frame) : landingPage(input, frame);
+  // The slide: a window of `rows − 1` rows onto the landing and the work page stacked, the column moved up by the offset. Each page is exactly
+  // `rows − 1` tall in it, so an offset of `rows − 1` is the work page at rest and 0 the landing at rest.
+  const pageRows = frameRows(rows);
   return (
-    <Box ref={frame} flexDirection="column">
-      {showBanner ? (
-        // The banner REPLACES the plain heading rather than sitting above it, so nothing shifts when it is off.
-        // `color === false` covers both `NO_COLOR` and `--no-color`, and takes the ASCII glyphs with it (ADR-0068).
-        <Box flexDirection="column">
-          {bannerLines(cols, !color).map((line) => (
-            <Text
-              key={line.id}
-              {...(line.kind === 'tagline' ? dimProps(color) : colorProps(color, 'cyan'))}
-              {...(line.kind === 'wordmark' ? { bold: true } : {})}
-              wrap="truncate-end"
-            >
-              {line.text}
-            </Text>
-          ))}
+    <Box ref={frame} flexDirection="column" height={pageRows} overflow="hidden" flexShrink={0}>
+      <Box
+        flexDirection="column"
+        marginTop={-Math.max(0, Math.min(pageRows, offset))}
+        flexShrink={0}
+      >
+        <Box flexDirection="column" height={pageRows} overflow="hidden" flexShrink={0}>
+          {landingPage(input, undefined)}
         </Box>
-      ) : (
-        <Text {...colorProps(color, 'cyan')} bold wrap="truncate-end">
-          relavium
-        </Text>
-      )}
-
-      {runRow !== undefined && (
-        // The active run, in one line with its state as a word (ADR-0139 §3); nothing at all when no run is active.
-        <Box marginLeft={2}>
-          <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
-            {runRow}
-          </Text>
-        </Box>
-      )}
-
-      {isEmpty ? (
-        welcome
-      ) : (
-        <Box flexDirection="column" marginTop={1}>
-          {(parkedRows.length > 0 ||
-            gateRows.length > 0 ||
-            failed.length > 0 ||
-            unreadable.length > 0) && (
-            <Box flexDirection="column" marginBottom={1}>
-              <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
-                Attention required
-              </Text>
-              <Box flexDirection="column" marginLeft={2}>
-                {parkedRows.map((row) => (
-                  <Text
-                    key={row.key}
-                    {...colorProps(color, row.overdue ? 'red' : 'yellow')}
-                    wrap="truncate-end"
-                  >
-                    {row.line}
-                  </Text>
-                ))}
-                {/* #W15-15: a run whose event log cannot be read used to render as an ordinary run with
-                    nothing pending. Its gate detail is MISSING, not absent, and the Home is where a user
-                    comes to find out which run is broken. */}
-                {unreadable.map((runId) => (
-                  <Text
-                    key={`unreadable-${runId}`}
-                    {...colorProps(color, 'red')}
-                    wrap="truncate-end"
-                  >
-                    {'  '}
-                    {`⚠ ${unreadableRunLabel(runId)}`}
-                  </Text>
-                ))}
-                {gateRows.map((g) => (
-                  <Text
-                    key={g.key}
-                    {...colorProps(color, g.expired ? 'red' : 'yellow')}
-                    wrap="truncate-end"
-                  >
-                    {'  '}
-                    {g.line}
-                  </Text>
-                ))}
-                {failed.map((f) => (
-                  <Text key={f.key} {...colorProps(color, 'red')} wrap="truncate-end">
-                    {f.selected === true ? '> ' : '  '}
-                    {f.line}
-                  </Text>
-                ))}
-              </Box>
-            </Box>
-          )}
-          {(sessions.length > 0 || runs.length > 0 || agents.length > 0) && (
-            <>
-              <Text {...dimProps(color)} wrap="truncate-end">
-                Continue
-              </Text>
-              <Section title="Sessions" rows={sessions} color={color} />
-              <Section title="Runs" rows={runs} color={color} />
-              <Section title="Agents" rows={agents} color={color} />
-            </>
-          )}
-        </Box>
-      )}
-
-      {errorText !== undefined && (
-        <Box marginTop={1}>
-          <Text {...colorProps(color, 'red')} wrap="truncate-end">
-            couldn’t start the chat: {sanitizeInline(errorText)}
-          </Text>
-        </Box>
-      )}
-
-      {noticeLayout !== undefined && (
-        // The `/doctor` report — ONE dim Text holding the \n-joined block (no keyed list ⇒ no array-index key,
-        // mirroring chat-ink's warnings). NO `wrap="truncate-end"`: cli-truncate would drop whole lines from a
-        // multi-line string. Already sanitized at the source (formatDoctorReport).
-        <Box marginTop={1} flexDirection="column">
-          <Text {...dimProps(color)}>{noticeLayout.lines.join('\n')}</Text>
-          {noticeLayout.footer !== undefined && (
-            <Text {...dimProps(color)} wrap="truncate-end">
-              {noticeLayout.footer}
-            </Text>
-          )}
-        </Box>
-      )}
-
-      {exitGuard !== undefined && (
-        <Box marginTop={1} flexDirection="column">
-          <ExitGuardCard phase={exitGuard} hostedRun={props.hostedRun} color={color} />
-        </Box>
-      )}
-
-      {paletteOpen !== true && exitGuard === undefined && (
-        <Box marginTop={1} flexDirection="column">
-          {keylessLine && (
-            <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
-              Connect a provider to start chatting — Enter to set up or /providers.
-            </Text>
-          )}
-          <PromptEditor editor={editor} color={color} />
-          {/* The context-aware Home hint bar (2.5.C S6): at an empty prompt, surface the `/` palette (it only opens
-              from an empty buffer) alongside the start-a-chat affordance; once composing, swap to the submit hint
-              (which surfaces Ctrl+J for a newline). */}
-          <Text {...dimProps(color)} wrap="truncate-end">
-            {homeHint({
-              interruptArmed,
-              focusedRole: focusedRow?.role,
-              emptyDraft: editor.text.length === 0,
-              hasRecentSessions: snapshot.recentSessions.length > 0,
-              hasParkedRuns: parked.length > 0,
-              parkedFocusKind: focusedParked?.kind,
-              runCanBeShown,
-            })}
-          </Text>
-        </Box>
-      )}
-
-      {palette !== undefined && (
-        <PaletteView
-          commands={palette.commands}
-          state={palette.state}
-          color={color}
-          maxRows={paletteMaxRows}
-        />
-      )}
+        {workPage(input, undefined)}
+      </Box>
     </Box>
   );
 }

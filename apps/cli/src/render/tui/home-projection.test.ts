@@ -1,25 +1,22 @@
 import { describe, expect, it } from 'vitest';
 
-import type { HomeGateRow, HomeRunRow, HomeSessionRow } from '../../home/home-store.js';
+import type { HomeRunRow, HomeSessionRow } from '../../home/home-store.js';
 import type { RunHostSnapshot } from '../../home/run-host.js';
 import {
   agentLabel,
   EXIT_GUARD_GLYPH,
   exitGuardLines,
   expiryLabel,
-  gateExpired,
-  gateLabel,
   homeFitsTerminal,
   hostedRunIsLive,
   hostedRunLabel,
   HOME_MIN_COLS,
   HOME_MIN_ROWS,
-  relativeTime,
   runLabel,
   sessionLabel,
-  shortId,
   tooSmallMessage,
 } from './home-projection.js';
+import { formatAgeOfIso, shortId } from '../notation.js';
 
 const NOW = Date.parse('2026-06-28T12:00:00.000Z');
 const ago = (ms: number): string => new Date(NOW - ms).toISOString();
@@ -40,22 +37,22 @@ describe('homeFitsTerminal / tooSmallMessage', () => {
   });
 });
 
-describe('relativeTime', () => {
+describe('the age of a stamp on a Home row', () => {
   it('buckets sub-minute / minutes / hours / days, and treats a future skew as "just now"', () => {
-    expect(relativeTime(ago(5_000), NOW)).toBe('just now');
-    expect(relativeTime(ahead(5_000), NOW)).toBe('just now'); // clock skew, not a negative count
-    expect(relativeTime(ago(5 * MIN), NOW)).toBe('5m ago');
-    expect(relativeTime(ago(3 * HR), NOW)).toBe('3h ago');
-    expect(relativeTime(ago(2 * DAY), NOW)).toBe('2d ago');
+    expect(formatAgeOfIso(ago(5_000), NOW)).toBe('just now');
+    expect(formatAgeOfIso(ahead(5_000), NOW)).toBe('just now'); // clock skew, not a negative count
+    expect(formatAgeOfIso(ago(5 * MIN), NOW)).toBe('5m ago');
+    expect(formatAgeOfIso(ago(3 * HR), NOW)).toBe('3h ago');
+    expect(formatAgeOfIso(ago(2 * DAY), NOW)).toBe('2d ago');
   });
 
   it('pins the 60-second bucket boundary (59s is "just now", 60s is "1m ago")', () => {
-    expect(relativeTime(ago(59_000), NOW)).toBe('just now');
-    expect(relativeTime(ago(60_000), NOW)).toBe('1m ago');
+    expect(formatAgeOfIso(ago(59_000), NOW)).toBe('just now');
+    expect(formatAgeOfIso(ago(60_000), NOW)).toBe('1m ago');
   });
 
   it('returns "" for an unparseable timestamp (the strip renders nothing, never NaN)', () => {
-    expect(relativeTime('not-a-date', NOW)).toBe('');
+    expect(formatAgeOfIso('not-a-date', NOW)).toBe('');
   });
 });
 
@@ -80,7 +77,6 @@ describe('expiryLabel', () => {
 describe('row labels', () => {
   const sessionRow = (over: Partial<HomeSessionRow> = {}): HomeSessionRow => ({
     sessionId: 's1',
-    workingDir: '/workspace',
     title: 'Plan the launch',
     agentSlug: 'planner',
     modelId: 'claude-opus-4-8',
@@ -104,13 +100,10 @@ describe('row labels', () => {
   });
 
   it('sessionLabel: title · agent · when · cost; falls back to the agent slug when untitled', () => {
-    expect(sessionLabel(sessionRow(), NOW)).toBe(
-      'Plan the launch  ·  planner  ·  5m ago  ·  $1.2000',
-    );
+    // MVP-11 unit 7: the work page's rows are joined by the legend's own ` · ` (the maintainer's simplified rows).
+    expect(sessionLabel(sessionRow(), NOW)).toBe('Plan the launch · planner · 5m ago · $1.2000');
     // Untitled ⇒ the agent slug is the label, shown ONCE (not doubled as title-fallback + trailing field).
-    expect(sessionLabel(sessionRow({ title: undefined }), NOW)).toBe(
-      'planner  ·  5m ago  ·  $1.2000',
-    );
+    expect(sessionLabel(sessionRow({ title: undefined }), NOW)).toBe('planner · 5m ago · $1.2000');
   });
 
   it.each([0, 120_000_000])('qualifies both Home monetary leaves at %i microcents', (amount) => {
@@ -157,7 +150,8 @@ describe('row labels', () => {
       runLabel(runRow(verified), NOW),
       sessionLabel(sessionRow(verified), NOW),
     ]) {
-      expect(label.endsWith(amount === 0 ? 'free' : '$1.2000')).toBe(true);
+      // a field of its own (a run row ends with its short id since MVP-11 unit 7, so the cost is no longer last)
+      expect(label.split(' · ')).toContain(amount === 0 ? 'free' : '$1.2000');
     }
   });
 
@@ -170,27 +164,22 @@ describe('row labels', () => {
   });
 
   it('runLabel: completed anchors on completedAt; falls back to a short id with no slug', () => {
-    expect(runLabel(runRow(), NOW)).toBe('deploy  ·  completed  ·  1h ago  ·  free');
+    // MVP-11 unit 7: every run row ends with its short id, so a run with no slug is named by that id alone (not twice).
+    expect(runLabel(runRow(), NOW)).toBe('deploy · completed · 1h ago · free · aabbccdd');
     expect(runLabel(runRow({ workflowSlug: undefined }), NOW)).toBe(
-      `${shortId(runRow().runId)}  ·  completed  ·  1h ago  ·  free`,
+      `completed · 1h ago · free · ${shortId(runRow().runId)}`,
     );
   });
 
-  it('runLabel: a run recorded for another project says so after its cost, and a run of this one does not', () => {
+  it('runLabel: a paused run anchors on startedAt and carries no project marker (every run the Home lists is this directory’s)', () => {
     const paused = runRow({ status: 'paused', startedAt: ago(1 * HR), completedAt: undefined });
-    expect(runLabel(paused, NOW), 'same project (or none recorded): no marker').toBe(
-      'deploy  ·  paused  ·  1h ago  ·  free',
-    );
-    expect(runLabel({ ...paused, project: '~/code/other-app' }, NOW)).toBe(
-      'deploy  ·  paused  ·  1h ago  ·  free  ·  other project',
-    );
-    // The marker is a fixed phrase: the other project's root is data and never reaches the line.
-    expect(runLabel({ ...paused, project: '~/code/other-app' }, NOW)).not.toContain('other-app');
+    expect(runLabel(paused, NOW)).toBe('deploy · paused · 1h ago · free · aabbccdd');
+    expect(runLabel(paused, NOW)).not.toContain('other project');
   });
 
   it('runLabel: a RUNNING run anchors on startedAt (not completedAt/createdAt)', () => {
     const run = runRow({ status: 'running', startedAt: ago(10 * MIN), completedAt: undefined });
-    expect(runLabel(run, NOW)).toBe('deploy  ·  running  ·  10m ago  ·  free');
+    expect(runLabel(run, NOW)).toBe('deploy · running · 10m ago · free · aabbccdd');
   });
 
   it('runLabel: a queued run (no started/completed) falls back to createdAt', () => {
@@ -200,46 +189,12 @@ describe('row labels', () => {
       startedAt: undefined,
       completedAt: undefined,
     });
-    expect(runLabel(run, NOW)).toBe('deploy  ·  pending  ·  3m ago  ·  free');
-  });
-
-  it('gateLabel: workflow · gateType · message · expiry urgency; sanitizes the message', () => {
-    const gate: HomeGateRow = {
-      runId: 'r1',
-      workflowSlug: 'deploy',
-      gateId: 'g1',
-      gateType: 'approval',
-      nodeId: 'g',
-      message: 'ship\x1b[0m it?',
-      expiresAt: ahead(5 * MIN),
-    };
-    expect(gateLabel(gate, NOW)).toBe('deploy  ·  approval  ·  ship it?  ·  expires in 5m');
-    // A free-form gate message with a newline must NOT forge a second row in the one-line Attention strip.
-    const injected = gateLabel({ ...gate, message: 'Approve?\nFAKE PROMPT:' }, NOW);
-    expect(injected).not.toMatch(/[\n\t]/);
-    expect(injected).not.toContain('\x1b');
-    expect(injected).toContain('Approve? FAKE PROMPT:');
-  });
-
-  it('gateLabel + gateExpired flag an overdue gate (the renderer escalates it yellow → red)', () => {
-    const base: HomeGateRow = {
-      runId: 'r1',
-      workflowSlug: 'deploy',
-      gateId: 'g1',
-      gateType: 'approval',
-      nodeId: 'g',
-      message: 'ship it?',
-      expiresAt: ago(MIN), // a minute past its deadline
-    };
-    expect(gateLabel(base, NOW)).toBe('deploy  ·  approval  ·  ship it?  ·  expired');
-    expect(gateExpired(base, NOW)).toBe(true);
-    expect(gateExpired({ ...base, expiresAt: ahead(5 * MIN) }, NOW)).toBe(false); // still has time
-    expect(gateExpired({ ...base, expiresAt: undefined }, NOW)).toBe(false); // no deadline ⇒ not overdue
+    expect(runLabel(run, NOW)).toBe('deploy · pending · 3m ago · free · aabbccdd');
   });
 
   it('agentLabel: slug · last used', () => {
     expect(agentLabel({ agentSlug: 'coder', lastUsedAt: ago(3 * DAY) }, NOW)).toBe(
-      'coder  ·  3d ago',
+      'coder · 3d ago',
     );
   });
 });
@@ -271,14 +226,18 @@ const ENDED_LAST: RunHostSnapshot = {
 
 describe('the run row of the strip (ADR-0139 §3)', () => {
   it('shows the active run’s id and its state as a word, behind a glyph, in one line', () => {
-    expect(hostedRunLabel(running(false))).toBe(`▶ ${RUN_ID}  ·  running  ·  Enter shows it`);
-    expect(hostedRunLabel(running(true))).toBe(`▶ ${RUN_ID}  ·  cancelling  ·  Enter shows it`);
+    expect(hostedRunLabel(running(false))).toBe(
+      `◐ ${shortId(RUN_ID)}  ·  running  ·  Enter show it`,
+    );
+    expect(hostedRunLabel(running(true))).toBe(
+      `■ ${shortId(RUN_ID)}  ·  cancelling  ·  Enter show it`,
+    );
     expect(hostedRunLabel(running(false))).not.toContain('\n');
   });
 
   it('says it is starting while the engine has not named the run yet', () => {
     expect(hostedRunLabel({ launching: true, active: undefined, last: undefined })).toBe(
-      '▶ run  ·  starting',
+      '◌ run  ·  starting',
     );
     expect(
       hostedRunLabel({
@@ -286,7 +245,7 @@ describe('the run row of the strip (ADR-0139 §3)', () => {
         active: { leg: 'start', runId: undefined, cancelling: false },
         last: undefined,
       }),
-    ).toBe('▶ run  ·  starting');
+    ).toBe('◌ run  ·  starting');
   });
 
   it('is nothing at all when no run is active: no host, an idle host, and a host whose last leg ended', () => {
@@ -319,14 +278,14 @@ describe('the exit-guard card text (ADR-0139 §6)', () => {
     const lines = exitGuardLines('confirm', running(false), 10);
     expect(lines[0]).toBe(`${EXIT_GUARD_GLYPH.warning} A workflow run is executing: ${RUN_ID}.`);
     expect(lines.join('\n')).toContain('a stopped run cannot be resumed');
-    expect(lines.at(-1)).toBe('Ctrl+Y stop the run and leave · Esc, Ctrl+C or Ctrl+N stay');
+    expect(lines.at(-1)).toBe('[Ctrl+Y] stop the run and leave · Esc / [Ctrl+C] / [Ctrl+N] stay');
     for (const line of lines) expect(line.length, line).toBeLessThanOrEqual(78);
   });
 
   it('says the run is already stopping, and names the wait', () => {
     const lines = exitGuardLines('confirm', running(true), 13);
     expect(lines[0]).toBe(`${EXIT_GUARD_GLYPH.warning} The run is stopping: ${RUN_ID}.`);
-    expect(lines[1]).toContain('(about 13 s)');
+    expect(lines[1]).toContain('(about 13s)');
     for (const line of lines) expect(line.length, line).toBeLessThanOrEqual(78);
   });
 
@@ -339,6 +298,6 @@ describe('the exit-guard card text (ADR-0139 §6)', () => {
   it('says it is stopping once the person confirmed, and for how long the Home waits', () => {
     const lines = exitGuardLines('stopping', running(true), 13);
     expect(lines[0]).toBe(`${EXIT_GUARD_GLYPH.stopping} Stopping the run…`);
-    expect(lines[1]).toContain('within about 13 s');
+    expect(lines[1]).toContain('within about 13s');
   });
 });

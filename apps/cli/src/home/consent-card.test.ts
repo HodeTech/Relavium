@@ -13,7 +13,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { parseWorkflow } from '@relavium/core';
-import type { Key } from 'ink';
+import { render, type Key } from 'ink';
+import { createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -26,12 +27,13 @@ import { connectWorkflowMcp } from '../engine/mcp-servers.js';
 import { isCliError } from '../process/errors.js';
 import type { GlobalOptions } from '../process/options.js';
 import { flush } from '../render/tui/harness-util.js';
+import { NativePromptHost } from '../render/tui/native-prompt-host.js';
 import {
   createNativePromptChannel,
   NATIVE_PROMPT_BACK,
   NATIVE_PROMPT_CANCEL,
 } from '../render/tui/native-prompt-channel.js';
-import { captureIo } from '../test-support.js';
+import { captureIo, OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
 import {
   askConsent,
   consentCardText,
@@ -401,6 +403,103 @@ describe('askConsent returns a decision and nothing else', () => {
     controller.abort();
     expect(await askConsent(chord, subject(), { signal: controller.signal })).toBe('refuse');
     expect(chord.chord).not.toHaveBeenCalled();
+  });
+});
+
+describe('a path at the gate`s bound is painted whole at 80x24, and a longer one is never painted cut', () => {
+  /** A path of exactly `length` characters, in segments as a real deep path has them. */
+  const pathOf = (length: number): string => {
+    let text = '/Users/ada/projects/app/node_modules/.pnpm';
+    while (text.length < length) text += `/${'segment-'.padEnd(40, 'x')}`;
+    return text.slice(0, length);
+  };
+
+  /** Paint the card of `subject` at 80x24 in the native prompt host: whether it was drawn whole and measured visible, and the frames. */
+  async function paintAt80x24(
+    over: Partial<ConsentSubject>,
+  ): Promise<{ outcome: 'whole' | 'does-not-fit'; painted: string }> {
+    const input = new OwnedTtyInput();
+    const output = new OwnedTtyOutput();
+    const stderr = new OwnedTtyOutput();
+    output.columns = 80;
+    output.rows = 24;
+    const channel = createNativePromptChannel();
+    const instance = render(
+      createElement(NativePromptHost, {
+        ui: channel.ui,
+        color: false,
+        onRendererReady: () => undefined,
+      }),
+      {
+        stdin: input,
+        stdout: output,
+        stderr,
+        interactive: true,
+        exitOnCtrlC: false,
+        patchConsole: false,
+        alternateScreen: false,
+      },
+    );
+    try {
+      channel.flow.begin();
+      const asked = askConsent(
+        channel.flow,
+        subject({
+          artifact: '/Users/ada/projects/app/flows/agent.yaml',
+          authoredCommand: './node_modules/.bin/docs-server',
+          digest: `v1:${'a'.repeat(64)}`,
+          ...over,
+        }),
+      );
+      let outcome: 'whole' | 'does-not-fit' = 'does-not-fit';
+      await vi.waitFor(
+        () => {
+          const card = channel.ui.getSnapshot();
+          expect(card.kind).toBe('chord');
+          if (output.frames.join('').includes('Prompt does not fit')) return;
+          channel.ui.assertVisible(card);
+          outcome = 'whole';
+        },
+        { timeout: WAIT_MS },
+      );
+      channel.flow.cancel();
+      expect(await asked).toBe('refuse');
+      await channel.flow.end();
+      // The rows as text: cursor and erase sequences, the gutter and every line break and padding taken out.
+      const painted = output.frames
+        .join('')
+        .replace(new RegExp(String.raw`\u001B\[[0-9;?]*[A-Za-z]`, 'g'), '')
+        .replace(/│/g, '')
+        .replace(/\s+/g, '');
+      return { outcome, painted };
+    } finally {
+      channel.ui.dispose();
+      instance.unmount();
+      input.destroy();
+      output.destroy();
+      stderr.destroy();
+    }
+  }
+
+  it('the executable and its directory, both at 520 characters (the gate`s MAX_PATH_CHARS), are drawn whole: every character of both', async () => {
+    const executable = pathOf(520);
+    const directory = `${pathOf(519)}d`;
+    const { outcome, painted } = await paintAt80x24({
+      resolvedCommand: executable,
+      cwd: directory,
+    });
+    expect(outcome).toBe('whole');
+    expect(painted).toContain(executable);
+    expect(painted).toContain(directory);
+  });
+
+  it('a card too tall for the terminal is not drawn at all, so no path is ever drawn cut', async () => {
+    const { outcome, painted } = await paintAt80x24({
+      resolvedCommand: pathOf(1000),
+      cwd: pathOf(1000),
+    });
+    expect(outcome).toBe('does-not-fit');
+    expect(painted).not.toContain(pathOf(300));
   });
 });
 

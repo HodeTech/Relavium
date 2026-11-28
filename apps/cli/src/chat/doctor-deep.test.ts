@@ -3,10 +3,11 @@ import type { ManagerSkippedTool } from '@relavium/mcp';
 import type { McpServerRef } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ProviderResolver } from '../engine/providers.js';
+import { KNOWN_PROVIDER_IDS, KNOWN_PROVIDERS, type ProviderResolver } from '../engine/providers.js';
 import { CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
 import { SessionWorkOwner } from './session-work-owner.js';
+import { formatDoctorReport } from './doctor.js';
 import { buildProviderProbe, mcpSessionChecks } from './doctor-deep.js';
 
 // A test key assembled at runtime (no contiguous secret literal — leakwatch).
@@ -97,7 +98,8 @@ describe('buildProviderProbe', () => {
       candidateIds: ['anthropic'],
     });
     const [check] = await probe();
-    expect(check).toMatchObject({ id: 'provider:anthropic', status: 'ok' });
+    // The id stays the machine key; the label is the provider as a person reads it (ADR-0145 §8).
+    expect(check).toMatchObject({ id: 'provider:anthropic', label: 'Anthropic', status: 'ok' });
     expect(check?.detail).toContain('key works');
     // The key reached generate but never the detail.
     expect(generate).toHaveBeenCalledWith(expect.anything(), TEST_KEY);
@@ -169,10 +171,30 @@ describe('buildProviderProbe', () => {
 });
 
 describe('mcpSessionChecks (read-only session status — never connects)', () => {
-  it('warns when the agent declares no MCP servers', () => {
+  it('says "none configured" as an ok row when the agent declares no MCP servers: nothing was asked of one, so nothing is wrong', () => {
     expect(mcpSessionChecks([], [])).toEqual([
-      { id: 'mcp', label: 'MCP servers', status: 'warn', detail: 'none configured' },
+      { id: 'mcp', label: 'MCP servers', status: 'ok', detail: 'none configured' },
     ]);
+  });
+
+  it('a healthy deep run with no MCP server configured is headed "all checks passed", not as a warning', () => {
+    const report = formatDoctorReport({
+      checks: [
+        { id: 'keychain', label: 'OS keychain', status: 'ok', detail: 'reachable' },
+        { id: 'provider:anthropic', label: 'Anthropic', status: 'ok', detail: 'key works' },
+        ...mcpSessionChecks([], []),
+      ],
+    });
+    expect(report.split('\n')[0]).toContain('doctor: all checks passed');
+    expect(report).not.toContain('warning');
+    expect(report).toContain('MCP servers: none configured');
+  });
+
+  it('a tool the manager skipped is still a warning: the exemption is for "none configured" only', () => {
+    const report = formatDoctorReport({
+      checks: mcpSessionChecks([ref('fs')], [skip('fs', 'read', 'schema refused')]),
+    });
+    expect(report.split('\n')[0]).toContain('doctor: 1 warning(s)');
   });
 
   it('reports each declared server as connected (a live session means the fail-loud connect succeeded)', () => {
@@ -200,4 +222,26 @@ describe('mcpSessionChecks (read-only session status — never connects)', () =>
       label: 'shared-fs',
     });
   });
+});
+
+describe('the deep probe asks each provider with its own starter model (MVP-11 unit 6, round 1 test gap S09)', () => {
+  it.each(KNOWN_PROVIDER_IDS)(
+    'the probe of %s sends the table entry of that provider, never another provider’s',
+    async (id) => {
+      const generate = vi.fn(() =>
+        Promise.resolve({} as Awaited<ReturnType<LlmProvider['generate']>>),
+      );
+      const probe = buildProviderProbe({
+        resolver: resolverWith({ [id]: { ...fakeProvider(generate), id } }, { [id]: TEST_KEY }),
+        candidateIds: [id],
+      });
+      const checks = await probe();
+      expect(checks).toHaveLength(1);
+      expect(generate).toHaveBeenCalledTimes(1);
+      expect(generate).toHaveBeenCalledWith(
+        expect.objectContaining({ model: KNOWN_PROVIDERS[id].starterModel }),
+        TEST_KEY,
+      );
+    },
+  );
 });

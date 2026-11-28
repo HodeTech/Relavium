@@ -285,13 +285,15 @@ test('secrets workload corrections retain independent complete-count and reader-
   assert.equal(secretsControls.length, 139);
   assert.equal(
     secretsControls.reduce((count, control) => count + 1 + (control.witnesses ?? []).length, 0),
-    549,
+    // 552 since MVP-11 unit 6 (was 549): the remembered first-run skip is the sixth config writer, a witness of its own in
+    // `startup-writer-mode-observation` ('ask', 'absent') and in `startup-writer-read-failure` ('invalid').
+    552,
   );
   for (const [id, file, expectedTests] of [
     ['run-default-secret-reader', 'apps/cli/src/commands/run.test.ts', 85],
     ['snapshot-run-warning', 'apps/cli/src/commands/run.test.ts', 85],
-    ['gate-consumed-stdin-prompt-authority', 'apps/cli/src/commands/gate.test.ts', 76],
-    ['export-command-review-notice', 'apps/cli/src/commands/chat-export.test.ts', 18],
+    ['gate-consumed-stdin-prompt-authority', 'apps/cli/src/commands/gate.test.ts', 77],
+    ['export-command-review-notice', 'apps/cli/src/commands/chat-export.test.ts', 20],
     // Seventeen interruption-disclosure and five denial-printer cases extend 143; MVP-4's chat `/permissions` cases and the chat-mode wiring take it to 171; MVP-8 step 3's /workflows case takes it to 172; MVP-8 step 5 and its follow-ups (the /agent, /agents, /import and /pricing entries and the typed-word rule) take it to 185.
     ['export-live-review-notice', 'apps/cli/src/commands/chat.test.ts', 185],
     ['export-live-interactive-notice-routing', 'apps/cli/src/commands/chat.test.ts', 185],

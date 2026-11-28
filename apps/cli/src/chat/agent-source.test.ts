@@ -97,7 +97,10 @@ describe('resolveChatAgent', () => {
       provider: 'anthropic',
     });
     for (const id of ['openai', 'gemini', 'deepseek'] as const) {
-      expect(resolve([id])).toMatchObject({ model: KNOWN_PROVIDERS[id].testModel, provider: id });
+      expect(resolve([id])).toMatchObject({
+        model: KNOWN_PROVIDERS[id].starterModel,
+        provider: id,
+      });
     }
     // In KNOWN_PROVIDER_IDS order when several are keyed.
     expect(resolve(['deepseek', 'gemini'])).toMatchObject({ provider: 'gemini' });
@@ -128,7 +131,7 @@ describe('resolveChatAgent', () => {
         defaultProvider: 'gemini',
         hasKey: keyedOpenAi,
       }),
-    ).toMatchObject({ model: KNOWN_PROVIDERS.gemini.testModel, provider: 'gemini' });
+    ).toMatchObject({ model: KNOWN_PROVIDERS.gemini.starterModel, provider: 'gemini' });
   });
 
   it('bakes opts.reasoningEffort onto the DEFAULT agent (ADR-0066)', () => {

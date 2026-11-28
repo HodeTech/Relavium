@@ -42,6 +42,12 @@ function texts(input: HostedRunTerminalInput): string[] {
   return card.remedy === undefined ? [card.headline] : [card.headline, card.remedy];
 }
 
+/** The remedy as the shell line printed after the Home has closed carries it (`RunHost.exitFacts` reads exactly this). */
+function exitRemedy(input: HostedRunTerminalInput): string | undefined {
+  const card = describeHostedRunTerminal(input);
+  return card.shellRemedy ?? card.remedy;
+}
+
 function hasControl(text: string): boolean {
   for (const char of text) {
     const code = char.codePointAt(0) ?? 0;
@@ -58,11 +64,14 @@ describe('the disposition of a departed hosted leg', () => {
     expect(card.remedy).toBeUndefined();
   });
 
-  it('failed: a run:failed names the log, whatever its stored error code', () => {
+  it('failed: a run:failed names where the log is read, whatever its stored error code', () => {
     const card = describeHostedRunTerminal(leg({ outcome: 'failed' }));
     expect(card).toMatchObject({ disposition: 'failed', safety: undefined });
     expect(card.headline).toBe('Run run-hosted-1 failed.');
-    expect(card.remedy).toBe('Read `relavium logs run-hosted-1` for the cause.');
+    // The card is inside the TUI: the action is the Home's own browser, never a shell command (ADR-0146 §6, MVP-11 OD-20).
+    expect(card.remedy).toBe('Read the run in /workflows, then [h] for the cause.');
+    // The line the shell receives after the Home has closed has no `/workflows` to open, so it keeps the command.
+    expect(card.shellRemedy).toBe('Read `relavium logs run-hosted-1` for the cause.');
   });
 
   it('failed: a stream that ended with no outcome is a failure that says so', () => {
@@ -134,7 +143,8 @@ describe('the disposition of a departed hosted leg', () => {
     const card = describeHostedRunTerminal(leg({ outcome: undefined, durability: 'uncertain' }));
     expect(card).toMatchObject({ disposition: 'taken_over', safety: 6 });
     expect(card.headline).toContain('taken over by another process');
-    expect(card.remedy).toBe('Read `relavium logs run-hosted-1` for what actually happened.');
+    expect(card.remedy).toBe('Read the run in /workflows, then [h] for what actually happened.');
+    expect(card.shellRemedy).toBe('Read `relavium logs run-hosted-1` for what actually happened.');
   });
 
   it('taken over: a buffered stale pause is still a fence, not a pause', () => {
@@ -189,7 +199,13 @@ describe('the card agrees with the shell and is data only', () => {
   it('is frozen, and reads nothing but the plain facts it is given', () => {
     const card = describeHostedRunTerminal(leg({}));
     expect(Object.isFrozen(card)).toBe(true);
-    expect(Object.keys(card).sort()).toEqual(['disposition', 'headline', 'remedy', 'safety']);
+    expect(Object.keys(card).sort()).toEqual([
+      'disposition',
+      'headline',
+      'remedy',
+      'safety',
+      'shellRemedy',
+    ]);
   });
 
   it('says the same words for the same disposition whatever the stored terminal error is', () => {
@@ -250,9 +266,11 @@ describe('a command line the card offers carries only an id the shell takes as o
     '',
     'a'.repeat(200),
   ];
-  /** Every backticked run of a card's text: the commands a person may copy. */
+  /** Every backticked run of the text a person may copy: the headline and the shell line that follows the Home's closing. */
   const commandsOf = (input: HostedRunTerminalInput): string[] =>
-    texts(input).flatMap((text) => [...text.matchAll(/`([^`]*)`/g)].map((match) => match[1] ?? ''));
+    [describeHostedRunTerminal(input).headline, exitRemedy(input) ?? ''].flatMap((text) =>
+      [...text.matchAll(/`([^`]*)`/g)].map((match) => match[1] ?? ''),
+    );
   const dispositions: readonly [string, Partial<HostedRunTerminalInput>][] = [
     ['failed', { outcome: 'failed' }],
     ['no outcome', { outcome: undefined }],
@@ -263,7 +281,7 @@ describe('a command line the card offers carries only an id the shell takes as o
   ];
 
   it.each(HOSTILE_IDS)(
-    'id %j is never inside a command, on any card that names the shell',
+    'id %j is never inside a command, on any text that names the shell',
     (id) => {
       for (const [name, over] of dispositions) {
         const commands = commandsOf(leg({ ...over, runId: id }));
@@ -275,18 +293,30 @@ describe('a command line the card offers carries only an id the shell takes as o
     },
   );
 
-  it('the id is still named, in prose, so the person can find the run', () => {
-    const remedy = describeHostedRunTerminal(
-      leg({ outcome: 'failed', runId: 'x; rm -rf ~' }),
-    ).remedy;
-    expect(remedy).toBe('Read `relavium logs` (for run x; rm -rf ~) for the cause.');
+  it('the card inside the TUI names no shell command and no id in its remedy, but the one held-outbox case', () => {
+    for (const id of HOSTILE_IDS) {
+      for (const [name, over] of dispositions) {
+        const remedy = describeHostedRunTerminal(leg({ ...over, runId: id })).remedy ?? '';
+        // The one remedy that stays a shell command: an outbox-held end is reported by `relavium status` and by nothing in the Home.
+        if (name === 'held terminal') continue;
+        expect(remedy, `${name}: ${id}`).not.toMatch(/relavium (logs|status|gate)|`/u);
+        expect(remedy, `${name}: ${id}`).toContain('/workflows');
+      }
+    }
+  });
+
+  it('the id is still named, in prose, in the line the shell receives, so the person can find the run', () => {
+    expect(exitRemedy(leg({ outcome: 'failed', runId: 'x; rm -rf ~' }))).toBe(
+      'Read `relavium logs` (for run x; rm -rf ~) for the cause.',
+    );
   });
 
   it.each(['run-hosted-1', '3f2a9c1e-5b7d-4e8a-9c0d-1a2b3c4d5e6f', 'run_1.2:3'])(
-    'a plain id %s stays in the command, exactly as before',
+    'a plain id %s stays in the shell line, exactly as before',
     (id) => {
-      const card = describeHostedRunTerminal(leg({ outcome: 'failed', runId: id }));
-      expect(card.remedy).toBe(`Read \`relavium logs ${id}\` for the cause.`);
+      expect(exitRemedy(leg({ outcome: 'failed', runId: id }))).toBe(
+        `Read \`relavium logs ${id}\` for the cause.`,
+      );
       expect(
         describeHostedRunTerminal(leg({ durability: 'uncertain', runId: id })).remedy,
       ).toContain(`\`relavium status ${id}\``);
@@ -296,7 +326,7 @@ describe('a command line the card offers carries only an id the shell takes as o
   it('a leg that ended with no card uses the same rule', () => {
     expect(relaviumRunCommand('logs', 'x; id')).toBe('`relavium logs` (for run x; id)');
     expect(relaviumRunCommand('status', 'abc-1')).toBe('`relavium status abc-1`');
-    expect(takenOverTerminal('x`y').remedy).toBe(
+    expect(takenOverTerminal('x`y').shellRemedy).toBe(
       "Read `relavium logs` (for run x'y) for what actually happened.",
     );
   });

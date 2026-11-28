@@ -8,15 +8,11 @@
  */
 import type { RunSummaryRecord } from '@relavium/db';
 import type { RunStatus } from '@relavium/shared';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { classifyActiveRuns } from '../../history/active-model.js';
-import { buildDefinedModel, type DefinedEntry } from '../../history/defined-model.js';
-import { buildAgentsModel, type AgentsModelItem } from '../../history/agents-model.js';
 import { buildHistoryRows } from '../../history/history-model.js';
 import type { HistoryRead } from '../../history/history-source.js';
-import type { AgentsPort } from '../../home/agents-port.js';
-import type { PermissionsPort, PermissionsSnapshot } from '../../permissions/chat-permissions.js';
 import type { ChatKey } from './chat-input.js';
 import {
   enterTab,
@@ -29,7 +25,6 @@ import {
   type TabId,
 } from './tab-host.js';
 import type { HistoryPort } from './tab-host-history.js';
-import type { SessionRow, SessionsPort } from './tab-host-sessions.js';
 
 const LEFT: ChatKey = { leftArrow: true };
 const RIGHT: ChatKey = { rightArrow: true };
@@ -100,46 +95,6 @@ function historyOver() {
   };
 }
 
-const ENTRIES: readonly DefinedEntry[] = ['one', 'two', 'three', 'four'].map((slug) => ({
-  slug,
-  name: undefined,
-  nodeCount: 1,
-  path: `${slug}.relavium.yaml`,
-  valid: true,
-}));
-
-const PERMISSIONS: PermissionsSnapshot = {
-  project: {
-    ok: true,
-    rows: Array.from({ length: 4 }, (_, index) => ({
-      id: `g${String(index)}`,
-      label: `tool${String(index)}, 1 argument`,
-      remembered: '2026-11-19 12:00Z',
-    })),
-  },
-  session: undefined,
-};
-
-const agentItems: readonly AgentsModelItem[] = ['reviewer', 'writer', 'planner'].map((slug) => ({
-  entry: { slug, name: `Agent ${slug}`, path: `.relavium/agents/${slug}.agent.yaml`, valid: true },
-  agent: { model: 'claude-sonnet-4-6', provider: 'anthropic', system_prompt: 'You help.' },
-}));
-const agentsPort: AgentsPort = {
-  read: () => ({
-    model: buildAgentsModel(agentItems),
-    slugOf: (index) => agentItems[index]?.entry.slug,
-    pathOf: (index) => agentItems[index]?.entry.path,
-    definitionOf: () => undefined,
-  }),
-};
-const sessionRows: readonly SessionRow[] = ['a', 'b', 'c'].map((id) => ({
-  id: `sess-${id}`,
-  title: `Conversation ${id}`,
-  agent: 'coder',
-  age: '5m ago',
-}));
-const sessionsPort: SessionsPort = { read: () => ({ rows: sessionRows, more: false }) };
-
 const activeRows = (ids: readonly string[]) =>
   classifyActiveRuns({
     // The first id is the newest run: the tab lists newest first, so the list reads in the order the ids are given.
@@ -151,30 +106,14 @@ const activeRows = (ids: readonly string[]) =>
     leaseTtlMs: 60_000,
   });
 
-/** A tab host on `tab`, every tab fed, with the keys going through the tab host's own fold. */
+/** The Runs screen on `tab`, both tabs fed, with the keys going through the screen's own fold. */
 function rig(tab: TabId = 'history') {
   const history = historyOver();
   let activeIds = ['run-a', 'run-b', 'run-c', 'run-d'];
-  const permissions: PermissionsPort = {
-    surface: 'project',
-    load: vi.fn(() => PERMISSIONS),
-    withdraw: () => ({ tone: 'done', text: 'Withdrawn.' }),
-  };
   const context = (): TabHostContext => ({
-    port: permissions,
-    defined: {
-      read: () => ({
-        model: buildDefinedModel({ entries: ENTRIES, pins: [] }),
-        slugOf: (index) => ENTRIES[index]?.slug,
-        pathOf: (index) => ENTRIES[index]?.path,
-      }),
-    },
     active: { last: { rows: activeRows(activeIds), more: [], heldUnread: false } },
     history: history.port,
-    agents: agentsPort,
-    sessions: sessionsPort,
     now: 10_000,
-    canArm: true,
   });
   let state: TabHostState = enterTab(freshTabMemory(tab), tab, context());
   const press = (input: string, key: ChatKey = {}): TabHostStep => {
@@ -225,9 +164,9 @@ describe('the History tab keeps its scope, its filter and its focused run while 
     expect(left.cursor).toBe(1);
     expect(left.focus).toMatch(/^row:/u);
 
-    r.press('', RIGHT);
-    expect(r.state.tab).toBe('permissions');
     r.press('', LEFT);
+    expect(r.state.tab).toBe('active');
+    r.press('', RIGHT);
     expect(r.state.tab).toBe('history');
     expect(historyPosition(r), 'the tab came back as it was left').toEqual(left);
   });
@@ -238,36 +177,36 @@ describe('the History tab keeps its scope, its filter and its focused run while 
     r.press('', DOWN);
     r.press('', DOWN);
     const left = historyPosition(r);
-    r.press('', RIGHT);
-    r.addNewestRun();
     r.press('', LEFT);
+    r.addNewestRun();
+    r.press('', RIGHT);
     const back = historyPosition(r);
     expect(back.scope).toBe('all');
     expect(back.focus, 'the same run').toBe(left.focus);
     expect(back.cursor, 'one row further down: the new run is above it').toBe(left.cursor + 1);
   });
 
-  it('survives a visit across several tabs, and the second visit as well', () => {
+  it('survives a visit to the other tab, and the second visit as well', () => {
     const r = rig('history');
     r.press('f');
     r.press('', DOWN);
     const left = historyPosition(r);
-    for (const key of [LEFT, LEFT, RIGHT, RIGHT, RIGHT, LEFT]) r.press('', key);
+    for (const key of [LEFT, LEFT, RIGHT, RIGHT, RIGHT]) r.press('', key);
     expect(r.state.tab).toBe('history');
     expect(historyPosition(r)).toEqual(left);
-    r.press('', RIGHT);
     r.press('', LEFT);
+    r.press('', RIGHT);
     expect(historyPosition(r)).toEqual(left);
   });
 
   it('is in the memory of a state whose front tab is another one, and is not invented when History was never read', () => {
     const r = rig('history');
     r.press('a');
-    r.press('', RIGHT);
+    r.press('', LEFT);
     expect(tabHostMemory(r.state).history).toMatchObject({ scope: 'all', status: undefined });
     expect(r.state.history, 'History is not in front').toBeUndefined();
 
-    const never = rig('permissions');
+    const never = rig('active');
     expect(tabHostMemory(never.state).history, 'History was never entered').toBeUndefined();
   });
 
@@ -276,10 +215,10 @@ describe('the History tab keeps its scope, its filter and its focused run while 
     r.press('a');
     r.press('', DOWN);
     const left = historyPosition(r);
-    r.press('', RIGHT);
+    r.press('', LEFT);
     // The Home keeps `tabHostMemory(state)` while a run view is in front, and enters the tab it came from again with it.
     const memory = tabHostMemory(r.state);
-    const back = enterTab(memory, 'permissions', r.context());
+    const back = enterTab(memory, 'active', r.context());
     const again = enterTab(tabHostMemory(back), 'history', r.context());
     expect(again.history?.read?.query.scope).toBe('all');
     expect(again.history?.focus).toBe(left.focus);
@@ -302,54 +241,36 @@ describe('the Active tab keeps the run its cursor was on while another tab is in
     expect(r.state.active?.cursor).toBe(3);
   });
 
-  it('survives a visit across the other tabs', () => {
+  it('survives a visit to the other tab', () => {
     const r = rig('active');
     r.press('', DOWN);
-    for (const key of [RIGHT, RIGHT, RIGHT, LEFT, LEFT]) r.press('', key);
+    for (const key of [RIGHT, RIGHT, LEFT, LEFT]) r.press('', key);
     expect(r.state.tab).toBe('active');
     expect(r.state.active?.focus).toBe('run-b');
   });
 });
 
-describe('every other tab keeps its cursor as it was left', () => {
-  it('Defined, Permissions: the cursor is where it was after a visit elsewhere', () => {
-    const r = rig('defined');
-    r.press('', DOWN);
-    r.press('', DOWN);
-    expect(r.state.defined?.cursor).toBe(2);
+describe('the Active tab keeps its scope while the other tab is in front (OD-24 D4)', () => {
+  it('`[a] all`, then → and ←: the tab is still listing every project, and the memory says so', () => {
+    const r = rig('active');
+    r.press('a');
+    expect(r.state.active?.scope).toBe('all');
     r.press('', RIGHT);
+    expect(tabHostMemory(r.state).activeScope).toBe('all');
     r.press('', LEFT);
-    expect(r.state.defined?.cursor).toBe(2);
-
-    for (const key of [RIGHT, RIGHT, RIGHT]) r.press('', key);
-    expect(r.state.tab).toBe('permissions');
-    r.press('', DOWN);
-    r.press('', DOWN);
-    r.press('', DOWN);
-    expect(r.state.sheet?.cursor).toBe(3);
-    for (const key of [LEFT, LEFT, LEFT]) r.press('', key);
-    expect(r.state.defined?.cursor, 'Defined, after a visit to every tab').toBe(2);
-    for (const key of [RIGHT, RIGHT, RIGHT]) r.press('', key);
-    expect(r.state.sheet?.cursor).toBe(3);
+    expect(r.state.active?.scope).toBe('all');
+    r.press('a');
+    expect(r.state.active?.scope, '`[a]` again narrows it').toBe('project');
+    r.press('', RIGHT);
+    expect(tabHostMemory(r.state).activeScope, 'the default is not stored').toBeUndefined();
   });
 
-  it('the agents strip: both tabs keep their cursor, and it holds nothing of the workflows strip', () => {
-    const r = rig('agents');
-    r.press('', DOWN);
-    r.press('', DOWN);
-    expect(r.state.agents?.cursor).toBe(2);
+  it('is dropped with the memory: a screen opened again starts on this directory', () => {
+    const r = rig('active');
+    r.press('a');
     r.press('', RIGHT);
-    expect(r.state.tab).toBe('sessions');
-    r.press('', DOWN);
-    expect(r.state.sessions?.cursor).toBe(1);
-    r.press('', LEFT);
-    expect(r.state.agents?.cursor).toBe(2);
-    r.press('', RIGHT);
-    expect(r.state.sessions?.cursor).toBe(1);
-    const memory = tabHostMemory(r.state);
-    expect(memory.history, 'no workflows tab was ever entered').toBeUndefined();
-    expect(memory.activeFocus).toBeUndefined();
-    expect(memory.positions).toMatchObject({ defined: 0, active: 0, history: 0, permissions: 0 });
+    const reopened = enterTab(freshTabMemory('active'), 'active', r.context());
+    expect(reopened.active?.scope).toBe('project');
   });
 });
 

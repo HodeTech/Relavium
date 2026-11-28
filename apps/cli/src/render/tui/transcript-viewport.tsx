@@ -1,17 +1,18 @@
-import { Box, Text, measureElement, type DOMElement } from 'ink';
+import { Box, measureElement, type DOMElement } from 'ink';
 import { useLayoutEffect, useRef, useState, type ReactElement } from 'react';
 
-import { transcriptStyleProps } from './projection.js';
+import type { ChatGrid } from './chat-grid.js';
 import { lineSpan, splitRow, type SelectionRange } from './selection.js';
 import { effectiveOffset, type ScrollState, type ViewportGeometry } from './scroll.js';
 import { windowLines, type DisplayLine } from './viewport.js';
-import { MarkdownText } from './markdown-text.js';
+import { TranscriptRow } from './transcript-row.js';
+import { marginFormFor } from './margin-row.js';
 
 /**
  * The full-screen alt-screen transcript **viewport** (2.6.F Step 4b, [ADR-0068](../../../../docs/decisions/0068-full-screen-tui-renderer-ink7-harness.md) §c) —
  * the counterpart of ink's `<Static>` for the inline renderer. The alt buffer has no native scrollback, so instead of
  * printing every entry once (which `<Static>` does, writing to a scrollback the alt buffer lacks) the transcript is
- * flattened to width-wrapped {@link DisplayLine}s ({@link wrapTranscript}) and only the visible window is rendered.
+ * flattened to width-wrapped {@link DisplayLine}s (`transcriptRows`, on the chat's grid) and only the visible window is rendered.
  *
  * The window height is the box's flexbox-allocated leftover space: this Box is `flexGrow` beside the fixed live
  * region (the prompt / busy line / footer), so ink sizes it to `terminalRows − liveRegion`. We read that back with
@@ -29,8 +30,14 @@ import { MarkdownText } from './markdown-text.js';
  */
 
 export interface TranscriptViewportProps {
-  /** The full transcript already flattened to width-wrapped, style-tagged display lines (`wrapTranscript`). */
+  /** The full transcript already flattened to the grid's rows (`transcriptRows`, at {@link ChatGrid.content}). */
   readonly lines: readonly DisplayLine[];
+  /**
+   * The chat's grid the rows were laid for (MVP-11 unit 9): each row is drawn as its margin cell and its content cell. The viewport's box stays
+   * the terminal's full width (the measured-frame acknowledgement compares it with the columns), and the geometry it lifts reports the left edge
+   * of the CONTENT (`left + margin`), so a mouse cell maps onto a row's text and a press in the margin clamps to the content's first column.
+   */
+  readonly grid: ChatGrid;
   readonly color: boolean;
   /** The owner-held scroll/auto-follow state (2.6.F Step 4b-2); the viewport derives the effective top-line offset
    *  from it + its own measured height (tail while following, else the clamped frozen offset). */
@@ -102,7 +109,8 @@ export function TranscriptViewport(props: Readonly<TranscriptViewportProps>): Re
       height: measured.height,
       width: measured.width,
       top,
-      left,
+      // The left edge of the rows' TEXT: a selection's columns are content columns (`selection.ts` is unchanged by the grid).
+      left: left + props.grid.margin,
     });
     if (measured.height !== height) setHeight(measured.height);
   });
@@ -128,33 +136,14 @@ export function TranscriptViewport(props: Readonly<TranscriptViewportProps>): Re
           props.selection === undefined ? undefined : lineSpan(offset + index, props.selection);
         const segments = span === undefined ? undefined : splitRow(text, span);
         return (
-          <Text
+          <TranscriptRow
             key={index} // NOSONAR — positional grid row, not a reorderable stateful item (see the comment above)
-            {...transcriptStyleProps(line.style, props.color)}
-          >
-            {line.spans !== undefined ? (
-              <MarkdownText
-                spans={line.spans.length === 0 ? [{ text: ' ' }] : line.spans}
-                color={props.color}
-                selected={
-                  segments === undefined
-                    ? undefined
-                    : {
-                        start: segments.before.length,
-                        end: segments.before.length + segments.selected.length,
-                      }
-                }
-              />
-            ) : segments === undefined ? (
-              text
-            ) : (
-              <>
-                {segments.before}
-                <Text inverse>{segments.selected}</Text>
-                {segments.after}
-              </>
-            )}
-          </Text>
+            line={line}
+            grid={props.grid}
+            color={props.color}
+            form={marginFormFor(true, props.color)}
+            segments={segments}
+          />
         );
       })}
     </Box>

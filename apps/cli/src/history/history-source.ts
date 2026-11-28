@@ -2,10 +2,12 @@ import type { RunHistoryReader, RunSummaryRecord } from '@relavium/db';
 import { MAX_RUN_SUMMARY_IDS } from '@relavium/db';
 import type { RunStatus } from '@relavium/shared';
 
+import { optionalPaths, type DisplayPathRoots } from '../render/notation.js';
 import { formatCostShort } from '../render/tui/format.js';
 import { buildHistoryRows, type HistoryRow } from './history-model.js';
 import { keysetCursorOf, type KeysetCursor } from './keyset-cursor.js';
 import { readPerRunOrDegrade } from './per-run-read.js';
+import { isProjectRootHere, recordedProjectRoot } from './project-root.js';
 import { isFinishedRun, scrubbedBounded } from './run-detail-model.js';
 import { readRunUsageCoverage } from './usage-coverage.js';
 
@@ -118,6 +120,8 @@ export interface HistorySourceDeps {
   readonly listRunPins: () => readonly HistoryRunPin[];
   /** The directory the Home is in: the `project` scope, and what a pinned run is compared with. */
   readonly projectRoot: string;
+  /** What a run's project root is shortened against (the Home's directory and the operator's home). Absent, a root is shown as stored. */
+  readonly paths?: DisplayPathRoots | undefined;
   /** Epoch milliseconds: the ages are taken against it. */
   readonly now: () => number;
   /** The coverage read of one run. Defaults to `readRunUsageCoverage` over the reader; a test counts its calls. */
@@ -156,6 +160,10 @@ export function createHistorySource(
 
   /** One fetch of page `page`: one `listRunSummaries` call, at most {@link HISTORY_FETCH_ROWS} rows. */
   function fetchPage(page: number, scope: HistoryScope, status: RunStatus | undefined): PageSlot {
+    // A Home handed no absolute directory has an empty project scope: matched as text, its directory would make the runs recorded
+    // relative (`.`) in any directory this project's (`recordedProjectRoot`). The Home always hands its canonical root.
+    if (scope === 'project' && recordedProjectRoot(deps.projectRoot) === undefined)
+      return { records: [], labels: new Map(), next: undefined };
     const before = cursors[page];
     const limit = status === undefined ? HISTORY_FETCH_ROWS : HISTORY_VIEW_ROWS + 1;
     const raw = reader.listRunSummaries({
@@ -233,6 +241,7 @@ export function createHistorySource(
         workflowLabels: reader.loadWorkflowSlugs([
           ...new Set(summaries.map((run) => run.workflowId)),
         ]),
+        ...optionalPaths(deps.paths),
       }).map((row) => [row.id, row]),
     );
     const entries: HistoryEntry[] = [];
@@ -245,7 +254,7 @@ export function createHistorySource(
           label: `${scrubbedBounded(pin.ref)}${pin.oversized ? '…' : ''}`,
           pinRowid: pin.rowid,
         });
-      } else if (scope === 'all' || record.projectRoot === deps.projectRoot) {
+      } else if (scope === 'all' || isProjectRootHere(record.projectRoot, deps.projectRoot)) {
         entries.push({ kind: 'run', row, pinRowid: pin.rowid });
       }
     }
@@ -275,6 +284,7 @@ export function createHistorySource(
         nowMs: now,
         pinnedRunIds: new Set(pinRowids.keys()),
         workflowLabels: slot.labels,
+        ...optionalPaths(deps.paths),
       }).map((row): HistoryEntry => {
         const pinRowid = pinRowids.get(row.id);
         return pinRowid === undefined ? { kind: 'run', row } : { kind: 'run', row, pinRowid };

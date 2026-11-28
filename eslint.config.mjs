@@ -233,6 +233,125 @@ const enginePurityImportEntry = /** @type {const} */ ([
     ],
   },
 ]);
+// The CLI's DATA MODULES (ADR-0145 §10): the registry, the glyph table, the legend builder, the notation helpers and the other word
+// tables are pure data and pure functions. They import nothing from `ink`, `react` or `node:` — so a later move into a shared package is
+// mechanical and a test needs no renderer to read them. Seam fence included (this entry replaces the general one for these files).
+const DATA_MODULE_MESSAGE =
+  'A CLI data module (the registry, the glyph table, the legend builder, the notation helpers) imports nothing from ink, react or node: ' +
+  '(ADR-0145 §10): keep it pure data and pure functions, and let the view that draws it do the importing.';
+const DATA_MODULE_GLOBAL_MESSAGE =
+  'A CLI data module reads no process state and no Buffer (ADR-0145 §10): it is pure data and pure functions. A surface that needs a platform, ' +
+  'a clock or a path passes it in (`render/display-roots.ts` is where the process is read, and it is not a data module).';
+// The forms `no-restricted-imports` cannot see, closed for the data modules the way the seam's are (above): a dynamic `import('ink')`, the
+// import-type query `import('react').ReactNode` and `require('node:fs')`. A specifier is read by name and by prefix (`node:`, `ink-`), and a
+// bare Node built-in by the same list the static pattern uses; a computed specifier is banned outright by the seam selectors every data module
+// already carries.
+const DATA_MODULE_SPECIFIER_RE = String.raw`^(ink|react|react-dom|chalk)(\/.*)?$|^ink-|^node:|^(${NODE_BUILTINS.join('|')})(\/.*)?$`;
+const dataModuleSyntaxRules = /** @type {const} */ ([
+  {
+    selector: `ImportExpression[source.value=/${DATA_MODULE_SPECIFIER_RE}/]`,
+    message: DATA_MODULE_MESSAGE,
+  },
+  {
+    selector: `TSImportType Literal[value=/${DATA_MODULE_SPECIFIER_RE}/]`,
+    message: DATA_MODULE_MESSAGE,
+  },
+  {
+    selector: `CallExpression[callee.name='require'] > Literal[value=/${DATA_MODULE_SPECIFIER_RE}/]`,
+    message: DATA_MODULE_MESSAGE,
+  },
+  // the global object is a way to `process` and `Buffer` that `no-restricted-globals` does not see
+  {
+    selector:
+      'MemberExpression[object.name=/^(globalThis|global)$/][property.name=/^(process|Buffer)$/]',
+    message: DATA_MODULE_GLOBAL_MESSAGE,
+  },
+]);
+const dataModuleImportEntry = /** @type {const} */ ([
+  'error',
+  {
+    paths: [
+      ...seamImportOptions.paths,
+      ...['ink', 'react', 'react-dom', 'chalk'].map((name) => ({
+        name,
+        message: DATA_MODULE_MESSAGE,
+      })),
+    ],
+    patterns: [
+      ...seamImportOptions.patterns,
+      { group: ['node:*'], message: DATA_MODULE_MESSAGE },
+      // Anchored (`/fs`): an unanchored `process` is a gitignore-style pattern that also matches the repo's own `../process/…` directory.
+      { group: NODE_BUILTINS.map((name) => `/${name}`), message: DATA_MODULE_MESSAGE },
+      { group: ['ink/*', 'ink-*', 'react/*', 'react-dom/*'], message: DATA_MODULE_MESSAGE },
+    ],
+  },
+]);
+// The named list. A module joins it when it is written as data; the fixture proves the fence fires.
+// `tools/lint-fixtures/assert-fence.mjs` holds its own copy of this list (EXPECTED_DATA_MODULES): it fails when a module of it is gone, renamed
+// or no longer carries the rule, and when the two lists are not the same list, so dropping an entry here, dropping one there, or adding one on
+// one side alone is a failure and not a silent exemption.
+const CLI_DATA_MODULES = [
+  'apps/cli/src/commands/repl-commands.ts',
+  'apps/cli/src/render/tui/legend.ts',
+  'apps/cli/src/render/tui/legend-row.ts',
+  'apps/cli/src/render/tui/glyphs.ts',
+  'apps/cli/src/render/tui/emphasis.ts',
+  'apps/cli/src/render/tui/format.ts',
+  'apps/cli/src/render/tui/palette-entries.ts',
+  'apps/cli/src/render/tui/chat-keys.ts',
+  'apps/cli/src/render/tui/sheet-frame.ts',
+  'apps/cli/src/render/tui/tui-constants.ts',
+  'apps/cli/src/render/tui/place-label.ts',
+  'apps/cli/src/render/notation.ts',
+  'apps/cli/src/render/notice-surface.ts',
+  'apps/cli/src/render/surface.ts',
+  'apps/cli/src/chat/mode-effects.ts',
+  'apps/cli/src/onboarding/setup-notes.ts',
+  'apps/cli/src/popups/geometry.ts',
+  'apps/cli/src/popups/popup-refusal.ts',
+  'apps/cli/src/popups/turn-in-flight.ts',
+  'apps/cli/src/popups/chord-refusal.ts',
+  'apps/cli/src/popups/custody.ts',
+  'apps/cli/src/popups/frame-model.ts',
+  'apps/cli/src/popups/opening-guard.ts',
+  'apps/cli/src/popups/popup-bind.ts',
+  'apps/cli/src/popups/popup-reducer.ts',
+  'apps/cli/src/popups/popup-route.ts',
+  'apps/cli/src/popups/popup-text.ts',
+  'apps/cli/src/popups/popup-copy.ts',
+  'apps/cli/src/popups/popup-work.ts',
+  'apps/cli/src/popups/doctor-port.ts',
+  'apps/cli/src/popups/report-port.ts',
+  'apps/cli/src/popups/settings-port.ts',
+  'apps/cli/src/popups/effort-popup.ts',
+  'apps/cli/src/popups/mode-popup.ts',
+  'apps/cli/src/popups/models-popup.ts',
+  'apps/cli/src/popups/permissions-popup.ts',
+  'apps/cli/src/popups/export-popup.ts',
+  'apps/cli/src/popups/unreadable-run-card.ts',
+  'apps/cli/src/popups/unreadable-run-port.ts',
+  'apps/cli/src/popups/home-port.ts',
+  'apps/cli/src/home/framed-flow.ts',
+  'apps/cli/src/render/tui/flow-text.ts',
+  'apps/cli/src/render/tui/home-layout.ts',
+  'apps/cli/src/render/tui/status-line.ts',
+  'apps/cli/src/render/tui/chat-layout.ts',
+  'apps/cli/src/render/tui/chat-grid.ts',
+  'apps/cli/src/render/tui/screen-text.ts',
+  'apps/cli/src/render/tui/prompt-window.ts',
+  'apps/cli/src/render/tui/home-floor.ts',
+  'apps/cli/src/render/tui/held-opener.ts',
+  'apps/cli/src/render/tui/transcript-guard.ts',
+  'apps/cli/src/home/home-status-facts.ts',
+  'apps/cli/src/render/tui/home-pages.ts',
+  'apps/cli/src/render/tui/home-work-budget.ts',
+  'apps/cli/src/render/tui/run-again.ts',
+  'apps/cli/src/render/tui/home-attention.ts',
+  'apps/cli/src/render/tui/strip-focus.ts',
+  'apps/cli/src/render/tui/home-projection.ts',
+  'apps/cli/src/render/tui/home-deadline.ts',
+  'tools/lint-fixtures/forbidden-in-data-module.ts',
+];
 const ENGINE_NODE_GLOBALS = [
   'process',
   'Buffer',
@@ -381,6 +500,28 @@ export default tseslint.config(
       'no-restricted-globals': [
         'error',
         ...ENGINE_NODE_GLOBALS.map((name) => ({ name, message: ENGINE_PURITY_MESSAGE })),
+      ],
+    },
+  },
+  {
+    // The CLI data modules (ADR-0145 §10): no ink, react or node: import (static, dynamic, an import-type query or a `require`), and no read of
+    // `process` or `Buffer`. After the general TS and CLI blocks, whose entries this replaces: the syntax list is theirs with the data modules' added.
+    // An inline `eslint-disable` is not honoured here: a comment must not be able to lift the fence from the module it is written in.
+    files: CLI_DATA_MODULES,
+    linterOptions: { noInlineConfig: true },
+    rules: {
+      '@typescript-eslint/no-restricted-imports': dataModuleImportEntry,
+      'no-restricted-syntax': [
+        ...seamSyntaxRules,
+        authoredPromptSyntaxRule,
+        authoredPromptAliasRule,
+        authoredPromptPredicateRule,
+        jsonLineSyntaxRule,
+        ...dataModuleSyntaxRules,
+      ],
+      'no-restricted-globals': [
+        'error',
+        ...['process', 'Buffer'].map((name) => ({ name, message: DATA_MODULE_GLOBAL_MESSAGE })),
       ],
     },
   },

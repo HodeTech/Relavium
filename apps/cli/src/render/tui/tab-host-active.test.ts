@@ -22,14 +22,14 @@ import {
   type HomeController,
   type HomeControllerDeps,
 } from './home-controller.js';
-import { legend } from './legend.js';
 import { usableColumns } from './sheet-frame.js';
 import {
   TAB_HOST_ROWS,
   enterTab,
   foldTabHostKey,
   freshTabMemory,
-  tabHostLegendItems,
+  tabHostLegend,
+  tabHostLegendText,
   tabHostLines,
   tabHostMemory,
   withActiveRead,
@@ -39,11 +39,13 @@ import {
 } from './tab-host.js';
 import {
   ACTIVE_EMPTY,
+  ACTIVE_EMPTY_ALL,
   ACTIVE_FOCUS_LEFT,
   ACTIVE_FRESHNESS,
   ACTIVE_HELD_UNREAD,
   ACTIVE_KEYS,
   ACTIVE_LOADING,
+  ACTIVE_SCOPE_WORDS,
   ACTIVE_SELECT_FIRST,
   ACTIVE_STALE_READ,
   ACTIVE_UNREADABLE,
@@ -150,13 +152,15 @@ const textOf = (state: TabHostState, geometry = SIZE): string[] =>
 const lineWith = (lines: readonly string[], needle: string): string =>
   lines.find((line) => line.includes(needle)) ?? '';
 
-/** The Active tab over `last`, with the keys going through the tab host's own fold. */
-function rig(last: ActiveRead | null = read(EVERY_CLASS)) {
+/**
+ * The Active tab over `last`, with the keys going through the tab host's own fold. The tab lists THIS directory's runs by default (OD-24 D4); the
+ * classes of run below include another project's, so the rig widens to `[a] all` first unless a test says `scope: 'project'`
+ * (`tab-host-active-scope.test.ts` owns the scope itself).
+ */
+function rig(last: ActiveRead | null = read(EVERY_CLASS), scope: 'all' | 'project' = 'all') {
   // `null` is a tab entered before any read; `undefined` would take the default.
   const context = (over: Partial<TabHostContext> = {}): TabHostContext => ({
-    port: undefined,
     now: 0,
-    canArm: true,
     active: { last: last ?? undefined },
     ...over,
   });
@@ -166,6 +170,7 @@ function rig(last: ActiveRead | null = read(EVERY_CLASS)) {
     if (step.kind !== 'close') state = step.state;
     return step;
   };
+  if (scope === 'all') press('a');
   return {
     press,
     context,
@@ -183,6 +188,24 @@ const active = (state: TabHostState) => {
 };
 const focusedId = (state: TabHostState): string | undefined => active(state).focus;
 
+/**
+ * `↓` until the run `id` is the focused one, a bounded walk: a state that never gets there (a scope that did not recompute, a default that listed
+ * every directory) fails with the run it was looking for instead of looping at full speed (review round 1, D08/D09).
+ */
+function walkTo(
+  r: {
+    readonly press: (input: string, key?: ChatKey) => TabHostStep;
+    readonly state: TabHostState;
+  },
+  id: string,
+): void {
+  for (let step = 0; step < 100; step += 1) {
+    if (focusedId(r.state) === id) return;
+    r.press('', DOWN);
+  }
+  throw new Error(`the run ${id} was never focused (focus: ${String(focusedId(r.state))})`);
+}
+
 describe('every class of run is drawn with a glyph and a word', () => {
   const lines = textOf(rig().state);
 
@@ -190,10 +213,10 @@ describe('every class of run is drawn with a glyph and a word', () => {
     [IDS.hosted, '◐', 'running', 'this Home'],
     [IDS.other, '◐', 'running', 'running in another process'],
     [IDS.pending, '○', 'pending', 'running in another process'],
-    [IDS.gate, '⏸', 'paused', 'gate waiting here'],
-    [IDS.media, '⏸', 'paused', 'waiting for a media job'],
-    [IDS.unknown, '⏸', 'paused', 'gate state not read'],
-    [IDS.elsewhere, '⏸', 'paused', 'another project'],
+    [IDS.gate, '‖', 'paused', 'gate waiting here'],
+    [IDS.media, '‖', 'paused', 'waiting for a media job'],
+    [IDS.unknown, '‖', 'paused', 'gate state not read'],
+    [IDS.elsewhere, '‖', 'paused', 'another project'],
     [IDS.stalled, '⚠', 'stalled', 'settled by the next start'],
     [IDS.held, '◇', 'held', 'terminal held in the outbox'],
   ])('%s: %s %s, and says why (%s)', (id, glyph, word, why) => {
@@ -232,16 +255,20 @@ describe('every class of run is drawn with a glyph and a word', () => {
         expect(displayWidth(line), line).toBeLessThanOrEqual(usableColumns(geometry.columns));
     }
     const small = textOf(rig().state, { columns: 60, terminalRows: 20 });
-    expect(small[0]).toBe('Enlarge the terminal — Esc steps back, or closes at the list.');
+    expect(small[0]).toBe('Enlarge the terminal.');
     expect(small.join('\n')).not.toContain(IDS.hosted);
     expect(ROWS).toBe(TAB_HOST_ROWS);
   });
 
   it('draws the freshness note under the list until a message or a warning takes its place', () => {
-    expect(textOf(rig().state)).toContain(ACTIVE_FRESHNESS);
+    // The note says what is listed first (this directory's runs, or every project's) and then how fresh the list is.
+    expect(textOf(rig(undefined, 'project').state)).toContain(
+      `${ACTIVE_SCOPE_WORDS.project} · ${ACTIVE_FRESHNESS}`,
+    );
+    expect(textOf(rig().state)).toContain(`${ACTIVE_SCOPE_WORDS.all} · ${ACTIVE_FRESHNESS}`);
     const warned = rig(read(EVERY_CLASS, { heldUnread: true }));
     expect(textOf(warned.state)).toContain(ACTIVE_HELD_UNREAD);
-    expect(textOf(warned.state)).not.toContain(ACTIVE_FRESHNESS);
+    expect(textOf(warned.state).join('\n')).not.toContain(ACTIVE_FRESHNESS);
   });
 });
 
@@ -264,9 +291,10 @@ describe('the "N more" row', () => {
   });
 
   it('is drawn with an empty list too, and the list still fits 23 rows with the markers and a long list', () => {
-    const empty = textOf(rig(read([], { more: more.more })).state);
+    const empty = textOf(rig(read([], { more: more.more }), 'project').state);
     expect(empty).toContain(ACTIVE_EMPTY);
     expect(empty).toContain('… 37 more running not listed');
+    expect(textOf(rig(read([]), 'all').state)).toContain(ACTIVE_EMPTY_ALL);
     const many = classify(
       Array.from({ length: 60 }, (_, index) =>
         run(`many${String(index).padStart(4, '0')}`, 'running'),
@@ -297,7 +325,7 @@ describe('what a key does', () => {
 
   it('Enter on a run paused at a gate in this project asks for its gate card, and for nothing else', () => {
     const r = rig();
-    while (focusedId(r.state) !== IDS.gate) r.press('', DOWN);
+    walkTo(r, IDS.gate);
     expect(r.press('', ENTER)).toMatchObject({ kind: 'open-gate', runId: IDS.gate });
   });
 
@@ -338,7 +366,7 @@ describe('what a key does', () => {
     'Enter on %s opens nothing: it says the row is read-only, and why',
     (id) => {
       const r = rig();
-      while (focusedId(r.state) !== id) r.press('', DOWN);
+      walkTo(r, id);
       const step = r.press('', ENTER);
       expect(step.kind).toBe('state');
       const message = active(r.state).message ?? '';
@@ -361,13 +389,13 @@ describe('what a key does', () => {
 
   it('says there is no cross-process cancel for a run another process owns', () => {
     const r = rig();
-    while (focusedId(r.state) !== IDS.other) r.press('', DOWN);
+    walkTo(r, IDS.other);
     expect(textOf(r.state).join('\n')).toContain('no cross-process cancel');
   });
 
   it('a message goes with the next key', () => {
     const r = rig();
-    while (focusedId(r.state) !== IDS.other) r.press('', DOWN);
+    walkTo(r, IDS.other);
     r.press('', ENTER);
     expect(active(r.state).message).toBeDefined();
     r.press('', UP);
@@ -392,6 +420,31 @@ describe('what a key does', () => {
     expect(r.state).toEqual(before);
   });
 
+  it('`A` (Caps Lock on) widens and narrows the scope as `a` does; a chord with it is nothing (review round 1, D02)', () => {
+    const r = rig(undefined, 'project');
+    expect(active(r.state).scope).toBe('project');
+    r.press('A');
+    expect(active(r.state).scope).toBe('all');
+    r.press('A');
+    expect(active(r.state).scope).toBe('project');
+    r.press('a', { ctrl: true });
+    r.press('a', { meta: true });
+    expect(active(r.state).scope, 'a chord is never `a`').toBe('project');
+  });
+
+  it('`a` before a read has landed, or where there is nothing to read, changes nothing: there is no list to widen (review round 1, D03)', () => {
+    const loading = rig(null, 'project');
+    expect(active(loading.state).phase).toBe('loading');
+    loading.press('a');
+    loading.press('A');
+    expect(active(loading.state).scope).toBe('project');
+    const none = enterTab(freshTabMemory('active'), 'active', { now: 0 });
+    expect(active(none).phase).toBe('unreadable');
+    const step = foldTabHostKey(none, 'a', {}, { now: 0 });
+    if (step.kind === 'close') throw new Error('`a` closed the screen');
+    expect(active(step.state).scope).toBe('project');
+  });
+
   it('an Enter with no row makes no step', () => {
     const r = rig(read([]));
     expect(r.press('', ENTER).kind).toBe('state');
@@ -399,7 +452,7 @@ describe('what a key does', () => {
 
   it('presses every key the legend names, and each does what it says', () => {
     const r = rig();
-    const items = tabHostLegendItems(r.state);
+    const { items } = tabHostLegend(r.state);
     expect(items).toContain(ACTIVE_KEYS.select);
     expect(items).toContain(ACTIVE_KEYS.open);
     const before = active(r.state).cursor;
@@ -414,12 +467,15 @@ describe('what a key does', () => {
   });
 
   it('names no key it does not answer to: an empty list offers neither select nor open, and the way out is last', () => {
-    const full = legend(tabHostLegendItems(rig().state));
-    expect(full).toBe('←/→ tab · Tab cycle · ↑/↓ select · Enter open · Ctrl+C close · Esc close');
-    const empty = legend(tabHostLegendItems(rig(read([])).state));
-    expect(empty).toBe('←/→ tab · Tab cycle · Ctrl+C close · Esc close');
-    const loading = legend(tabHostLegendItems(rig(null).state));
-    expect(loading).toBe('←/→ tab · Tab cycle · Ctrl+C close · Esc close');
+    // The Runs screen's way out says where it goes (OD-24). `Tab` is a key of the screen and not an item of its legend: with two tabs `←/→ tab` says it.
+    const full = tabHostLegendText(rig(undefined, 'project').state);
+    expect(full).toBe('←/→ tab · ↑/↓ select · Enter open · [a] all · Esc / [Ctrl+C] back to Home');
+    const wide = tabHostLegendText(rig().state);
+    expect(wide).toBe('←/→ tab · ↑/↓ select · Enter open · [a] here · Esc / [Ctrl+C] back to Home');
+    const empty = tabHostLegendText(rig(read([]), 'project').state);
+    expect(empty).toBe('←/→ tab · [a] all · Esc / [Ctrl+C] back to Home');
+    const loading = tabHostLegendText(rig(null).state);
+    expect(loading).toBe('←/→ tab · Esc / [Ctrl+C] back to Home');
   });
 });
 
@@ -436,7 +492,7 @@ describe('Esc and Ctrl+C at the Active tab', () => {
 describe('the cursor follows the run', () => {
   it('stays on its run when a newer read moves it down the list', () => {
     const r = rig();
-    while (focusedId(r.state) !== IDS.gate) r.press('', DOWN);
+    walkTo(r, IDS.gate);
     const before = active(r.state).cursor;
     const shuffled = [
       ...classify([run('newcome1', 'running'), run('newcome2', 'running')], {}),
@@ -450,7 +506,7 @@ describe('the cursor follows the run', () => {
 
   it('keeps its position, inside the rows, when the run left the list, and selects nothing', () => {
     const r = rig();
-    while (focusedId(r.state) !== IDS.held) r.press('', DOWN);
+    walkTo(r, IDS.held);
     const without = EVERY_CLASS.filter((row) => row.runId !== IDS.held);
     const next = withActiveRead(r.state, read(without));
     expect(active(next).cursor).toBe(without.length - 1);
@@ -472,7 +528,7 @@ describe('the cursor follows the run', () => {
     const above = order[gateAt - 1];
     if (above === undefined) throw new Error('the gate row has no row above it in this fixture');
     const r = rig();
-    while (focusedId(r.state) !== above.runId) r.press('', DOWN);
+    walkTo(r, above.runId);
     // The run under the cursor ends; the gate row below it moves up and now stands at the very number the cursor is on.
     r.state = withActiveRead(r.state, read(EVERY_CLASS.filter((row) => row.runId !== above.runId)));
     expect(
@@ -491,7 +547,7 @@ describe('the cursor follows the run', () => {
 
   it('draws no selected row while nothing is selected, and the first arrow selects one, even at an end', () => {
     const r = rig();
-    while (focusedId(r.state) !== IDS.held) r.press('', DOWN);
+    walkTo(r, IDS.held);
     r.state = withActiveRead(r.state, read(EVERY_CLASS.filter((row) => row.runId !== IDS.held)));
     const lines = tabHostLines(r.state, SIZE);
     expect(
@@ -508,7 +564,7 @@ describe('the cursor follows the run', () => {
 
   it('keeps nothing selected through further reads until a key selects, and says why only once', () => {
     const r = rig();
-    while (focusedId(r.state) !== IDS.held) r.press('', DOWN);
+    walkTo(r, IDS.held);
     const without = EVERY_CLASS.filter((row) => row.runId !== IDS.held);
     r.state = withActiveRead(r.state, read(without));
     r.press('', ENTER); // "No run is selected": the key's own sentence
@@ -521,7 +577,7 @@ describe('the cursor follows the run', () => {
 
   it('is remembered by the tab host as a row and as a run, and the tab is entered there again', () => {
     const r = rig();
-    while (focusedId(r.state) !== IDS.gate) r.press('', DOWN);
+    walkTo(r, IDS.gate);
     const memory = tabHostMemory(r.state);
     expect(memory.positions.active).toBe(active(r.state).cursor);
     expect(memory.activeFocus).toBe(IDS.gate);
@@ -547,7 +603,7 @@ describe('before a read, and when there is none', () => {
   });
 
   it('says it cannot be read when nothing feeds the tab, and when the first read failed', () => {
-    const none = enterTab(freshTabMemory('active'), 'active', { port: undefined, now: 0 });
+    const none = enterTab(freshTabMemory('active'), 'active', { now: 0 });
     expect(textOf(none)).toContain(ACTIVE_UNREADABLE);
     expect(active(none).phase).toBe('unreadable');
   });
@@ -571,11 +627,12 @@ describe('before a read, and when there is none', () => {
 // ---- Through the real Home controller -------------------------------------------------------------------------------------------
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const IDLE: RunHostSnapshot = { launching: false, active: undefined, last: undefined };
@@ -635,7 +692,6 @@ function mount(options: Options = {}) {
   };
   const onExit = vi.fn();
   const deps: HomeControllerDeps = {
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => new Promise(() => {}),
     homeStore: { read: () => EMPTY },
     ...(options.withActive === false ? {} : { active }),
@@ -709,7 +765,13 @@ describe('the controller reads the tab when it is entered, and again only when s
     await openActive(home);
     expect(home.reads).toHaveBeenCalledTimes(1);
     expect(activeOf(home.controller)?.phase).toBe('ready');
+    // This directory's runs: the one paused in another project waits behind `[a] all` (OD-24 D4).
+    expect(activeOf(home.controller)?.rows).toHaveLength(EVERY_CLASS.length - 1);
+    home.controller.handleKey('a', {});
     expect(activeOf(home.controller)?.rows).toHaveLength(EVERY_CLASS.length);
+    expect(home.reads, 'the scope changes what is drawn, and reads nothing').toHaveBeenCalledTimes(
+      1,
+    );
     await home.advance(POLL * 10);
     expect(home.reads, 'ten ticks and nothing moved').toHaveBeenCalledTimes(1);
   });
@@ -756,7 +818,7 @@ describe('the controller reads the tab when it is entered, and again only when s
     home.state.readFails = true;
     home.probe.bump();
     await home.advance(POLL);
-    expect(activeOf(home.controller)?.rows).toHaveLength(EVERY_CLASS.length);
+    expect(activeOf(home.controller)?.rows).toHaveLength(EVERY_CLASS.length - 1);
     expect(activeOf(home.controller)?.message).toBe(ACTIVE_STALE_READ);
   });
 
@@ -992,7 +1054,7 @@ describe('a card that cannot open says why, and keeps the remedy on the row at 8
       (): RunGates | undefined => {
         throw new Error('PRIVATE');
       },
-      '`relavium status` shows what the run waits for.',
+      'The Active tab of /workflows, then [h], shows what the run waits for.',
     ],
     [
       'is gone',
@@ -1002,7 +1064,7 @@ describe('a card that cannot open says why, and keeps the remedy on the row at 8
     [
       'has no gate to decide',
       (): RunGates | undefined => ({ ...GATE_RUN, runId: LONG, gates: [] }),
-      'No gate to decide here: `relavium status` shows what it waits for (run ',
+      'No gate to decide here: see what it waits for in /workflows, then [h] (run ',
     ],
   ])(
     '%s: the sentence starts with what to do, and the id is what a clip takes',
@@ -1124,7 +1186,7 @@ describe('the keys of the tab host still work around it', () => {
     if (host === undefined) throw new Error('no tab host');
     const drawn = textOf(host);
     expect(drawn.length).toBeLessThanOrEqual(TAB_HOST_ROWS);
-    expect(drawn[0]).toContain('▸ Active');
+    expect(drawn[0]).toContain('› Active');
     expect(drawn.join('\n')).toContain(IDS.hosted);
   });
 });

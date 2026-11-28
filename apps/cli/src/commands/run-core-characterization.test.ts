@@ -522,7 +522,8 @@ const EXPECTED: Readonly<Record<string, Observed>> = {
     result: {
       code: 'invalid_invocation',
       exitCode: 2,
-      message: 'the frozen allowance is 150 microcents; --approve-amount must equal that amount',
+      message:
+        'the budget allowance is $0.0000015; --approve-amount must equal it exactly (--approve-amount 150)',
     },
     out: [''],
     err: [''],

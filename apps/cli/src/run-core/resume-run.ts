@@ -35,6 +35,7 @@ import { onceEffortNotice, unpricedModelNote } from '../chat/effort-notice.js';
 import { assertWorkflowCatalogValid } from '../commands/drive.js';
 import type { ResolvedConfig } from '../config/resolve.js';
 import { terminalOutboxPath } from '../history/open.js';
+import { projectRootOf, recordedProjectRoot } from '../history/project-root.js';
 import {
   buildEngine as defaultBuildEngine,
   type BuildEngineOptions,
@@ -61,6 +62,7 @@ import {
   type NativeProcessController,
 } from '../process/native-process-owner.js';
 import type { GlobalOptions } from '../process/options.js';
+import type { NoticeSurface } from '../render/notice-surface.js';
 import { sanitizeInline } from '../render/sanitize.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import type { RunLifetime } from './run-lifetime.js';
@@ -101,20 +103,35 @@ const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set(['completed', 'failed'
  * The `save_to` scope root for a resumed run: the ORIGINAL run's persisted `runs.project_root` when it still
  * exists on THIS machine AS A DIRECTORY — so a run started in dir A and resumed from B writes its deliverables
  * under A — else the resumer's cwd. The directory check (`statSync` with `throwIfNoEntry: false`, then
- * `isDirectory`) keeps a cross-machine / CI resume, a deleted-or-moved original dir, OR a path now occupied by a
+ * `isDirectory`; any other stat failure counts as "not a directory") keeps a cross-machine / CI resume, a deleted-or-moved original dir, OR a path now occupied by a
  * file (a non-dir would only fail the downstream `mkdir`/write with an opaque ENOTDIR) from being used as the jail
  * root; each falls back gracefully, as does a `null` (pre-column run). Known benign window: the dir is checked
  * here but `realpath`'d again at write time (media-write.ts), so a symlink-target swap in between changes only the
- * destination — the realpath+commonpath jail still holds, never escaping the root.
+ * destination — the realpath+commonpath jail still holds, never escaping the root. A root that is not absolute is unrecorded, and a
+ * resumer whose own directory IS the recorded root keeps its spelling of it (MVP-11 unit 7, round 2).
  */
 export function resolveSaveToRoot(projectRoot: string | null, resumerCwd: string): string {
-  if (
-    projectRoot !== null &&
-    statSync(projectRoot, { throwIfNoEntry: false })?.isDirectory() === true
-  ) {
-    return projectRoot;
+  // A stored root that is not an absolute path (`.`, written before roots were canonical) names no directory: read against this
+  // process's cwd it would jail the resumed run to wherever the resumer happens to stand. It is unrecorded, as `null` is.
+  const recorded = recordedProjectRoot(projectRoot);
+  if (recorded === undefined) return resumerCwd;
+  // A run records its directory's canonical spelling. A resumer standing in that very directory keeps its own spelling of it, the one its
+  // filesystem floor was admitted with (a lexical spelling only ever adds views to the floor, ADR-0105), as the run's first leg did.
+  if (projectRootOf(resumerCwd) === recorded) return resumerCwd;
+  return isExistingDirectory(recorded) ? recorded : resumerCwd;
+}
+
+/**
+ * Whether `path` is a directory on this machine. `throwIfNoEntry: false` hides only ENOENT; a recorded root under a file (ENOTDIR), behind an
+ * unreadable parent (EACCES), too long (ENAMETOOLONG) or on a lost mount (EIO) still throws, and a resume must not die on it: any failure to
+ * stat the root means this machine cannot use it, which is the same answer as "not there".
+ */
+function isExistingDirectory(path: string): boolean {
+  try {
+    return statSync(path, { throwIfNoEntry: false })?.isDirectory() === true;
+  } catch {
+    return false;
   }
-  return resumerCwd;
 }
 
 /**
@@ -199,6 +216,8 @@ export const MEDIA_RESUME_REFUSALS = Object.freeze({
 /** The injectable services a resume uses. Every member is the one `GateCommandDeps` already carries. */
 export interface ResumeRunDeps {
   readonly io: CliIo;
+  /** Where the warnings a leg writes to {@link io} are READ: the shell names shell commands, a hosted leg names the Home's actions. REQUIRED (see `PrepareRunDeps`). */
+  readonly noticeSurface: NoticeSurface;
   readonly global: Pick<GlobalOptions, 'cwd'>;
   readonly buildEngine?: (options?: BuildEngineOptions) => Promise<WorkflowEngine>;
   readonly providers?: ProviderResolver;
@@ -619,12 +638,13 @@ async function buildResumeEngine(
     onEffortWithheld: onceEffortNotice(
       lifetime.notification((note: string) => deps.io.writeErr(`warning: ${note}\n`)),
     ),
+    noticeSurface: deps.noticeSurface,
     // ADR-0071 §K7: a resumed agent node on an unpriced model degrades to `allow`, so `budget.max_cost_microcents`
     // did not apply to it — say so on stderr (never stdout, `--json`). `budget.strict_cost_cap` blocks instead.
     onUnpriced: lifetime.notification(
       (model: string, capMicrocents: number, modalities?: readonly MediaBilledModality[]) =>
         deps.io.writeErr(
-          `warning: ${unpricedModelNote(model, capMicrocents, 'budget.strict_cost_cap', modalities)}\n`,
+          `warning: ${unpricedModelNote(model, capMicrocents, 'budget.strict_cost_cap', modalities, deps.noticeSurface)}\n`,
         ),
     ),
     // ADR-0074 §3: new egress is HELD while a resumed media job submitted by an older Relavium settles — its

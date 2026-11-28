@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createChatStore, type ChatStoreController } from './chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
+import { toolReviewPage } from './tool-review-model.js';
 import { createReviewDocument } from './tool-review-projection.js';
 
 /** Every text the secret scan was given, by length: one entry per scanned field per build. */
@@ -396,4 +397,106 @@ describe('openDetails opens the tool-call list on the newest call (ADR-0134 §6)
     store.handleReviewInput('', { return: true });
     expect(store.getSnapshot().review?.document?.preview.target).toBe('src/middle.ts');
   });
+});
+
+// Review round 2: `b` and `Esc` on a call's view step back to the list, and the list must not carry the view with it. The three fields the step
+// back resets (what was revealed, what was inspected, the document itself) were each removed without a test noticing.
+describe('stepping back from a call’s view to the list leaves nothing of the view behind (ADR-0148 §7)', () => {
+  const SECRET = `sk-proj-${'a'.repeat(24)}`;
+
+  function storeWithMaskedCall(): ChatStoreController {
+    const store = newStore();
+    store.applyToolLiveEvent({ phase: 'started', callId: 'secret', toolId: 'write_file' });
+    store.applyToolLiveEvent({
+      phase: 'preview',
+      callId: 'secret',
+      toolId: 'write_file',
+      preview: Object.freeze({
+        kind: 'operation' as const,
+        target: 'src/secret.ts',
+        fields: Object.freeze([{ name: 'token', value: SECRET }]),
+      }),
+    });
+    store.bindReviewVisibility(() => true);
+    return store;
+  }
+
+  it.each([
+    ['b', { input: 'b', key: {} }],
+    ['Esc', { input: '', key: { escape: true } }],
+  ] as const)(
+    '%s: the revealed secrets are masked again, the inspected ranges and the document are gone, and the list is on the call it was',
+    (_name, { input, key }) => {
+      const store = storeWithMaskedCall();
+      store.openDetails();
+      store.handleReviewInput('', { return: true });
+      store.handleReviewInput('r', {});
+      store.handleReviewInput('', { pageDown: true });
+      const viewed = store.getSnapshot().review;
+      expect(viewed?.screen).toBe('full');
+      expect(viewed?.reveal, 'the secret was revealed in the call’s view').toBe(true);
+      expect(viewed?.document).toBeDefined();
+
+      store.handleReviewInput(input, key);
+      const back = store.getSnapshot().review;
+      expect(back?.screen).toBe('list');
+      expect(back?.reveal, 'a secret revealed in one call’s view is masked again').toBe(false);
+      expect(back?.document, 'the call’s document is not kept').toBeUndefined();
+      expect(back?.inspected, 'what was inspected is forgotten').toEqual([]);
+      expect(back?.callId).toBe('secret');
+    },
+  );
+});
+
+describe('a secret revealed in one call’s view is masked in the next call opened (unit 8 fix wave 2, M2-2)', () => {
+  const SECRET_A = `sk-proj-${'a'.repeat(24)}`;
+  const SECRET_B = `sk-proj-${'b'.repeat(24)}`;
+
+  it.each([
+    ['b', { input: 'b', key: {} }],
+    ['Esc', { input: '', key: { escape: true } }],
+  ] as const)(
+    'revealed in the first call, %s back to the list, the second call opens masked, and its page does not show its secret',
+    (_name, { input, key }) => {
+      const store = newStore();
+      for (const [callId, secret] of [
+        ['first', SECRET_A],
+        ['second', SECRET_B],
+      ] as const) {
+        store.applyToolLiveEvent({ phase: 'started', callId, toolId: 'write_file' });
+        store.applyToolLiveEvent({
+          phase: 'preview',
+          callId,
+          toolId: 'write_file',
+          preview: Object.freeze({
+            kind: 'operation' as const,
+            target: `src/${callId}.ts`,
+            fields: Object.freeze([{ name: 'token', value: secret }]),
+          }),
+        });
+      }
+      store.bindReviewVisibility(() => true);
+      store.openDetails(); // on the newest call, the second
+      store.handleReviewInput('', { upArrow: true }); // the first
+      store.handleReviewInput('', { return: true });
+      store.handleReviewInput('r', {});
+      expect(store.getSnapshot().review?.reveal, 'the first call’s secret is revealed').toBe(true);
+      const page = (): string => {
+        const review = store.getSnapshot().review;
+        return review === undefined ? '' : (toolReviewPage(review, 80, 24)?.rows ?? []).join('\n');
+      };
+      expect(page()).toContain(SECRET_A);
+      store.handleReviewInput(input, key);
+      expect(store.getSnapshot().review?.screen).toBe('list');
+      // The list has nothing to reveal: an `r` there leaves it masked, so the call opened from it starts masked whatever it inherits.
+      store.handleReviewInput('r', {});
+      expect(store.getSnapshot().review?.reveal).toBe(false);
+      store.handleReviewInput('', { downArrow: true });
+      store.handleReviewInput('', { return: true });
+      const second = store.getSnapshot().review;
+      expect(second?.callId).toBe('second');
+      expect(second?.reveal, 'the next call opens masked').toBe(false);
+      expect(page(), 'and its page does not show its secret').not.toContain(SECRET_B);
+    },
+  );
 });

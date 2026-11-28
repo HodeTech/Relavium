@@ -101,11 +101,6 @@ describe.each(['fresh', 'resume'] as const)('Home %s builder admission handoff',
           onContinue: () => () => {},
           suspendSelf: () => {},
         },
-        onboardingTerminalLifecycle: {
-          onInput: () => () => {},
-          isRawMode: () => false,
-          setRawMode: () => {},
-        },
         writeControl: () => {},
         exit: () => {},
       });

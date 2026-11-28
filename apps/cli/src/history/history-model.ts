@@ -1,7 +1,10 @@
 import type { RunSummaryRecord } from '@relavium/db';
 import type { RunStatus } from '@relavium/shared';
 
-import { formatDuration } from '../render/tui/format.js';
+import { formatAgeOfIso, formatDuration, type DisplayPathRoots } from '../render/notation.js';
+import { glyphOf, type StatusGlyphRole } from '../render/tui/glyphs.js';
+import { placeForDisplay } from '../render/tui/place-label.js';
+import { recordedProjectRoot } from './project-root.js';
 import {
   MAX_PROJECT_ROOT_CHARS,
   isFinishedRun,
@@ -9,6 +12,24 @@ import {
   shortRunId,
   spanMs,
 } from './run-detail-model.js';
+
+/**
+ * A stored project root as a row of the History, Active or `/workflows` popup may carry it: named as the rest of the CLI names a directory
+ * ({@link placeForDisplay}: shortened FIRST against `paths`, so the project's own directory reads `. (project root)` and never a lone
+ * `.`), then scrubbed WHOLE and cut to `max` code points ({@link scrubbedBounded}: the root is stored text that could carry a secret, so
+ * the scrub is the sanitiser the helper runs and the bound is the one it applies). The three tabs call this one function, so a directory
+ * reads the same on all of them.
+ */
+export function storedPlace(
+  root: string,
+  paths: DisplayPathRoots | undefined,
+  max: number,
+): string {
+  // `scrubbedBounded` is the bound (it cuts the tail and marks the cut), so the front cut of the helper has nothing left to do.
+  return placeForDisplay(root, paths, Number.POSITIVE_INFINITY, (text) =>
+    scrubbedBounded(text, max),
+  );
+}
 
 /**
  * The pure view model of the Home's History browser rows (ADR-0140 §2, "History"; MVP-8 step 1). One row per run
@@ -21,40 +42,25 @@ import {
  * drawn on its own.
  */
 
-/** The glyph of each run status; the word is the status itself. */
-export const RUN_STATUS_GLYPH: Readonly<Record<RunStatus, string>> = {
-  pending: '○',
-  running: '◐',
-  paused: '⏸',
-  completed: '✓',
-  failed: '✗',
-  cancelled: '⊘',
+/** The glyph-table role of each run status; the word is the status itself. A view draws the role in the form its colour setting asks for. */
+export const RUN_STATUS_ROLE: Readonly<Record<RunStatus, StatusGlyphRole>> = {
+  pending: 'pending',
+  running: 'running',
+  paused: 'paused',
+  completed: 'completed',
+  failed: 'failed',
+  cancelled: 'cancelled',
 };
 
-const MINUTE_MS = 60_000;
-const HOUR_MS = 60 * MINUTE_MS;
-const DAY_MS = 24 * HOUR_MS;
-
-/** What a timestamp more than one minute ahead of the clock says: it is not an age, and `now` would be a lie. */
-export const IN_THE_FUTURE = 'in the future';
-
-/**
- * A coarse relative age of an ISO timestamp: `now` (under a minute, and a skew of up to one minute into the future),
- * `5m ago`, `3h ago`, `2d ago`. Each unit starts exactly at its boundary (60 s, 60 min, 24 h) and rounds down. A
- * timestamp MORE than one minute ahead of the clock says `in the future` (a clock that moved, or a damaged row), never
- * `now`; exactly one minute ahead is still skew. An unparseable timestamp yields `''`: the row renders nothing rather
- * than `NaN`.
- */
-export function ageText(iso: string, nowMs: number): string {
-  const thenMs = Date.parse(iso);
-  if (Number.isNaN(thenMs)) return '';
-  const delta = nowMs - thenMs;
-  if (delta < -MINUTE_MS) return IN_THE_FUTURE;
-  if (delta < MINUTE_MS) return 'now';
-  if (delta < HOUR_MS) return `${Math.floor(delta / MINUTE_MS)}m ago`;
-  if (delta < DAY_MS) return `${Math.floor(delta / HOUR_MS)}h ago`;
-  return `${Math.floor(delta / DAY_MS)}d ago`;
-}
+/** The Unicode glyph of each run status, from the table (the plain form is {@link RUN_STATUS_ROLE}'s, chosen by the view). */
+export const RUN_STATUS_GLYPH: Readonly<Record<RunStatus, string>> = {
+  pending: glyphOf(RUN_STATUS_ROLE.pending, false),
+  running: glyphOf(RUN_STATUS_ROLE.running, false),
+  paused: glyphOf(RUN_STATUS_ROLE.paused, false),
+  completed: glyphOf(RUN_STATUS_ROLE.completed, false),
+  failed: glyphOf(RUN_STATUS_ROLE.failed, false),
+  cancelled: glyphOf(RUN_STATUS_ROLE.cancelled, false),
+};
 
 export interface HistoryRow {
   /** The run id — the identity a drill-down and a pin use. Draw {@link shortId}. */
@@ -90,6 +96,8 @@ export interface HistoryRowsInput {
   readonly pinnedRunIds: ReadonlySet<string>;
   /** Workflow id → slug (`loadWorkflowSlugs`); a run whose workflow is absent from it shows the id. */
   readonly workflowLabels?: ReadonlyMap<string, string>;
+  /** What a run's project root is shortened against (the Home's directory and the operator's home); absent, the root is shown as stored. */
+  readonly paths?: DisplayPathRoots;
 }
 
 /** The rows of one page, in the order given (the page is already newest first). Nothing is dropped here. */
@@ -99,6 +107,9 @@ export function buildHistoryRows(input: HistoryRowsInput): HistoryRow[] {
       ? spanMs(run.startedAt, run.completedAt)
       : undefined;
     const createdAtMs = Date.parse(run.createdAt);
+    // A stored root that names no directory (a relative one, written before roots were canonical) is not shown: `.` would read as
+    // "this project" in every Home's History (`recordedProjectRoot`, MVP-11 unit 7, round 2).
+    const recorded = recordedProjectRoot(run.projectRoot);
     return {
       id: run.id,
       shortId: shortRunId(run.id),
@@ -106,15 +117,17 @@ export function buildHistoryRows(input: HistoryRowsInput): HistoryRow[] {
       glyph: RUN_STATUS_GLYPH[run.status],
       word: run.status,
       label: scrubbedBounded(input.workflowLabels?.get(run.workflowId) ?? run.workflowId),
-      ageText: ageText(run.createdAt, input.nowMs),
+      ageText: formatAgeOfIso(run.createdAt, input.nowMs),
       ...(durationMs === undefined ? {} : { durationMs, durationText: formatDuration(durationMs) }),
       pinned: input.pinnedRunIds.has(run.id),
       ...(Number.isNaN(createdAtMs) ? {} : { createdAtMs }),
       createdAt: run.createdAt,
       totalCostMicrocents: run.totalCostMicrocents,
-      ...(run.projectRoot === undefined
+      ...(recorded === undefined
         ? {}
-        : { projectRoot: scrubbedBounded(run.projectRoot, MAX_PROJECT_ROOT_CHARS) }),
+        : {
+            projectRoot: storedPlace(recorded, input.paths, MAX_PROJECT_ROOT_CHARS),
+          }),
     };
   });
 }

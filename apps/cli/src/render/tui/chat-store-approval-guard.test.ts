@@ -408,6 +408,21 @@ describe('typing never answers the card (G1)', () => {
       expect(r.pending()).toBe(true);
     });
 
+    it('is a paste: the host tells the store, and a Ctrl+Y inside the typeahead window after it is refused', () => {
+      const r = rig({ typeaheadMs: APPROVAL_TYPEAHEAD_MS });
+      r.open('card');
+      r.show();
+      at(100);
+      r.store.noteForeignInput(); // a bracketed paste: the card owns no paste, but it is the person typing
+      at(1000);
+      r.chord('y');
+      expect(r.pending(), 'a paste 900 ms before is typing ahead').toBe(true);
+      r.show();
+      at(100 + APPROVAL_TYPEAHEAD_MS + 1);
+      r.chord('y');
+      expect(r.pending(), 'after the window the card answers').toBe(false);
+    });
+
     it('is not a key the card acts on: [v] and [b] navigate, and Ctrl+Y is then answered', () => {
       const r = rig({ typeaheadMs: APPROVAL_TYPEAHEAD_MS });
       r.open('card');

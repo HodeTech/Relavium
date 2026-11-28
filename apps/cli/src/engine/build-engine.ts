@@ -20,12 +20,13 @@ import { effortTiersFor, type PricingOverlay } from '@relavium/llm';
 import type { MediaBilledModality, MediaCostEstimate, MediaSurface } from '@relavium/shared';
 
 import { effortWithheldNote, reasoningWithheldByCapFor } from '../chat/effort-notice.js';
+import type { NoticeSurface } from '../render/notice-surface.js';
 import { hostAbortController, hostDeadlineTimer, hostSleep } from '../process/sleep.js';
 import { createCliHost } from './host.js';
 import { createProviderResolver, type ProviderResolver } from './providers.js';
 import { assembleToolEnv, type ToolEnvProfile } from './tool-host/assemble.js';
 
-export interface BuildEngineOptions {
+interface BuildEngineBaseOptions {
   /**
    * The durable effect journal factory (ADR-0080) — built per node from the run correlation the engine
    * supplies. Absent ⇒ a dispatch gets `unwiredEffectJournal()` and an effect is REFUSED rather than
@@ -88,14 +89,6 @@ export interface BuildEngineOptions {
    */
   readonly resolvePrice?: PricingOverlay;
   /**
-   * Sink for a WITHHELD reasoning tier (ADR-0071 §6) — an agent authored `reasoning_effort: <tier>` that the bound
-   * model does not accept, so the field is not sent. The gate replaced a loud provider 400 with a quiet no-op, and
-   * on an authored workflow that no-op is the dangerous one: the run succeeds, the knob does nothing, and the bill
-   * lands at the provider's default tier. `run.ts` wires this to stderr — never stdout, which `--json` owns.
-   * Absent ⇒ silent (the tier is still withheld).
-   */
-  readonly onEffortWithheld?: (note: string) => void;
-  /**
    * Sink for an UNPRICED model turn (ADR-0071 §K7) — the cost cap could not apply. `run.ts` wires it to stderr,
    * never stdout (`--json`). The governor already dedups per model. Absent ⇒ silent.
    */
@@ -107,6 +100,25 @@ export interface BuildEngineOptions {
   /** ADR-0074 §3 — new egress is held while a resumed legacy media job's cost basis is unknown. Routed to stderr. */
   readonly onLegacyMediaJobHold?: (nodeIds: readonly string[]) => void;
 }
+
+/**
+ * The sink for a WITHHELD reasoning tier and where its note is read. An agent authored `reasoning_effort: <tier>` that the bound model
+ * does not accept has the field withheld (ADR-0071 §6). The gate replaced a loud provider 400 with a quiet no-op, and on an authored
+ * workflow that no-op is the dangerous one: the run succeeds, the knob does nothing, and the bill lands at the provider's default tier.
+ * `run.ts` wires the sink to stderr — never stdout, which `--json` owns. Absent ⇒ silent (the tier is still withheld).
+ *
+ * **A sink says where it is read.** The note names a remedy, and a remedy that exists in the shell (`relavium models refresh`) does not
+ * exist in the Home (`/models`; ADR-0145 §7.4, MVP-11 OD-20). A caller that gives a sink without saying so fails the typecheck, so a host
+ * can no more take the scripted wording by forgetting than it could before by default; a caller with no sink has nothing to word.
+ */
+type EffortNoticeOptions =
+  | { readonly onEffortWithheld?: undefined; readonly noticeSurface?: NoticeSurface }
+  | {
+      readonly onEffortWithheld: (note: string) => void;
+      readonly noticeSurface: NoticeSurface;
+    };
+
+export type BuildEngineOptions = BuildEngineBaseOptions & EffortNoticeOptions;
 
 /** The tool-host profile of `relavium run` and `gate` (the author-trusted run host; see {@link buildEngine}). */
 export const RUN_TOOL_PROFILE: ToolEnvProfile = 'workflow-read-write';
@@ -177,7 +189,7 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
       ? {}
       : {
           onEffortWithheld: (result: EffortGateResult, model: string) => {
-            options.onEffortWithheld?.(effortWithheldNote(result, model));
+            options.onEffortWithheld?.(effortWithheldNote(result, model, options.noticeSurface));
           },
         }),
     registry,

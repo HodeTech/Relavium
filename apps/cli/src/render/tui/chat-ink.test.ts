@@ -1,6 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
-import { finalizeInkExit, emitIntro, idleHint } from './chat-ink.js';
+import { commandsOf } from '../../commands/repl-commands.js';
+import {
+  END_THE_SESSION_AGAIN,
+  END_THE_SESSION_TWICE,
+  emitIntro,
+  finalizeInkExit,
+  idleHint,
+} from './chat-ink.js';
+import { reduceChatKey } from './chat-input.js';
+import { DISARMED, pressInterrupt } from './interrupt-keymap.js';
+import { shouldOpenPalette } from './palette-reducer.js';
+
+/** The keys a legend row lists: the first word of each ` · ` item, as written (brackets and all). */
+const listedKeys = (row: string): string[] =>
+  row.split(' \u00b7 ').map((item) => item.split(' ')[0] ?? '');
 
 /**
  * `finalizeInkExit` unit tests (2.6.F Step 4a, refined at Step 4b-3, ADR-0068 §c) — the teardown-then-outcome
@@ -80,10 +94,10 @@ describe('emitIntro — the renderer decides where the intro survives', () => {
     expect(p.outs).toEqual([]); // never a pre-mount write: the alt buffer erases it
   });
 
-  it('INLINE: printed above the live region, with its newline — byte-identical to before', () => {
+  it('INLINE: printed above the live region, with its newline, in the content column of the grid (6 columns at 80)', () => {
     const p = ports();
     emitIntro('Resumed session id-0 (3 turns).', false, p);
-    expect(p.outs).toEqual(['Resumed session id-0 (3 turns).\n']);
+    expect(p.outs).toEqual(['      Resumed session id-0 (3 turns).\n']);
     expect(p.notices).toEqual([]);
   });
 
@@ -100,14 +114,52 @@ describe('emitIntro — the renderer decides where the intro survives', () => {
 /** The idle prompt's hint bar says what the keys do now: end the session, open the palette, send, or clear (2.5.C S6). */
 describe('idleHint — what the idle prompt tells the person to press', () => {
   it('asks for the second Ctrl+C while the first is armed, whatever the draft holds', () => {
-    expect(idleHint(true, true)).toBe('Press Ctrl+C again to end the session');
-    expect(idleHint(true, false)).toBe('Press Ctrl+C again to end the session');
+    expect(idleHint(true, true)).toBe('[Ctrl+C] end the session (again)');
+    expect(idleHint(true, false)).toBe('[Ctrl+C] end the session (again)');
   });
 
-  it('offers the palette and the two ways out at an empty prompt, and the submit hint once composing', () => {
-    expect(idleHint(false, true)).toBe('/ for commands \u00b7 /exit or Ctrl+C twice to end');
+  it('offers the palette and the key that leaves at an empty prompt, and the submit hint once composing', () => {
+    // ADR-0146 §4: the key, its verb and its destination; a stand-alone chat ends (the sentence about typing `/exit` is gone from the hint:
+    // `/exit` is a row of the palette it names).
+    expect(idleHint(false, true)).toBe('[/] commands \u00b7 [Ctrl+C] end (twice)');
+    expect(idleHint(false, true)).not.toContain('[/exit]');
     expect(idleHint(false, false)).toBe(
-      'Enter to send \u00b7 Ctrl+J newline \u00b7 Ctrl+C clears the draft',
+      'Enter send \u00b7 [Ctrl+J] newline \u00b7 [Ctrl+C] clear the draft',
     );
+  });
+
+  it('names `Ctrl+C` as the key that LEAVES where it ends the session, never as a close (ADR-0145 §2)', () => {
+    expect(END_THE_SESSION_TWICE).toMatchObject({ keys: 'Ctrl+C', class: 'leave' });
+    expect(END_THE_SESSION_AGAIN).toMatchObject({ keys: 'Ctrl+C', class: 'leave' });
+    // With a draft the first `Ctrl+C` only clears it and arms nothing: that is no leaving key, and the bar says so in its own class.
+    expect(idleHint(false, false)).toContain('[Ctrl+C] clear the draft');
+  });
+
+  it('lists only keys the prompt answers, and each does what its word says (ADR-0145 §3: a test presses every key a legend lists)', () => {
+    const now = 1000;
+    // At an empty prompt: `/` opens the palette (whose last row, `/exit`, is a command of the chat's registry), `Ctrl+C` twice ends the session.
+    expect(listedKeys(idleHint(false, true)).filter((word) => word.startsWith('['))).toEqual([
+      '[/]',
+      '[Ctrl+C]',
+    ]);
+    expect(shouldOpenPalette('/', {}, false, 0)).toBe(true);
+    expect(commandsOf('standalone-chat').map((command) => command.name)).toContain('exit');
+    const first = pressInterrupt(DISARMED, { kind: 'prompt', hasText: false }, now);
+    expect(first.action).toBe('arm-hint');
+    expect(pressInterrupt(first.state, { kind: 'prompt', hasText: false }, now + 1).action).toBe(
+      'end-session',
+    );
+    // Armed, the one key the bar lists is that second `Ctrl+C`.
+    expect(listedKeys(idleHint(true, true))).toEqual(['[Ctrl+C]']);
+    // Composing: `Enter` sends the line, `Ctrl+J` (a bare line feed) is a newline, and `Ctrl+C` clears the draft and arms nothing.
+    expect(listedKeys(idleHint(false, false))).toEqual(['Enter', '[Ctrl+J]', '[Ctrl+C]']);
+    expect(reduceChatKey('', { return: true }, 'hello', false)).toEqual({
+      kind: 'submit',
+      line: 'hello',
+    });
+    expect(reduceChatKey('\n', {}, 'hello', false)).toEqual({ kind: 'newline' });
+    const cleared = pressInterrupt(DISARMED, { kind: 'prompt', hasText: true }, now);
+    expect(cleared.action).toBe('clear-text');
+    expect(cleared.state, 'a draft cleared arms nothing').toEqual(DISARMED);
   });
 });

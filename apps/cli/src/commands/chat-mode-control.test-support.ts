@@ -14,6 +14,7 @@ import type { CommandGrantsPort } from '../chat/chat-mode.js';
 import { buildChatSession } from '../chat/session-host.js';
 import { scriptedResolver } from '../chat/test-support.js';
 import { resolveConfig } from '../config/resolve.js';
+import type { DisplayPathRoots } from '../render/notation.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND } from '../render/tui/session-view-model.js';
 import { createChatModeControl, type ChatModeControl } from './chat.js';
@@ -51,6 +52,8 @@ export interface RealModeControl {
       }
     | undefined;
   readonly workspace: string;
+  /** What the control announced on its host's notification channel (`announce`), in order: the texts, whatever their topic. */
+  readonly announced: readonly string[];
   readonly dispose: () => Promise<void>;
 }
 
@@ -60,6 +63,13 @@ export interface RealModeControl {
  */
 export async function realModeControl(options?: {
   readonly commandGrants?: CommandGrantsPort;
+  /**
+   * What the command card shortens the session workspace against (the project and the home), as the chat handler passes it; a function
+   * when the roots depend on the workspace, which the helper creates.
+   */
+  readonly commandPaths?: DisplayPathRoots | ((workspace: string) => DisplayPathRoots);
+  /** `false` builds the control with NO notification channel (a host that has none); by default it has the chat handler's. */
+  readonly announce?: false;
 }): Promise<RealModeControl> {
   const workspace = mkdtempSync(join(tmpdir(), 'relavium-mode-control-'));
   const built = await buildChatSession({
@@ -75,17 +85,29 @@ export async function realModeControl(options?: {
   });
   const pushes = vi.spyOn(built.session, 'setTurnPolicy');
   const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-  const control = createChatModeControl(
-    built,
-    store,
-    options?.commandGrants === undefined ? undefined : { commandGrants: options.commandGrants },
-  );
+  // The host's channel, as the chat handler gives it (it always has one): a control with none says a refusal in the transcript instead.
+  const announced: string[] = [];
+  const control = createChatModeControl(built, store, {
+    ...(options?.announce === false
+      ? {}
+      : {
+          announce: (text: string) => {
+            announced.push(text);
+          },
+        }),
+    ...(options?.commandGrants === undefined ? {} : { commandGrants: options.commandGrants }),
+    commandPaths:
+      typeof options?.commandPaths === 'function'
+        ? options.commandPaths(workspace)
+        : options?.commandPaths,
+  });
   return {
     store,
     control,
     policyPushes: () => pushes.mock.calls.length,
     policy: () => pushes.mock.calls.at(-1)?.[0],
     workspace,
+    announced,
     dispose: async () => {
       built.session.cancel();
       await built.whenHostSafeToClose();

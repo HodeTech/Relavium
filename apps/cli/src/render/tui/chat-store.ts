@@ -30,6 +30,12 @@ import {
   type ToolReviewState,
 } from './tool-review-model.js';
 import { CARD_ENTER_NOTE, CARD_LOCKOUT_NOTE, CARD_TYPEAHEAD_NOTE } from './tool-review-card.js';
+import {
+  createChordHistory,
+  createLockDisplay,
+  type ChordHistory,
+  type LockDisplay,
+} from './chord-guard.js';
 import type { ToolDisplay } from './tool-display.js';
 import {
   initialQuestionCard,
@@ -53,7 +59,10 @@ import {
   type ApprovalPrompt,
   type ChatMode,
 } from '../../chat/chat-mode.js';
-import { formatSessionFooter, sanitizeInline, stripTerminalControls } from './chat-projection.js';
+import { formatSessionFooter } from './chat-projection.js';
+import { sanitizeInline, stripTerminalControls } from '../sanitize.js';
+import { withGlyphForm } from './glyphs.js';
+import { ScreenStream, screenText } from './screen-text.js';
 import {
   appendNotice,
   appendUserMessage,
@@ -67,6 +76,7 @@ import {
   type SessionViewSeed,
   type SessionViewState,
   type TranscriptBound,
+  type WarningLifetime,
 } from './session-view-model.js';
 
 /**
@@ -182,6 +192,18 @@ export interface ChatStoreController extends ChatStore {
   openDetails: () => void;
   closeDetails: () => void;
   invalidateToolReview: () => void;
+  /**
+   * The key history the store's guards read (the previous key, the last foreign key, the last resolution): the one given in
+   * {@link ChatStoreOptions.history}, or its own. A popup host of the same terminal host stamps it too (ADR-0148 §2: one key history per host).
+   */
+  readonly keyHistory: ChordHistory;
+  /**
+   * What the cards DRAW of the answer lockout (ADR-0145 §3, unit 6's `(wait)` rule, unit 8): whether an approval's or the checkpoint's
+   * affirmative chords are held by the lockout now, with one timer at the instant it opens. A display value beside the snapshot, never a field of
+   * it: its change re-renders the card's host and makes no new frame. Only the lockout is drawn (the dwell, the quiet gap and the typing window
+   * follow from the person's own keys and are short).
+   */
+  readonly answerLock: LockDisplay;
   bindReviewVisibility: (visible: (() => boolean) | undefined) => void;
   bindReviewClipboard: (copy: ((text: string) => Promise<boolean>) | undefined) => void;
   acknowledgeReviewFrame: (review: ToolReviewState, page: ReviewPage | undefined) => void;
@@ -204,12 +226,20 @@ export interface ChatStoreController extends ChatStore {
   apply: (event: SessionStreamHandleEvent) => void;
   /** Add the user's typed text as a transcript entry (REPL submit) — flushes immediately. */
   appendUser: (text: string) => void;
-  /** Surface a one-line note in the ⚠ warnings channel (e.g. an MCP-skipped notice) — sanitized, flushes. */
-  note: (message: string) => void;
+  /**
+   * Surface a one-line note in the ⚠ warnings channel — sanitized, flushes. By default (`turn`) it answers a gesture the person made (an attachment cut
+   * to fit, a refused mention or command) and is consumed when the next message is sent; `session` is for a fact about the session itself that a
+   * message does not change (an MCP tool the build skipped), which stays on the lead row until the chat ends ({@link WarningLifetime}).
+   */
+  note: (message: string, lifetime?: WarningLifetime) => void;
   /** Append command output (e.g. `/workflows`, `/cost`) as a notice transcript entry — control sequences
-   *  stripped (newlines kept for multi-line output), flushes immediately. */
-  notice: (text: string) => void;
-  /** Advance the spinner tick; repaint if there is pending (dirty) state or a turn is in flight. */
+   *  stripped (newlines kept for multi-line output), flushes immediately. `hostLead` names the one glyph of the speaker marker's set that the
+   *  host's own sentence leads its logical lines with (the model-switch notice's `⇄`); every other glyph of the set is blanked from the rows. */
+  notice: (text: string, hostLead?: 'yourTurn' | 'modelSwitch') => void;
+  /**
+   * The frame loop: advance the spinner tick and repaint when there is coalesced (dirty) state, when a turn is in flight and not blocked on the
+   * person, or while the confirmation of a wider grant is shown. A card that waits is not repainted by it (ADR-0147 §2).
+   */
   tick: () => void;
   /** Force a repaint (used on finalize to paint the last frame). */
   flush: () => void;
@@ -244,6 +274,11 @@ export interface ChatStoreController extends ChatStore {
   requestQuestion: (request: AskUserRequest, signal?: AbortSignalLike) => Promise<AskUserAnswer>;
   /** Insert a bracketed paste into the open question's own-answer field; `true` when a question is open (the paste is consumed). */
   pasteIntoQuestion: (text: string) => boolean;
+  /**
+   * A paste reached the chat: it is typing, so it is a foreign key for the guards (a `Ctrl+Y` or `Ctrl+G` within the next second and a half is
+   * not an answer), exactly as a typed key is when no card owns it. The paste itself goes wherever the host sends it.
+   */
+  noteForeignInput: () => void;
   /** Bind whether the question card's exact frame has been acknowledged visible (the host component owns the measurement). */
   bindQuestionVisibility: (visible: (() => boolean) | undefined) => void;
   /**
@@ -260,6 +295,11 @@ export interface ChatStoreController extends ChatStore {
   bindCheckpointVisibility: (visible: (() => boolean) | undefined) => void;
   /** The host flushed the checkpoint card's exact `frame`: from now the dwell before `Ctrl+Y` counts. A stale frame is ignored. */
   acknowledgeCheckpointFrame: (frame: object) => void;
+  /**
+   * The host's report that the open question's frame is on screen: the settle before a choosing key counts runs from here (ADR-0132 §3).
+   * A frame that is not the current one (a stale acknowledgement) is ignored.
+   */
+  acknowledgeQuestionFrame: (frame: object) => void;
 }
 
 /**
@@ -282,7 +322,24 @@ export interface ChatStoreOptions {
    * `0` — or `confirmAlways: false` — switches one off).
    */
   readonly approvalGuard?: ApprovalGuard;
+  /**
+   * The terminal host's ONE key history (`createChordHistory`), shared with its popup host and, on the Home, its chord cards
+   * ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §2): a key typed into a popup
+   * or answered on another card is seen by this store's guards. Absent ⇒ the store keeps one of its own.
+   */
+  readonly history?: ChordHistory;
+  /** The one-shot timer the answer lock's display opens on (`setTimeout`-shaped, returning its cancel); default an unref'd `setTimeout`. */
+  readonly lockSchedule?: ((callback: () => void, ms: number) => () => void) | undefined;
 }
+
+/** An unref'd one-shot timer: the answer lock's opening never keeps the process alive. */
+const unrefTimeout = (callback: () => void, ms: number): (() => void) => {
+  const timer = setTimeout(callback, ms);
+  timer.unref();
+  return () => {
+    clearTimeout(timer);
+  };
+};
 
 /**
  * @param transcriptBound the RENDERER-injected bound on the text a completed turn bakes into the transcript
@@ -301,6 +358,9 @@ export function createChatStore(
   const listeners = new Set<() => void>();
   const markdown = new MarkdownStream();
   const terminal = new TerminalStream();
+  // The screen's filter runs on the stream BEFORE the live tail is laid out (MVP-11 unit 9, review round 3, R3S-1): a rewrite can change a row's
+  // width, so the tail must be laid out from the text as it is drawn. Chunk-safe: it holds back what a later chunk could still change.
+  const screen = new ScreenStream();
   let state = initialSessionViewState(seed, transcriptBound);
   let mode: ChatMode = DEFAULT_CHAT_MODE;
   let reasoningEffort: ReasoningEffort | undefined;
@@ -321,14 +381,22 @@ export function createChatStore(
     | undefined;
   let questionVisible: (() => boolean) | undefined;
   let questionFrame: object | undefined;
+  // When the current question frame was minted, on the MONOTONIC clock like every other guard: a wall clock stepped back would refuse every
+  // choosing key for as long as it was stepped, one stepped forward would skip the settle (ADR-0147 §2; unit 8 fix wave, S-5).
   let questionFrameAt = 0;
+  // When the host acknowledged the current frame as flushed, on the same clock; unset until it does. The settle counts from there, as the
+  // checkpoint card's dwell does, so a slow flush leaves the person the whole time to read; a host that never reports one is judged from
+  // the mint (a test's stub of the visibility).
+  let questionShownAt: number | undefined;
   const mintQuestionFrame = (): void => {
     questionFrame = {};
-    questionFrameAt = Date.now();
+    questionFrameAt = performance.now();
+    questionShownAt = undefined;
   };
   // A choosing key counts only once the frame is flushed AND has been on screen long enough to read (QUESTION_SETTLE_MS).
   const questionAcceptsKeys = (): boolean =>
-    questionVisible?.() === true && Date.now() - questionFrameAt >= QUESTION_SETTLE_MS;
+    questionVisible?.() === true &&
+    performance.now() - (questionShownAt ?? questionFrameAt) >= QUESTION_SETTLE_MS;
   // The open continue-checkpoint card and the settle pair of its pending promise (ADR-0136).
   let checkpoint: CheckpointCardState | undefined;
   let pendingCheckpoint:
@@ -350,9 +418,9 @@ export function createChatStore(
   const approvalGuard = resolveApprovalGuard(options?.approvalGuard);
   let acknowledgedReview: ToolReviewState | undefined;
   let acknowledgedAt = 0;
-  let lastKeyAt = Number.NEGATIVE_INFINITY;
-  let lastForeignKeyAt = Number.NEGATIVE_INFINITY;
-  let lastResolvedAt = Number.NEGATIVE_INFINITY;
+  // The host's ONE key history (ADR-0148 §2): the previous key, the last foreign key and the last resolution, shared with the popup host and,
+  // on the Home, with the chord cards, so a key typed into a popup is seen by the guards of a card that opens next. Its own when none is given.
+  const keyHistory: ChordHistory = options?.history ?? createChordHistory();
   // The session-wide grant is a two-step answer: the review the first `Ctrl+G` was pressed on and when. ENTER confirms it.
   // `scope` is which answer it asks: the session-wide `Ctrl+G`, or `Ctrl+O` (remember this command for this project).
   let alwaysAsk:
@@ -364,10 +432,28 @@ export function createChatStore(
     | undefined;
   // Whether this card has already shown its one refusal note.
   let refusalNoted = false;
+  // When the inspection popup (the full view) last stepped back to the card, on the monotonic clock (ADR-0148 §7): an `Esc` that arrives
+  // inside the settle after it is a mashed key, not a decision, and is ignored instead of rejecting the call and stopping the turn. It only
+  // ever suppresses a rejection; `Ctrl+C` still stops, and an approval keeps every guard of its own. Reset when the card settles.
+  let steppedBackAt = Number.NEGATIVE_INFINITY;
+  const noteStepBack = (previous: ToolReviewState, next: ToolReviewState, now: number): void => {
+    if (previous.kind === 'approval' && previous.screen !== 'card' && next.screen === 'card')
+      steppedBackAt = now;
+  };
+  const mashedEscape = (key: ChatKey, now: number): boolean =>
+    key.escape === true &&
+    review?.kind === 'approval' &&
+    review.screen === 'card' &&
+    now - steppedBackAt < approvalGuard.settleMs;
   const alwaysAsked = (now: number): boolean =>
     alwaysAsk !== undefined &&
     alwaysAsk.review === review &&
     now - alwaysAsk.at <= APPROVAL_CONFIRM_MAX_MS;
+  // A card is open and the turn waits for the person (ADR-0147 §2): the store's tick has nothing of its own to repaint then.
+  const waitingOnPerson = (): boolean =>
+    approval !== undefined || question !== undefined || checkpoint !== undefined;
+  // The frame last flushed still asks the confirmation of a wider grant, which lapses with time: the tick repaints until it is gone.
+  const confirmationShown = (): boolean => snapshot.alwaysConfirm || snapshot.rememberConfirm;
   let toolDisplays = new Map<string, ToolDisplay>();
   let sealed = false;
   let reviewVisible: (() => boolean) | undefined;
@@ -395,7 +481,18 @@ export function createChatStore(
     color,
   };
 
+  // The lockout as the cards draw it: from the last answer, while an approval or the checkpoint is open (the question card has no lockout layer).
+  const answerLock = createLockDisplay({
+    now: () => performance.now(),
+    schedule: options?.lockSchedule ?? unrefTimeout,
+    until: () =>
+      (approval !== undefined || checkpoint !== undefined) && approvalGuard.lockoutMs > 0
+        ? keyHistory.lastResolvedAt + approvalGuard.lockoutMs
+        : Number.NEGATIVE_INFINITY,
+  });
+
   const flush = (): void => {
+    answerLock.sync(); // a card opened or closed: the lock is read again (a listener hears only a change)
     snapshot = {
       state,
       mode,
@@ -512,7 +609,10 @@ export function createChatStore(
     // The transcript entry is built from the answer the card already holds — never from an event (ADR-0132 §6).
     state = appendNotice(
       state,
-      stripTerminalControls(questionTranscriptText(open.request, answer)),
+      stripTerminalControls(
+        withGlyphForm(!color, () => questionTranscriptText(open.request, answer)),
+      ),
+      'yourTurn', // the record's own rows lead with the host's `›`, which the core refuses in a model's question
     );
     settling.resolve(answer);
     flush();
@@ -539,12 +639,15 @@ export function createChatStore(
   };
 
   return {
+    keyHistory,
+    answerLock,
     applyToolLiveEvent: (event) => {
       if (sealed) return;
       state = reduceToolLiveEvent(state, event);
       if (event.phase === 'started') {
         markdown.reset();
         terminal.reset();
+        screen.reset();
       }
       toolDisplays = new Map(toolDisplays).set(
         event.callId,
@@ -629,9 +732,9 @@ export function createChatStore(
     },
     acknowledgeReviewFrame: (expected, page) => {
       if (review !== expected) return;
-      // The host acknowledges the same review again on every re-render (a spinner tick flushes the store); only a
-      // DIFFERENT review — a new card, a resize, a screen change, any state change — is a new frame the person must be
-      // given time to read, so only that restarts the dwell.
+      // The host acknowledges the same review again on every re-render (its wait clock's second, a flush for coalesced state, the lapsing
+      // confirmation's tick); only a DIFFERENT review — a new card, a resize, a screen change, any state change — is a new frame the person
+      // must be given time to read, so only that restarts the dwell.
       if (acknowledgedReview !== expected) {
         acknowledgedReview = expected;
         acknowledgedAt = performance.now();
@@ -648,8 +751,8 @@ export function createChatStore(
       // The single choke point: the host routes EVERY key here first, including the ones the composer then drops while a
       // turn runs and the ones a card swallows, so "the previous key" is the person's real previous key.
       const now = performance.now();
-      const previousKeyAt = lastKeyAt;
-      lastKeyAt = now;
+      const previousKeyAt = keyHistory.previousKeyAt;
+      keyHistory.previousKeyAt = now;
       // An open question card owns the keyboard (ADR-0132 §3): the stop keys abort the turn, a choosing key is applied only
       // once the card's exact frame has been acknowledged visible, and every other key is consumed.
       if (question !== undefined) {
@@ -658,7 +761,7 @@ export function createChatStore(
         // key typed before its frame settled — is a person at the keyboard, and the governed call the model made right after
         // the question opens its card a few milliseconds later: a key typed into the question is not an answer to THAT card
         // (PR #99 security sitting H3). Only the stop keys are exempt: they leave the turn, they do not type.
-        if (action.kind !== 'stop') lastForeignKeyAt = now;
+        if (action.kind !== 'stop') keyHistory.lastForeignKeyAt = now;
         switch (action.kind) {
           case 'stop':
             return 'abort';
@@ -671,11 +774,11 @@ export function createChatStore(
           case 'submit':
             // The key that answered the question is held, double-tapped or repeated onto the card that follows it: a
             // key-resolved question starts the same lockout a key-resolved card does.
-            lastResolvedAt = now;
+            keyHistory.lastResolvedAt = now;
             settleQuestionWith(action.answer);
             break;
           case 'skip':
-            lastResolvedAt = now;
+            keyHistory.lastResolvedAt = now;
             settleQuestionWith({ kind: 'skipped' });
             break;
           case 'none':
@@ -689,7 +792,7 @@ export function createChatStore(
       if (checkpoint !== undefined) {
         const action = reduceCheckpointKey(input, key);
         if (action.kind === 'stop' || action.kind === 'interrupt') {
-          lastResolvedAt = now;
+          keyHistory.lastResolvedAt = now;
           settleCheckpointWith('stop');
           return action.kind === 'interrupt' ? 'stop-answered' : 'handled';
         }
@@ -698,27 +801,30 @@ export function createChatStore(
             now,
             shownAt: checkpointShownAt,
             previousKeyAt,
-            lastForeignKeyAt,
-            lastResolvedAt,
+            lastForeignKeyAt: keyHistory.lastForeignKeyAt,
+            lastResolvedAt: keyHistory.lastResolvedAt,
           });
           // It also has to be on screen right now: custody lost (Ctrl-Z, a closed output) makes the frame unseen again.
           if (refusal === undefined && checkpointVisible?.() === true) {
-            lastResolvedAt = now;
+            keyHistory.lastResolvedAt = now;
             settleCheckpointWith('continue');
             return 'handled';
           }
           // A held key goes on being held: an affirmative key inside the lockout restarts it, as at an approval card.
-          if (approvalGuard.lockoutMs > 0 && now - lastResolvedAt < approvalGuard.lockoutMs)
-            lastResolvedAt = now;
+          if (
+            approvalGuard.lockoutMs > 0 &&
+            now - keyHistory.lastResolvedAt < approvalGuard.lockoutMs
+          )
+            keyHistory.lastResolvedAt = now;
           return 'handled';
         }
-        lastForeignKeyAt = now;
+        keyHistory.lastForeignKeyAt = now;
         return 'handled';
       }
       if (review === undefined) {
         // No card exists: the composer owns this key and drops it while a turn runs. That is a person typing the next
         // instruction — a foreign key, evidence that a `Ctrl+Y` or `Ctrl+G` in the next second and a half is not an answer (G1).
-        lastForeignKeyAt = now;
+        keyHistory.lastForeignKeyAt = now;
         return undefined;
       }
       const calls = [...toolDisplays.values()];
@@ -736,7 +842,7 @@ export function createChatStore(
         rememberOffered,
       );
       // What the guard compares THIS key against is what happened before it.
-      const priorForeignKeyAt = lastForeignKeyAt;
+      const priorForeignKeyAt = keyHistory.lastForeignKeyAt;
       // The session-wide grant's question — raised by a first `Ctrl+G` that passed every guard — is answered by ENTER and by no
       // other key (PR #99 security sitting H1: a second `a` was typing or a held key whatever the gap between them; the chord keeps that rule). It must
       // be on the same review, no older than the window and no younger than the minimum, and the card must still accept an
@@ -768,7 +874,7 @@ export function createChatStore(
           shownAt: acknowledgedReview === review ? acknowledgedAt : undefined,
           previousKeyAt,
           lastForeignKeyAt: priorForeignKeyAt,
-          lastResolvedAt,
+          lastResolvedAt: keyHistory.lastResolvedAt,
         }) === undefined;
       if (
         !confirmed &&
@@ -793,7 +899,7 @@ export function createChatStore(
                 rememberOffered,
               ).kind === 'none')))
       )
-        lastForeignKeyAt = now;
+        keyHistory.lastForeignKeyAt = now;
       // A held key goes on being held: an affirmative key that arrives inside the lockout restarts it, so the key must be
       // RELEASED for the whole window before the next card can be answered (PR #99 security sitting H2: a slow auto-repeat
       // used to slip past the window that counted from the resolving key only). Not only a refused answer: a repeat that lands
@@ -801,9 +907,9 @@ export function createChatStore(
       if (
         isAffirmativeReviewKey(review, input, key) &&
         approvalGuard.lockoutMs > 0 &&
-        now - lastResolvedAt < approvalGuard.lockoutMs
+        now - keyHistory.lastResolvedAt < approvalGuard.lockoutMs
       )
-        lastResolvedAt = now;
+        keyHistory.lastResolvedAt = now;
       // The question ends at the next key that is not its confirming Enter — typing, a held `Ctrl+G`, an early Enter, anything.
       if (!confirmed && alwaysAsk !== undefined) {
         alwaysAsk = undefined;
@@ -815,7 +921,7 @@ export function createChatStore(
         if (action.kind !== 'abort') flush();
       }
       if (confirmed) {
-        lastResolvedAt = now;
+        keyHistory.lastResolvedAt = now;
         settleApproval?.({ outcome: 'approve', scope: asked.scope });
         flush();
         return 'handled';
@@ -835,24 +941,27 @@ export function createChatStore(
         case 'state': {
           // A note a move has taken down may be needed again: the refusal is explained once per card, not once ever.
           if (review.message !== '' && action.state.message === '') refusalNoted = false;
+          noteStepBack(review, action.state, now);
           review = transitionReviewState(review, action.state, calls);
           reviewPage = undefined;
           flush();
           break;
         }
         case 'abort':
+          // An `Esc` mashed right after the one that stepped back from the full view: nothing is rejected and the turn goes on.
+          if (mashedEscape(key, now)) return 'handled';
           // Reject FIRST (ADR-0115 §2): the pending call is settled as a rejection by the person — recorded as rejected, which is
           // true, and never as "cancelled, state unknown" — BEFORE the surface signals the abort. The settle resolves the hook's
           // promise and drops the store's own abort listener, so the abort that follows cannot turn it into a cancellation; the
           // turn then stops at its next boundary without another model call. A bare `Esc` and a `Ctrl+C` take the same path.
           if (settleApproval !== undefined) {
-            lastResolvedAt = now;
+            keyHistory.lastResolvedAt = now;
             settleApproval({ outcome: 'reject' });
             flush();
           }
           return 'abort';
         case 'deny':
-          lastResolvedAt = now;
+          keyHistory.lastResolvedAt = now;
           settleApproval?.(
             denialAnswer(
               action.reason,
@@ -871,7 +980,7 @@ export function createChatStore(
             shownAt: acknowledgedReview === review ? acknowledgedAt : undefined,
             previousKeyAt,
             lastForeignKeyAt: priorForeignKeyAt,
-            lastResolvedAt,
+            lastResolvedAt: keyHistory.lastResolvedAt,
           });
           if (refusal !== undefined) {
             refuse(refusal);
@@ -884,7 +993,7 @@ export function createChatStore(
             flush();
             break;
           }
-          lastResolvedAt = now;
+          keyHistory.lastResolvedAt = now;
           settleApproval?.({ outcome: 'approve', scope: action.scope });
           flush();
           break;
@@ -940,7 +1049,8 @@ export function createChatStore(
       const fresh =
         state.lastSequenceNumber === undefined || event.sequenceNumber > state.lastSequenceNumber;
       if (fresh) {
-        if (event.type === 'agent:token') markdown.append(terminal.append(event.token));
+        if (event.type === 'agent:token')
+          markdown.append(screen.append(terminal.append(event.token)));
         else if (
           event.type === 'agent:tool_call' ||
           event.type === 'session:turn_started' ||
@@ -949,6 +1059,7 @@ export function createChatStore(
         ) {
           markdown.reset();
           terminal.reset();
+          screen.reset();
         }
       }
       state = fresh
@@ -976,19 +1087,23 @@ export function createChatStore(
       state = appendUserMessage(state, text);
       flush();
     },
-    note: (message) => {
-      state = appendWarning(state, sanitizeInline(message)); // sanitized — a config-derived note can't inject ANSI
+    note: (message, lifetime) => {
+      // sanitized — a config-derived note can't inject ANSI — and through the screen's filter, as every drawn row of text that is not the host's own
+      state = appendWarning(state, screenText(sanitizeInline(message)), lifetime);
       flush();
     },
-    notice: (text) => {
+    notice: (text, hostLead) => {
       // Strip control sequences (keep intended newlines) — command output can't inject ANSI/OSC into the view.
-      state = appendNotice(state, stripTerminalControls(text));
+      state = appendNotice(state, stripTerminalControls(text), hostLead);
       flush();
     },
     tick: () => {
       tickCount += 1;
-      // Repaint when there is coalesced state OR a turn is streaming (so the spinner animates live).
-      if (dirty || state.status === 'running') {
+      // Repaint when there is coalesced state, or a turn is streaming and NOT blocked on the person (so the spinner animates live). A card
+      // that waits keeps the turn `running`, and nothing it draws animates: its wait clock is its host's own display value, re-rendered by
+      // the host's one-second timer (ADR-0147 §2), so a pending card no longer repaints twelve times a second. The open confirmation of a
+      // wider grant is the one thing on a card that changes with time (it lapses), so the tick goes on until the frame no longer shows it.
+      if (dirty || (state.status === 'running' && !waitingOnPerson()) || confirmationShown()) {
         flush();
       }
     },
@@ -1044,6 +1159,8 @@ export function createChatStore(
           alwaysAsk = undefined;
           settleApproval = undefined;
           cancelPendingApproval = undefined;
+          // The settle after a step back belongs to the card that stepped back: the next card's first `Esc` is a decision (S-4).
+          steppedBackAt = Number.NEGATIVE_INFINITY;
           state = approvalClosed(state, Date.now()); // the person's wait is not the turn's work
           signal?.removeEventListener('abort', onAbort);
         };
@@ -1136,6 +1253,9 @@ export function createChatStore(
         state = approvalOpened(state, Date.now());
         flush();
       }),
+    noteForeignInput: () => {
+      keyHistory.lastForeignKeyAt = performance.now();
+    },
     pasteIntoQuestion: (text) => {
       if (question === undefined) return false;
       const next = pasteIntoQuestion(question, text, questionAcceptsKeys());
@@ -1200,6 +1320,11 @@ export function createChatStore(
       if (checkpoint === undefined || frame !== checkpointFrame || checkpointShownAt !== undefined)
         return;
       checkpointShownAt = performance.now();
+    },
+    acknowledgeQuestionFrame: (frame) => {
+      if (question === undefined || frame !== questionFrame || questionShownAt !== undefined)
+        return;
+      questionShownAt = performance.now();
     },
   };
 }

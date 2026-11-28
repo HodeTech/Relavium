@@ -2,9 +2,11 @@ import type { RunHistoryReader, RunLeaseSummary, RunSummaryRecord } from '@relav
 import type { RunStatus } from '@relavium/shared';
 
 import { gatesOfRun, type RunGatesReader } from '../home/run-gates.js';
+import { optionalPaths, type DisplayPathRoots } from '../render/notation.js';
 import { classifyActiveRuns, type ActiveRow } from './active-model.js';
 import type { ReadSnapshot } from './change-probe.js';
 import { keysetCursorOf } from './keyset-cursor.js';
+import { isProjectRootHere } from './project-root.js';
 
 /**
  * The read behind the Home's Active tab ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
@@ -92,6 +94,8 @@ export interface ActiveSourceInput {
   /** Epoch milliseconds: a lease is compared with it. */
   readonly nowMs: number;
   readonly leaseTtlMs: number;
+  /** What a run's project root is shortened against; absent, a root is shown as stored. */
+  readonly paths?: DisplayPathRoots | undefined;
 }
 
 /**
@@ -194,7 +198,7 @@ export function readActiveParkCounts(
   } = {},
 ): ActiveParkCounts | undefined {
   const here = paused
-    .filter((run) => run.projectRoot === projectRoot)
+    .filter((run) => isProjectRootHere(run.projectRoot, projectRoot))
     .slice(0, ACTIVE_STATUS_LIMIT);
   const { cache } = options;
   if (here.length === 0) {
@@ -267,6 +271,7 @@ export function readActive(input: ActiveSourceInput): ActiveRead {
       ? {}
       : { pendingGateCounts: parkCounts.gates, pendingMediaJobCounts: parkCounts.media }),
     workflowLabels: readLabels(reader, runs),
+    ...optionalPaths(input.paths),
   });
   return { rows, more, heldUnread: input.heldUnread === true };
 }
@@ -288,6 +293,8 @@ export interface ActiveReaderDeps {
   /** Epoch milliseconds. */
   readonly now: () => number;
   readonly leaseTtlMs: number;
+  /** What a run's project root is shortened against; absent, a root is shown as stored. */
+  readonly paths?: DisplayPathRoots | undefined;
   /**
    * Runs the database reads as ONE snapshot (`readSnapshotOf(db)`): the three status pages, the leases and the gate reads are then of one
    * moment, so another process's run is never listed twice or missing for a tick because it changed state between two of them. Absent, the
@@ -296,13 +303,20 @@ export interface ActiveReaderDeps {
   readonly snapshot?: ReadSnapshot | undefined;
 }
 
+/** The terminal outbox as one read of it: the run ids that hold a terminal, and whether the file could not be read at all. */
+interface HeldRead {
+  readonly heldRunIds: ReadonlySet<string>;
+  readonly heldUnread: boolean;
+}
+
 /**
- * The tab's read as one asynchronous call: the outbox first (a file), then every database read in one synchronous stretch and, with
- * {@link ActiveReaderDeps.snapshot}, in one read transaction, so the rows of one read were all taken at the same moment. An outbox that cannot be read leaves the held set empty and says so in the result,
- * as `status` degrades: it never fails the tab.
+ * The outbox's held run ids, read once per change of the file: the reader keeps them under the file's stamp, so an unchanged file is not
+ * parsed again at every tick. The stamp is taken BEFORE the file is read: a file that changes in between is read again at the next tick,
+ * never trusted stale. A file that cannot be read leaves the held set empty and says so, as `status` degrades; it never fails the tab.
  */
-export function createActiveReader(deps: ActiveReaderDeps): () => Promise<ActiveRead> {
-  const gateCache: GateCountCache = new Map();
+function createHeldReader(
+  deps: Pick<ActiveReaderDeps, 'listHeld' | 'outboxStamp'>,
+): () => Promise<HeldRead> {
   let kept: { readonly stamp: string; readonly ids: ReadonlySet<string> } | undefined;
   const stampNow = (): string | undefined => {
     try {
@@ -312,24 +326,33 @@ export function createActiveReader(deps: ActiveReaderDeps): () => Promise<Active
     }
   };
   return async () => {
-    let heldRunIds: ReadonlySet<string> = new Set();
-    let heldUnread = false;
-    // The stamp is taken BEFORE the file is read: a file that changes in between is read again at the next tick, never trusted stale.
     const stamp = stampNow();
-    if (stamp !== undefined && kept?.stamp === stamp) {
-      heldRunIds = kept.ids;
-    } else {
-      kept = undefined;
-      try {
-        const events = await deps.listHeld();
-        heldRunIds = new Set(
-          events.map((event) => event.runId).filter((id): id is string => id !== undefined),
-        );
-        if (stamp !== undefined) kept = { stamp, ids: heldRunIds };
-      } catch {
-        heldUnread = true;
-      }
+    if (stamp !== undefined && kept?.stamp === stamp)
+      return { heldRunIds: kept.ids, heldUnread: false };
+    kept = undefined;
+    try {
+      const events = await deps.listHeld();
+      const heldRunIds = new Set(
+        events.map((event) => event.runId).filter((id): id is string => id !== undefined),
+      );
+      if (stamp !== undefined) kept = { stamp, ids: heldRunIds };
+      return { heldRunIds, heldUnread: false };
+    } catch {
+      return { heldRunIds: new Set(), heldUnread: true };
     }
+  };
+}
+
+/**
+ * The tab's read as one asynchronous call: the outbox first (a file), then every database read in one synchronous stretch and, with
+ * {@link ActiveReaderDeps.snapshot}, in one read transaction, so the rows of one read were all taken at the same moment. An outbox that cannot be read leaves the held set empty and says so in the result,
+ * as `status` degrades: it never fails the tab.
+ */
+export function createActiveReader(deps: ActiveReaderDeps): () => Promise<ActiveRead> {
+  const gateCache: GateCountCache = new Map();
+  const readHeld = createHeldReader(deps);
+  return async () => {
+    const { heldRunIds, heldUnread } = await readHeld();
     // The poll asked `isClosed` before it started this read, and the outbox was awaited since: a database closed meanwhile is not read.
     if (deps.isClosed?.() === true) throw new Error('the history database is closed');
     const snapshot = deps.snapshot ?? ((read) => read());
@@ -343,6 +366,7 @@ export function createActiveReader(deps: ActiveReaderDeps): () => Promise<Active
         nowMs: deps.now(),
         leaseTtlMs: deps.leaseTtlMs,
         gateCache,
+        ...optionalPaths(deps.paths),
       }),
     );
   };

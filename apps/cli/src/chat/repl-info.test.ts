@@ -2,6 +2,7 @@ import { LEGACY_COST_SENTINEL, type SessionCostRow } from '@relavium/db';
 import type { CompactionResult, TrimResult } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
+import { REPL_COMMANDS_BY_NAME } from '../commands/repl-commands.js';
 import type { CatalogEntry } from '../workflows/catalog.js';
 import {
   catalogNotice,
@@ -35,6 +36,36 @@ describe('catalogNotice', () => {
     expect(notice).toContain('  broken (invalid)');
     expect(notice).toContain('Agents (1):');
     expect(notice).toContain('  coder');
+  });
+
+  it('says WHY an invalid entry is invalid: the parse reason the catalog holds, scrubbed and bounded, as `relavium list` says it', () => {
+    const broken: CatalogEntry = {
+      ...entry('broken', false),
+      error: 'nodes.0.agent: unknown agent "coder"',
+    };
+    expect(catalogNotice([broken], [])).toContain(
+      `  broken (invalid: nodes.0.agent: unknown agent "coder")`,
+    );
+    const hostile: CatalogEntry = {
+      ...entry('hostile', false),
+      error: `bad\u001b[2J\u202e text ${'x'.repeat(400)}`,
+    };
+    const notice = catalogNotice([hostile], []);
+    expect(notice).not.toContain('\u001b');
+    expect(notice).not.toContain('\u202e');
+    const row = notice.split('\n').find((line) => line.includes('hostile')) ?? '';
+    expect(
+      row.endsWith('…)'),
+      'a long reason is cut with the one ellipsis, inside the parentheses',
+    ).toBe(true);
+    expect(row.length).toBeLessThan(160);
+  });
+
+  it('an invalid entry that holds no reason stays `(invalid)`, never `(invalid: )`', () => {
+    expect(catalogNotice([entry('broken', false)], [])).toContain('  broken (invalid)\n');
+    expect(catalogNotice([{ ...entry('broken', false), error: '' }], [])).toContain(
+      '  broken (invalid)',
+    );
   });
 
   it('a single empty kind reads "none" (the other kind still lists)', () => {
@@ -125,23 +156,35 @@ describe('compactionNotice / trimNotice (ADR-0062)', () => {
   });
 });
 
-describe('clearedNotice (ADR-0062 §7)', () => {
-  it('names the prior session + the exact chat resume command so it is discoverable', () => {
-    const notice = clearedNotice('sess-42');
+describe('clearedNotice (ADR-0062 §7, MVP-11 OD-20)', () => {
+  it("the Home's hosted chat names /resume, which the Home has, and no shell command", () => {
+    const notice = clearedNotice();
     expect(notice).toContain('fresh conversation');
-    expect(notice).toContain('relavium chat resume sess-42'); // the exact recovery command, not just the id
+    expect(notice).toContain('/resume');
+    expect(notice).not.toMatch(/relavium|chat-resume/u);
   });
 
-  it('sanitizes a crafted session id (no terminal escape reaches the TTY)', () => {
-    // `history.db` is shared with other surfaces whose ids are only non-empty strings, so a row may carry control
-    // bytes — the notice must strip them (parity with the resume banner), never let one inject into the terminal.
-    const notice = clearedNotice(
-      `evil${String.fromCharCode(27)}]0;x${String.fromCharCode(7)}\nFAKE`,
-    );
-    expect(notice).not.toContain(String.fromCharCode(27)); // no ESC survives
-    expect(notice).not.toContain(String.fromCharCode(7)); // no BEL survives
-    expect(notice).not.toContain('\n'); // the smuggled newline is collapsed — the notice stays one line
-    expect(notice).toContain('relavium chat resume'); // the static recovery text is intact
+  it('a stand-alone chat has no /resume: it names the Home in words and says relavium alone, never a shell command', () => {
+    const notice = clearedNotice('standalone-chat');
+    expect(notice).toContain('fresh conversation');
+    // The Home is where the saved conversation is continued; the sentence says so, and the command it names is the Home's.
+    expect(notice).toContain('on the Home');
+    expect(notice).toContain('/resume');
+    expect(notice).not.toMatch(/relavium (chat|resume)|chat-resume/u);
+    expect(REPL_COMMANDS_BY_NAME.has('resume')).toBe(false); // the premise: no chat registry entry for it
+  });
+
+  it('takes no session id, so a crafted one can neither reach the terminal nor become a command', () => {
+    // `history.db` is shared with other surfaces whose ids are only non-empty strings, so a row may carry control bytes. The notice does not
+    // print the id (the shell line after the chat closes does, sanitized there), and it has no parameter to take one: the surface is its only
+    // argument, and it is defaulted.
+    expect(clearedNotice).toHaveLength(0);
+    for (const surface of ['home', 'standalone-chat'] as const) {
+      const notice = clearedNotice(surface);
+      expect(notice).not.toContain(String.fromCharCode(27));
+      expect(notice).not.toContain(String.fromCharCode(7));
+      expect(notice).not.toContain('\n');
+    }
   });
 });
 
@@ -253,7 +296,7 @@ describe('costNotice — the per-model breakdown', () => {
       }),
     ]);
     expect(out).toContain('estimated, possibly billed');
-    expect(out).toContain('900');
+    expect(out).toContain('~$0.000009 estimated, possibly billed');
     // NOT "(0 calls, 0 tok)" — that asserts a model was used zero times for zero money while an estimate
     // against it is holding the cap.
     expect(out).toContain('(no completed call)');
@@ -368,7 +411,7 @@ describe('costNotice — the per-model breakdown', () => {
 describe('costNotice — the §1 release and durability state', () => {
   it('reports what a release actually cleared', () => {
     const text = costNotice(500, [], { released: 1_200 });
-    expect(text).toContain('Released ~1200µ¢');
+    expect(text).toContain('Released ~$0.000012');
   });
 
   it('says nothing about a release that cleared nothing', () => {

@@ -1,27 +1,47 @@
 import { describe, expect, it } from 'vitest';
 
+import { rowSegments } from './legend-row.js';
+import type { LegendRender } from './legend.js';
+import { cardKeyLegend } from './tool-review-card.js';
+import { FULL_DENY_LEGEND } from './tool-review-screen.js';
 import { cardTitleRows, keyTone, reviewUnavailableText } from './tool-review-view.js';
 
-/** How a key legend's parts are coloured: the answers stand out, the exits are as visible as any answer, the words stay dim. */
-describe('keyTone — a legend part, coloured by what it does', () => {
-  it('draws allow in green, deny in red, any other bracketed key in cyan, all bold', () => {
-    for (const part of ['[Ctrl+Y]', '[Ctrl+G]', '[Ctrl+O]'])
-      expect(keyTone(part, true), part).toEqual({ color: 'green', bold: true });
-    expect(keyTone('[Ctrl+N]', true)).toEqual({ color: 'red', bold: true });
-    for (const part of ['[v]', '[b]', '[Ctrl+R]', '[PgUp/PgDn]'])
-      expect(keyTone(part, true), part).toEqual({ color: 'cyan', bold: true });
+/** How a key legend's stretches are coloured, by the role its builder gave them: the answers stand out, the words stay dim. */
+describe('keyTone — a legend stretch, coloured by its role', () => {
+  it('draws allow in green, deny in red, a stop in yellow and any other key in cyan, all bold', () => {
+    expect(keyTone('ok', true)).toEqual({ color: 'green', bold: true });
+    expect(keyTone('danger', true)).toEqual({ color: 'red', bold: true });
+    expect(keyTone('warn', true)).toEqual({ color: 'yellow', bold: true });
+    expect(keyTone('strong', true)).toEqual({ color: 'cyan', bold: true });
   });
 
-  it('draws both exits, Esc and Ctrl+C (the stop key every legend names), in yellow and bold (ADR-0137 §4)', () => {
-    expect(keyTone('Esc', true)).toEqual({ color: 'yellow', bold: true });
-    expect(keyTone('Ctrl+C', true)).toEqual({ color: 'yellow', bold: true });
+  it('dims the words, and draws no colour with colour off, where a key keeps its weight (ADR-0145 §5)', () => {
+    expect(keyTone('dim', true)).toEqual({ dimColor: true });
+    expect(keyTone('dim', false)).toEqual({});
+    for (const role of ['ok', 'danger', 'warn', 'strong'] as const)
+      expect(keyTone(role, false), role).toEqual({ bold: true });
   });
 
-  it('dims the words, and draws nothing at all with colour off', () => {
-    expect(keyTone(' stops the turn', true)).toEqual({ dimColor: true });
-    expect(keyTone(' Deny   ', true)).toEqual({ dimColor: true });
-    for (const part of ['[Ctrl+Y]', '[Ctrl+N]', 'Esc', 'Ctrl+C', ' words', '[v]'])
-      expect(keyTone(part, false), part).toEqual({});
+  it('follows the item, not the text: the keys of a real row are drawn in the role their legend gave them', () => {
+    const colours = (row: LegendRender): string[] =>
+      rowSegments(row)
+        .filter((segment) => segment.role !== 'dim')
+        .map((segment) => `${segment.text}=${String(keyTone(segment.role, true)['color'])}`);
+    const [grants, refusals] = cardKeyLegend({
+      inspected: true,
+      cacheable: true,
+      scope: 'file writes',
+      command: true,
+      remember: true,
+    });
+    expect(colours(grants)).toEqual(['[Ctrl+Y]=green', '[Ctrl+G]=green', '[Ctrl+O]=green']);
+    expect(colours(refusals)).toEqual(['[Ctrl+N]=red', '[Ctrl+R]=cyan', '[v]=cyan', 'Esc=yellow']);
+    expect(colours(FULL_DENY_LEGEND)).toEqual([
+      '[Ctrl+N]=red',
+      '[b]=cyan',
+      '[Ctrl+C]=yellow',
+      'Esc=cyan',
+    ]);
   });
 });
 
@@ -86,9 +106,11 @@ describe('reviewUnavailableText — why a review cannot be shown, said once', ()
   });
 
   it('offers the full view only on the card, where [v] opens it; on the full view it does nothing', () => {
+    // `[p]` (code points) is the full view's key: on the card it does nothing, so the card's sentence never names it.
     expect(reviewUnavailableText(none)).toBe(
-      `Review unavailable ${DASH} enlarge terminal, narrow change, or [v] full view / [p] code points.`,
+      `Review unavailable ${DASH} enlarge terminal, narrow change, or [v] full view.`,
     );
+    expect(reviewUnavailableText(none)).not.toContain('[p]');
     expect(reviewUnavailableText({ ...none, onCard: false })).toBe(
       `Review unavailable ${DASH} enlarge terminal, narrow change, or [p] code points.`,
     );

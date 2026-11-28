@@ -18,7 +18,6 @@ import type {
 import { buildRunDetailModel } from '../../history/run-detail-model.js';
 import type { RunDetailLoad, RunDetailRead } from '../../history/run-detail-source.js';
 import type { ChatKey } from './chat-input.js';
-import { legend } from './legend.js';
 import { usableColumns } from './sheet-frame.js';
 import {
   TAB_HOST_ROWS,
@@ -26,7 +25,8 @@ import {
   enterTab,
   foldTabHostKey,
   freshTabMemory,
-  tabHostLegendItems,
+  tabHostLegend,
+  tabHostLegendText,
   tabHostLines,
   tabHostMemory,
   withHistoryLoad,
@@ -171,6 +171,8 @@ function detailRead(
     readonly held?: boolean;
     readonly events?: number;
     readonly workflow?: string;
+    /** The step rows of the run (the default is one finished `build` node). */
+    readonly steps?: readonly StepSummaryRecord[];
   } = {},
 ): RunDetailRead {
   const at = new Date(T0).toISOString();
@@ -184,7 +186,7 @@ function detailRead(
     errorJson: null,
     errorByteLength: null,
   };
-  const steps: StepSummaryRecord[] = [
+  const steps: readonly StepSummaryRecord[] = over.steps ?? [
     {
       nodeId: 'build',
       nodeType: 'agent',
@@ -226,11 +228,9 @@ function detailRead(
 function rig(script: Script = {}) {
   const fake = scripted(script);
   const context = (): TabHostContext => ({
-    port: undefined,
     history: fake.port,
     ...(script.pinStore === undefined ? {} : { pins: pinPortOver(script.pinStore) }),
     now: 10_000,
-    canArm: true,
   });
   let state: TabHostState = enterTab(freshTabMemory('history'), 'history', context());
   const press = (input: string, key: ChatKey = {}): TabHostStep => {
@@ -317,13 +317,12 @@ describe('the rows say what they are, in a glyph and a word', () => {
 
   it('says so when there is nothing to list, and when the tab cannot be read', () => {
     expect(rig({ total: 0 }).text()).toContain(
-      'No finished run in this project yet. Run a workflow from the Defined tab.',
+      'No finished run in this project yet. Start one from the Home.',
     );
-    const none = enterTab(freshTabMemory('history'), 'history', { port: undefined, now: 0 });
+    const none = enterTab(freshTabMemory('history'), 'history', { now: 0 });
     const drawn = tabHostLines(none, { columns: 80, terminalRows: 24 }).map((l) => l.text);
     expect(drawn.join('\n')).toContain(HISTORY_UNREADABLE);
     const broken = enterTab(freshTabMemory('history'), 'history', {
-      port: undefined,
       history: {
         read: () => {
           throw new Error('PRIVATE');
@@ -359,8 +358,8 @@ describe('Enter opens the run, Esc comes back, and Esc again closes the screen',
     expect(text).toContain('✓ completed  build');
     expect(text).toContain('Events (3)');
     expect(text).toContain('#0  node:started build');
-    expect(text, 'no run is changed here, and p says that it only marks one').toContain(
-      'No run is changed here; p only marks one.',
+    expect(text, 'this run is not changed, and p says that it only marks it').toContain(
+      'This run is not changed; [p] only marks it.',
     );
   });
 
@@ -410,7 +409,7 @@ describe('Enter opens the run, Esc comes back, and Esc again closes the screen',
       r.press('', ENTER);
       r.state = withHistoryLoad(r.state, summary(0, 'completed').id, load);
       expect(r.text()).toContain(words);
-      expect(tabHostLegendItems(r.state).at(-1)).toEqual(HISTORY_KEYS.back);
+      expect(tabHostLegend(r.state).exit).toBe(HISTORY_KEYS.back);
     }
   });
 
@@ -528,25 +527,20 @@ describe('the run detail says what it could not read, and keeps what identifies 
       r.press('', ENTER);
       if (phase !== 'loading')
         r.state = withHistoryLoad(r.state, summary(0, 'completed').id, { kind: phase });
-      const items = legend(tabHostLegendItems(r.state));
-      expect(items, phase).toBe('←/→ tab · Tab cycle · Ctrl+C close · Esc back');
+      const items = tabHostLegendText(r.state);
+      expect(items, phase).toBe('←/→ tab · [Ctrl+C] close · Esc back');
       expect(items).not.toContain('scroll');
     }
   });
 
-  it('names Tab where the legend still fits the floor, and leaves it out of the two that would not', () => {
+  it('does not name Tab in any legend: with two tabs `←/→ tab` says it, and every legend fits the floor', () => {
     const r = rig({ total: 3 });
-    expect(legend(tabHostLegendItems(r.state)), 'the list is full').not.toContain('Tab cycle');
     const empty = rig({ total: 0 });
-    expect(legend(tabHostLegendItems(empty.state))).toContain('Tab cycle');
     const detail = opened(detailRead());
-    expect(legend(tabHostLegendItems(detail.state)), 'the detail is full').not.toContain(
-      'Tab cycle',
-    );
-    for (const state of [r.state, empty.state, detail.state])
-      expect(displayWidth(legend(tabHostLegendItems(state)))).toBeLessThanOrEqual(
-        usableColumns(80),
-      );
+    for (const state of [r.state, empty.state, detail.state]) {
+      expect(tabHostLegendText(state)).not.toContain('Tab cycle');
+      expect(displayWidth(tabHostLegendText(state))).toBeLessThanOrEqual(usableColumns(80));
+    }
   });
 });
 
@@ -742,11 +736,9 @@ describe('the keys of the list', () => {
     };
     const fake = scripted({ total: 30, detail: { kind: 'ready', detail: detailRead() } });
     const context = (): TabHostContext => ({
-      port: undefined,
       history: fake.port,
       pins,
       now: 10_000,
-      canArm: true,
     });
     let state: TabHostState = enterTab(freshTabMemory('history'), 'history', context());
     const press = (input: string, key: ChatKey = {}): void => {
@@ -823,13 +815,17 @@ describe('the keys of the list', () => {
 
   it('names exactly the keys it answers to, with the way out last', () => {
     const r = rig({ total: 3 });
-    const items = tabHostLegendItems(r.state);
-    expect(legend(items)).toBe(
-      '←/→ tab · ↑/↓ move · Enter open · [p] pin · [a] all · [f] filter · Esc close',
+    // The way out says where it goes, and at 80 columns `[f] filter` is the key that gives way for it (the way out is never cut).
+    expect(tabHostLegendText(r.state)).toBe(
+      '←/→ tab · ↑/↓ move · Enter open · [p] pin · [a] all · Esc back to Home',
     );
-    expect(items.at(-1)).toEqual({ keys: 'Esc', verb: 'close' });
+    expect(tabHostLegend(r.state).exit).toMatchObject({
+      keys: ['Esc'],
+      verb: 'back to Home',
+      class: 'close',
+    });
     r.press('a');
-    expect(legend(tabHostLegendItems(r.state))).toContain('[a] here');
+    expect(tabHostLegendText(r.state)).toContain('[a] here');
     // Each key named does what it says.
     expect(r.press('', DOWN).kind).toBe('state');
     expect(r.cursor()).toBe(1);
@@ -842,9 +838,7 @@ describe('the keys of the list', () => {
       ...r.state,
       history: { ...history, detail: { runId: 'x', phase: 'loading', cursor: 0, pinned: false } },
     };
-    expect(legend(tabHostLegendItems(inDetail))).toBe(
-      '←/→ tab · Tab cycle · Ctrl+C close · Esc back',
-    );
+    expect(tabHostLegendText(inDetail)).toBe('←/→ tab · [Ctrl+C] close · Esc back');
   });
 
   it('a chord or a meta key moves nothing, and an unnamed key is nothing', () => {
@@ -876,10 +870,12 @@ describe('the 80×24 budget', () => {
         expect(lines.length).toBeLessThanOrEqual(Math.min(TAB_HOST_ROWS, terminalRows - 1));
         for (const line of lines)
           expect(displayWidth(line.text)).toBeLessThanOrEqual(usableColumns(columns));
-        expect(lines[0]?.text).toContain('▸ History');
+        expect(lines[0]?.text).toContain('› History');
         expect(lines.at(-1)?.kind).toBe('legend');
         expect(lines.some((line) => line.kind === 'selected')).toBe(true);
-        expect(lines.at(-1)?.text, 'the way out is never cut').toMatch(/Esc close$/u);
+        expect(lines.at(-1)?.text, 'the way out is never cut').toMatch(
+          /Esc( \/ \[Ctrl\+C\])? back to Home$/u,
+        );
       }
     },
   );
@@ -901,6 +897,45 @@ describe('the 80×24 budget', () => {
     expect(displayWidth(legendLine()), 'the detail legend fits 80 columns').toBeLessThanOrEqual(
       usableColumns(80),
     );
+  });
+
+  it('fits the legend to the width the screen is drawn at: `[f] filter` is named at 100 columns and is the first key to go at 80 (review round 1, D-2)', () => {
+    const r = rig({ total: 3 });
+    const at = (columns: number): string =>
+      tabHostLines(r.state, { columns, terminalRows: 30 }).at(-1)?.text.trimEnd() ?? '';
+    expect(at(80)).toBe('←/→ tab · ↑/↓ move · Enter open · [p] pin · [a] all · Esc back to Home');
+    expect(at(100)).toBe(
+      '←/→ tab · ↑/↓ move · Enter open · [p] pin · [a] all · [f] filter · Esc / [Ctrl+C] back to Home',
+    );
+    for (const columns of [80, 100])
+      expect(displayWidth(at(columns))).toBeLessThanOrEqual(usableColumns(columns));
+    // The model says the same without the screen: the width it is asked for, and the floor when it is not asked.
+    expect(tabHostLegendText(r.state, 100)).toBe(at(100));
+    expect(tabHostLegendText(r.state)).toBe(at(80));
+    // The widest terminal draws the same as 100: a sheet is never wider than 100 columns.
+    expect(at(140)).toBe(at(100));
+    // `[a] here` is the longer scope verb: it still fits at 100 and still gives way at 80.
+    r.press('a');
+    expect(at(100)).toContain('[a] here · [f] filter');
+    expect(at(80)).not.toContain('[f] filter');
+  });
+
+  it('the detail’s legend names `[Ctrl+C] close` where the keys leave it room: at 100 columns, not at 80 (review round 1, D-2)', () => {
+    const r = rig({ total: 3, detail: { kind: 'ready', detail: detailRead() } });
+    r.press('', ENTER);
+    r.state = withHistoryLoad(r.state, summary(0, 'completed').id, {
+      kind: 'ready',
+      detail: detailRead(),
+    });
+    const at = (columns: number): string =>
+      tabHostLines(r.state, { columns, terminalRows: 30 }).at(-1)?.text.trimEnd() ?? '';
+    expect(at(80)).toBe(
+      '←/→ tab · ↑/↓ scroll · Enter open · [n] first failed · [p] pin · Esc back',
+    );
+    expect(at(100)).toBe(
+      '←/→ tab · ↑/↓ scroll · Enter open · [n] first failed · [p] pin · [Ctrl+C] close · Esc back',
+    );
+    expect(displayWidth(at(100))).toBeLessThanOrEqual(usableColumns(100));
   });
 
   it('draws the detail of a very long log in the same rows, and the enlarge line below the floor', () => {
@@ -928,6 +963,12 @@ describe('the pin state of a run belongs to the detail and the pin store, not to
   }
   const message = (r: ReturnType<typeof rig>): string | undefined =>
     r.state.history?.detail?.message;
+
+  it('says when the run started as a date, a 24-hour clock time and its zone, not as the stored millisecond timestamp (ADR-0145 §8)', () => {
+    const r = foreignDetail({});
+    expect(r.text()).toContain('Started 2026-11-23 10:00 UTC  ·  took');
+    expect(r.text()).not.toContain('2026-11-23T10:00:00.000Z');
+  });
 
   it('shows `★ pinned` for a pinned run the page does not list, and `p` unpins it, then pins it again', () => {
     const store = new Set([FOREIGN]);
@@ -992,10 +1033,8 @@ describe('a page can be short, or empty, and still not be the last (the store is
       },
     };
     const context = (): TabHostContext => ({
-      port: undefined,
       history: port,
       now: 10_000,
-      canArm: true,
     });
     let state: TabHostState = enterTab(freshTabMemory('history'), 'history', context());
     const press = (input: string, key: ChatKey = {}): TabHostStep => {
@@ -1041,5 +1080,78 @@ describe('a page can be short, or empty, and still not be the last (the store is
     const none = rig({ total: 0 });
     expect(none.text()).toContain('No finished run in this project yet');
     expect(none.text().split('\n').at(-1)).not.toContain('↑/↓');
+  });
+});
+
+describe('the node table of a run detail is a table: its cells line up from row to row', () => {
+  const at = new Date(T0).toISOString();
+  const step = (
+    nodeId: string,
+    over: Partial<StepSummaryRecord> & { readonly attempts?: number } = {},
+  ): StepSummaryRecord[] =>
+    Array.from({ length: over.attempts ?? 1 }, (_, index) => ({
+      nodeId,
+      nodeType: 'agent',
+      status: 'completed' as const,
+      attemptNumber: index + 1,
+      startedAt: at,
+      completedAt: at,
+      durationMs: 3100,
+      costMicrocents: 0,
+      inputTokens: 12,
+      outputTokens: 4,
+      ...over,
+    }));
+  /** Three nodes whose rows would have different cells: a long label, two attempts, a long duration, a large count, no duration at all. */
+  const steps: StepSummaryRecord[] = [
+    ...step('build'),
+    ...step('deploy_to_production', {
+      attempts: 2,
+      durationMs: 125_000,
+      inputTokens: 123_456,
+      outputTokens: 7_890,
+    }),
+    ...step('notify', { durationMs: undefined as unknown as number }),
+  ];
+  const opened = (columns: number) => {
+    const detail = detailRead({ steps });
+    const r = rig({ total: 4, detail: { kind: 'ready', detail } });
+    r.press('', DOWN);
+    r.press('', ENTER);
+    r.state = withHistoryLoad(r.state, summary(1, 'failed').id, { kind: 'ready', detail });
+    const lines = r.lines(columns);
+    const from = lines.findIndex((line) => line.includes('Nodes (3)'));
+    return { lines, rows: lines.slice(from + 1, from + 4), text: lines.join('\n') };
+  };
+
+  it.each([80, 100, 120])(
+    'at %i columns every cell of a node row ends in the same column as the same cell of the next row, and the rows are as wide as the terminal',
+    (columns) => {
+      const { rows } = opened(columns);
+      expect(rows).toHaveLength(3);
+      for (const row of rows)
+        expect(displayWidth(row), row).toBeLessThanOrEqual(usableColumns(columns));
+      const ends = (pattern: RegExp): number[] =>
+        rows.map((row) => {
+          const found = pattern.exec(row);
+          if (found === null) throw new Error(`no ${String(pattern)} in ${JSON.stringify(row)}`);
+          return found.index + found[0].length;
+        });
+      // the attempt count, then the token figures, each ends where the same cell of every other row ends
+      expect(new Set(ends(/attempts?/u)).size, rows.join('\n')).toBe(1);
+      expect(new Set(ends(/↓\d[\d,]*/u)).size, rows.join('\n')).toBe(1);
+      // the last cell is on every row or on none: a short label does not buy a row a cell its neighbours had to give up
+      const withCost = rows.filter((row) => row.includes('not recorded')).length;
+      expect([0, rows.length], rows.join('\n')).toContain(withCost);
+    },
+  );
+
+  it('keeps a node that has no duration on the same columns as the rest, with a blank cell where the duration would be', () => {
+    const { rows } = opened(100);
+    const notify = rows.find((row) => row.includes('notify')) ?? '';
+    const build = rows.find((row) => row.includes('build')) ?? '';
+    expect(notify.indexOf('↑'), 'the token cell starts where the others start').toBe(
+      build.indexOf('↑'),
+    );
   });
 });

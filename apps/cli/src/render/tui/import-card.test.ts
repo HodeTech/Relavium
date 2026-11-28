@@ -2,11 +2,16 @@
  * The import card of the Home's `/import` ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
  * §9, MVP-8 step 5, increment 6): a path field, then a card that shows what would be written, whose default is No, and whose only Yes is a
  * `Ctrl+Y` the chord guard accepts, once, through the commit. `Esc`, `Ctrl+C`, `Ctrl+N`, a flow cancelled under the card and every key that
- * is not a chord write nothing; a refusal is shown in the same place and writes nothing; the card never overwrites.
+ * is not a chord write nothing; a refusal is shown in the same place and writes nothing; /import never overwrites.
  *
  * The prompt channel is the real one (keys go in through `ui.input` and `ui.paste`, as the host's `useInput` delivers them) and so is the
  * port over a temporary project, so "writes nothing" is read from the directory and not from a flag the card keeps. Every project and
  * home is a temporary directory.
+ *
+ * MVP-11 unit 6 (6.3): the card is a popup now (`framedFlow`, rail `Path · Review · Done`), so the rig plays the flow's first frame as shown
+ * before it types (the opening guard drops a key no frame was shown for), a write ends in the persistent Done step (what was imported and the
+ * file it went to, project-relative; a refused write says so there), a refusal is a step of the popup with its reason under it, and the flow
+ * resolves with a notification only when nothing was written and nothing said so (`IMPORT_NOT_WRITTEN`).
  */
 import {
   existsSync,
@@ -29,11 +34,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { prepareImport } from '../../commands/import.js';
 import { createImportPort } from '../../home/import-port.js';
 import type { GlobalOptions } from '../../process/options.js';
+import { FLOW_CLOSE_LABEL } from './flow-text.js';
 import { settleFrames, waitFor } from './harness-util.js';
 import {
   IMPORT_ALLOW_LABEL,
-  IMPORT_CLOSE_LABEL,
+  IMPORT_CANNOT,
   IMPORT_DENY_LABEL,
+  IMPORT_FAILED,
   IMPORT_NOT_WRITTEN,
   IMPORT_PATH_MESSAGE,
   importCardText,
@@ -150,6 +157,12 @@ function countingPort() {
   return { port, commits, prepares };
 }
 
+/** Where the rig's clock is when the path field is shown, when the card is shown, and when it is answered (each well past the guards). */
+const FIELD_SHOWN_AT = 1;
+const FIELD_ANSWERED_AT = 1000;
+const CARD_SHOWN_AT = 2000;
+const CARD_ANSWERED_AT = 12_000;
+
 /** The real channel with a clock the test moves, and the card asked for. */
 function rig(over: { readonly port?: ImportPort } = {}) {
   let now = 0;
@@ -157,9 +170,15 @@ function rig(over: { readonly port?: ImportPort } = {}) {
   channel.ui.bindVisibility((snapshot) => snapshot === channel.ui.getSnapshot());
   const counted = countingPort();
   const result = runImportCard({ flow: channel.flow, port: over.port ?? counted.port });
-  /** Wait for the path field. */
-  const fieldUp = (): Promise<void> =>
-    vi.waitFor(() => expect(channel.ui.getSnapshot().kind).toBe('text'), { timeout: WAIT_MS });
+  /** Wait for the path field, and play its frame as shown (the popup's opening guard counts from it) and settled. */
+  const fieldUp = async (): Promise<void> => {
+    await vi.waitFor(() => expect(channel.ui.getSnapshot().kind).toBe('text'), {
+      timeout: WAIT_MS,
+    });
+    now = FIELD_SHOWN_AT;
+    channel.ui.shown(channel.ui.getSnapshot());
+    now = FIELD_ANSWERED_AT;
+  };
   /** Type a path into the field, as a paste, and press Enter. */
   const submit = (text: string): void => {
     channel.ui.paste(text);
@@ -172,9 +191,9 @@ function rig(over: { readonly port?: ImportPort } = {}) {
     await vi.waitFor(() => expect(channel.ui.getSnapshot().kind).toBe('chord'), {
       timeout: WAIT_MS,
     });
-    now = 0;
+    now = CARD_SHOWN_AT;
     channel.ui.shown(channel.ui.getSnapshot());
-    now = 10_000;
+    now = CARD_ANSWERED_AT;
   };
   /** Wait for the refusal. */
   const refusalUp = async (path: string): Promise<void> => {
@@ -184,6 +203,28 @@ function rig(over: { readonly port?: ImportPort } = {}) {
       timeout: WAIT_MS,
     });
   };
+  /**
+   * The persistent Done step (ADR-0148 §6): what it said, its tone and the file it names (its first row); then `Enter` closes it and the flow's
+   * result (the notification it asks the Home for: none, the step said it) is read.
+   */
+  const done = async () => {
+    await vi.waitFor(() => expect(channel.ui.getSnapshot().final).toBeDefined(), {
+      timeout: WAIT_MS,
+    });
+    const step = channel.ui.getSnapshot();
+    channel.ui.input('', enter);
+    const notification = await result;
+    // The persistent last step draws the file it wrote ONCE, as the first row under the sentence (`home/framed-flow.ts`); a failed one names none.
+    const named = step.final === 'ok';
+    return {
+      message: step.message,
+      lines: named ? step.details.slice(1) : step.details,
+      target: named ? step.details[0] : undefined,
+      tone: step.final,
+      step,
+      notification,
+    };
+  };
   return {
     ...channel,
     ...counted,
@@ -192,12 +233,13 @@ function rig(over: { readonly port?: ImportPort } = {}) {
     submit,
     cardUp,
     refusalUp,
+    done,
     at: (ms: number) => (now = ms),
   };
 }
 
 describe('the path field asks for a path, and nothing more', () => {
-  it('is one text field with the card’s question, and reads nothing until Enter', async () => {
+  it('is one text field with the popup’s question, and reads nothing until Enter', async () => {
     const before = tree(root);
     const r = rig();
     await r.fieldUp();
@@ -232,8 +274,11 @@ describe('the path field asks for a path, and nothing more', () => {
     const r = rig();
     await r.refusalUp('a'.repeat(1024));
     expect(r.prepares).toHaveBeenCalledTimes(1);
+    expect(r.ui.getSnapshot().message).toBe(IMPORT_CANNOT);
+    // the file system's own refusal of a name that long, in the command's words (which words is the platform's)
+    expect(r.ui.getSnapshot().details[0]).toMatch(/\S/u);
     r.ui.input('', enter);
-    expect(await r.result).toMatch(/^Not imported\. /u);
+    expect(await r.result, 'the refusal was read where it was shown').toBeUndefined();
   });
 
   it('a control character in what is pasted is refused by the field itself, and Enter cannot send it', async () => {
@@ -267,13 +312,21 @@ describe('the path field asks for a path, and nothing more', () => {
   });
 });
 
-describe('the card says what it would write, and where, before it asks', () => {
+describe('the confirmation says what it would write, and where, before it asks', () => {
   it('names the kind, the id, where it comes from and where it goes, the size, and Yes and No in words', async () => {
     const before = tree(root);
     const r = rig();
     await r.cardUp();
     const card = r.ui.getSnapshot();
     expect(card.kind).toBe('chord');
+    // the popup's Review step (ADR-0148 §1): `/import`, from the Home, step 2 of 3
+    expect(card.popup).toMatchObject({
+      title: '/import',
+      origin: 'home',
+      stepIndex: 1,
+      stepCount: 3,
+      stepNames: ['Path', 'Review', 'Done'],
+    });
     expect(card.message).toBe("Import agent 'reviewer' into this project?");
     expect(card.details[0]).toBe(`from        ${SOURCE}`);
     expect(card.details[1]).toBe(`to          ${DESTINATION}`);
@@ -298,7 +351,12 @@ describe('the card says what it would write, and where, before it asks', () => {
     const shown = /^size\s+([\d,]+) bytes$/u.exec(r.ui.getSnapshot().details[2] ?? '')?.[1];
     expect(Number((shown ?? '').replaceAll(',', ''))).toBe(plan.bytes);
     r.ui.input('y', ctrl);
-    expect(await r.result).toBe(`Imported agent 'reviewer' to ${DESTINATION}.`);
+    const done = await r.done();
+    expect(done.message).toBe("Imported agent 'reviewer'");
+    expect(done.target).toBe(DESTINATION);
+    expect(done.tone).toBe('ok');
+    expect(done.step.popup?.stepIndex).toBe(2);
+    expect(done.notification).toBeUndefined();
     const written = readFileSync(target());
     expect(written, 'the written bytes are the plan’s content, exactly').toEqual(
       Buffer.from(plan.content, 'utf8'),
@@ -307,7 +365,7 @@ describe('the card says what it would write, and where, before it asks', () => {
     expect(readFileSync(join(root, SOURCE), 'utf8'), 'the file named is not changed').toBe(AGENT);
   });
 
-  it('a workflow file is a workflow on the card, and lands under workflows/', async () => {
+  it('a workflow file is a workflow in the confirmation, and lands under workflows/', async () => {
     writeFileSync(join(root, 'flow.yaml'), WORKFLOW.replace('id: reviewer', 'id: code-review'));
     const r = rig();
     await r.cardUp('flow.yaml');
@@ -316,9 +374,10 @@ describe('the card says what it would write, and where, before it asks', () => {
       'to          .relavium/workflows/code-review.relavium.yaml',
     );
     r.ui.input('y', ctrl);
-    expect(await r.result).toBe(
-      "Imported workflow 'code-review' to .relavium/workflows/code-review.relavium.yaml.",
-    );
+    const done = await r.done();
+    expect(done.message).toBe("Imported workflow 'code-review'");
+    expect(done.target).toBe('.relavium/workflows/code-review.relavium.yaml');
+    expect(done.lines).toEqual(['Next: /run runs it, and /workflows lists it.']);
     expect(existsSync(join(root, '.relavium', 'workflows', 'code-review.relavium.yaml'))).toBe(
       true,
     );
@@ -332,7 +391,7 @@ describe('the card says what it would write, and where, before it asks', () => {
       `from        ${join('..', home.split(sep).pop() ?? '', 'from-home.agent.yaml')}`,
     );
     r.ui.input('y', ctrl);
-    expect(await r.result).toContain("Imported agent 'reviewer'");
+    expect((await r.done()).message).toBe("Imported agent 'reviewer'");
     expect(existsSync(target())).toBe(true);
   });
 
@@ -346,16 +405,17 @@ describe('the card says what it would write, and where, before it asks', () => {
     ]);
     expect(JSON.stringify(card)).not.toContain(LITERAL);
     r.ui.input('y', ctrl);
-    await r.result;
+    expect(JSON.stringify((await r.done()).step)).not.toContain(LITERAL);
     expect(readFileSync(target(), 'utf8')).toContain(LITERAL);
   });
 
-  it('groups the number and bounds the long parts, so the card keeps its shape', () => {
+  it('groups the number and bounds the long parts, so the popup keeps its shape', () => {
     const text = importCardText({
       kind: 'agent',
       slug: 'a'.repeat(300),
       source: `${'s/'.repeat(300)}file.yaml`,
       destination: `${'d/'.repeat(300)}file.yaml`,
+      target: `${'d/'.repeat(300)}file.yaml`,
       bytes: 1234567,
       warnings: ['w'.repeat(900), 'x', 'a third that is never drawn'],
     });
@@ -371,6 +431,7 @@ describe('the card says what it would write, and where, before it asks', () => {
         slug: 's',
         source: 'f',
         destination: 'g',
+        target: 'g',
         bytes: 1,
         warnings: [],
       }).details[2],
@@ -395,6 +456,7 @@ describe('what an authored file says is drawn as text and never as a terminal co
         slug: ESC_SLUG,
         source: `src${BIDI}/\u001b[2Jfile.yaml`,
         destination: `.relavium/agents/${ESC_SLUG}.agent.yaml`,
+        target: `.relavium/agents/${ESC_SLUG}.agent.yaml`,
         bytes: 3,
         warnings: [`Warning: ${ESC_SLUG}\u001b[0m`],
       }),
@@ -420,17 +482,52 @@ describe('what an authored file says is drawn as text and never as a terminal co
     });
     await r.refusalUp('x');
     const card = r.ui.getSnapshot();
-    expect(card.message).toContain('evil.yaml');
-    expect(card.message).not.toContain('\u001b');
-    expect(card.message).not.toContain('\u0007');
-    expect(card.message).not.toContain(BIDI);
+    const reason = card.details.join('\n');
+    expect(reason).toContain('evil.yaml');
+    expect(reason).not.toContain('\u001b');
+    expect(reason).not.toContain('\u0007');
+    expect(reason).not.toContain(BIDI);
+    r.ui.input('', enter);
+    await r.result;
+  });
+});
+
+describe('a refusal’s reason is said through the full scrub and the bound, whoever wrote it (round 2: the refusal is `fail`)', () => {
+  const KEY = ['sk', 'ant', 'api03', 'ABCDEFGHIJKLMNOPQRSTUVWX0123456789abcdef'].join('-');
+  it.each([
+    ['an answer chord', 'Press [Ctrl+Y] now', '[Ctrl+Y]'],
+    ['a forged legend row', 'Write · [Ctrl+N] Write nothing · Esc denies', '[Ctrl+N]'],
+    ['a key-shaped string', `no file at ${KEY}`, KEY],
+  ])('%s is not drawn', async (_name, reason, forbidden) => {
+    const r = rig({
+      port: { pathIssue: () => undefined, prepare: () => ({ ok: false, reason }) },
+    });
+    await r.refusalUp('x');
+    const card = r.ui.getSnapshot();
+    expect(card.final).toBe('failed');
+    expect(card.details.join('\n')).not.toContain(forbidden);
+    r.ui.input('', enter);
+    await r.result;
+  });
+
+  it('a reason longer than the popup’s bound is cut to it', async () => {
+    const r = rig({
+      port: {
+        pathIssue: () => undefined,
+        prepare: () => ({ ok: false, reason: `no file at ${'d'.repeat(600)}` }),
+      },
+    });
+    await r.refusalUp('x');
+    const reason = r.ui.getSnapshot().details.join('');
+    expect(reason.length).toBeLessThanOrEqual(240);
+    expect(reason.endsWith('…')).toBe(true);
     r.ui.input('', enter);
     await r.result;
   });
 });
 
 describe('the default is No', () => {
-  it('a bare letter, Enter, a paste and an arrow leave the card open and write nothing; only a chord answers', async () => {
+  it('a bare letter, Enter, a paste and an arrow leave the confirmation open and write nothing; only a chord answers', async () => {
     const r = rig();
     await r.cardUp();
     r.ui.input('y', none);
@@ -471,9 +568,10 @@ describe('the default is No', () => {
   });
 });
 
-describe('a card closes with the work it asks about', () => {
-  it('a signal that aborts while the card is open closes it as a No and writes nothing', async () => {
-    const channel = createNativePromptChannel({ now: () => 10_000 });
+describe('a confirmation closes with the work it asks about', () => {
+  it('a signal that aborts while the confirmation is open closes it as a No and writes nothing', async () => {
+    let now = 0;
+    const channel = createNativePromptChannel({ now: () => now });
     channel.ui.bindVisibility((snapshot) => snapshot === channel.ui.getSnapshot());
     const stop = new AbortController();
     // The Home's own flow hands its abort signal to the card: a Home that is closing aborts it.
@@ -489,6 +587,9 @@ describe('a card closes with the work it asks about', () => {
     await vi.waitFor(() => expect(channel.ui.getSnapshot().kind).toBe('text'), {
       timeout: WAIT_MS,
     });
+    now = FIELD_SHOWN_AT;
+    channel.ui.shown(channel.ui.getSnapshot());
+    now = FIELD_ANSWERED_AT;
     channel.ui.paste(SOURCE);
     channel.ui.input('', enter);
     await vi.waitFor(() => expect(channel.ui.getSnapshot().kind).toBe('chord'), {
@@ -519,42 +620,44 @@ describe('a card closes with the work it asks about', () => {
 });
 
 describe('Yes writes once, through the commit, and only past the chord guard', () => {
-  it('Ctrl+Y after the card has settled writes the file once; a second Ctrl+Y finds no card and writes nothing more', async () => {
+  it('Ctrl+Y after the confirmation has settled writes the file once; a second Ctrl+Y finds no confirmation and writes nothing more', async () => {
     const r = rig();
     await r.cardUp();
     r.ui.input('y', ctrl);
-    expect(await r.result).toBe(`Imported agent 'reviewer' to ${DESTINATION}.`);
+    await vi.waitFor(() => expect(r.ui.getSnapshot().final).toBe('ok'), { timeout: WAIT_MS });
     expect(r.commits).toHaveBeenCalledTimes(1);
     const written = readFileSync(target(), 'utf8');
     expect(written).toBe(
       'id: reviewer\nmodel: claude-sonnet-4-6\nprovider: anthropic\nsystem_prompt: Review the code.\n',
     );
-    r.ui.input('y', ctrl); // a held key: there is no card to answer
+    r.ui.input('y', ctrl); // a held key: the Done step takes no chord, and there is no card to answer
     await Promise.resolve();
+    expect(r.ui.getSnapshot().final, 'the Done step stays').toBe('ok');
     expect(r.commits).toHaveBeenCalledTimes(1);
+    expect((await r.done()).message).toBe("Imported agent 'reviewer'");
     expect(readFileSync(target(), 'utf8')).toBe(written);
     expect(r.ui.getSnapshot().active).toBe(false);
   });
 
-  it('Ctrl+Y inside the dwell is not a Yes: nothing is written until the card has been on screen long enough', async () => {
+  it('Ctrl+Y inside the dwell is not a Yes: nothing is written until the confirmation has been on screen long enough', async () => {
     const r = rig();
     await r.fieldUp();
     r.submit(SOURCE);
     await vi.waitFor(() => expect(r.ui.getSnapshot().kind).toBe('chord'), { timeout: WAIT_MS });
-    r.at(0);
+    r.at(CARD_SHOWN_AT);
     r.ui.shown(r.ui.getSnapshot());
-    r.at(5); // the frame has just appeared
+    r.at(CARD_SHOWN_AT + 5); // the frame has just appeared
     r.ui.input('y', ctrl);
     expect(r.ui.getSnapshot().kind, 'the card stays').toBe('chord');
     expect(r.commits).not.toHaveBeenCalled();
     expect(existsSync(target())).toBe(false);
     r.at(60_000);
     r.ui.input('y', ctrl);
-    expect(await r.result).toContain('Imported agent');
+    expect((await r.done()).message).toBe("Imported agent 'reviewer'");
     expect(r.commits).toHaveBeenCalledTimes(1);
   });
 
-  it('Ctrl+Y on a card that is not on screen is not a Yes', async () => {
+  it('Ctrl+Y on a confirmation that is not on screen is not a Yes', async () => {
     let now = 0;
     const channel = createNativePromptChannel({ now: () => now });
     channel.ui.bindVisibility(() => false); // the exact frame was never measured and flushed
@@ -563,12 +666,15 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     await vi.waitFor(() => expect(channel.ui.getSnapshot().kind).toBe('text'), {
       timeout: WAIT_MS,
     });
+    now = FIELD_SHOWN_AT;
+    channel.ui.shown(channel.ui.getSnapshot());
+    now = FIELD_ANSWERED_AT;
     channel.ui.paste(SOURCE);
     channel.ui.input('', enter);
     await vi.waitFor(() => expect(channel.ui.getSnapshot().kind).toBe('chord'), {
       timeout: WAIT_MS,
     });
-    now = 0;
+    now = CARD_SHOWN_AT;
     channel.ui.shown(channel.ui.getSnapshot());
     now = 60_000;
     channel.ui.input('y', ctrl);
@@ -579,46 +685,50 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     expect(existsSync(target())).toBe(false);
   });
 
-  it('a file that appeared between the card and the answer is kept, and the refusal says the card never overwrites', async () => {
+  it('a file that appeared between the confirmation and the answer is kept, and the refusal says /import never overwrites', async () => {
     const r = rig();
     await r.cardUp();
     mkdirSync(join(root, '.relavium', 'agents'), { recursive: true });
     writeFileSync(target(), 'someone else wrote this\n');
     r.ui.input('y', ctrl);
-    expect(await r.result).toBe(
-      `Not imported. ${DESTINATION} already exists, and this card never overwrites. ${REPLACE}`,
-    );
+    const done = await r.done();
+    expect(done.tone).toBe('failed');
+    expect(done.message).toBe(IMPORT_FAILED);
+    expect(done.lines).toEqual([
+      `${DESTINATION} already exists, and /import never overwrites. ${REPLACE}`,
+    ]);
+    expect(done.notification).toBeUndefined();
     expect(r.commits).toHaveBeenCalledTimes(1);
     expect(readFileSync(target(), 'utf8')).toBe('someone else wrote this\n');
   });
 
-  it('an id that appeared under another name between the card and the answer is refused, and the card writes nothing', async () => {
+  it('an id that appeared under another name between the confirmation and the answer is refused, and nothing is written', async () => {
     const r = rig();
     await r.cardUp();
     mkdirSync(join(root, '.relavium', 'agents'), { recursive: true });
     writeFileSync(join(root, '.relavium', 'agents', 'renamed.agent.yaml'), AGENT);
     r.ui.input('y', ctrl);
-    expect(await r.result).toBe(
-      `Not imported. agent 'reviewer' already exists in this project, and this card never overwrites. ${REPLACE}`,
-    );
+    expect((await r.done()).lines).toEqual([
+      `agent 'reviewer' already exists in this project, and /import never overwrites. ${REPLACE}`,
+    ]);
     expect(r.commits).toHaveBeenCalledTimes(1);
     expect(existsSync(target())).toBe(false);
     expect(readdirSync(join(root, '.relavium', 'agents'))).toEqual(['renamed.agent.yaml']);
   });
 
-  it('a directory that appeared between the card and the answer is refused, with no --force offered for it', async () => {
+  it('a directory that appeared between the confirmation and the answer is refused, with no --force offered for it', async () => {
     const r = rig();
     await r.cardUp();
     mkdirSync(target(), { recursive: true });
     r.ui.input('y', ctrl);
-    const notice = await r.result;
-    expect(notice).toContain('already exists and is not a regular file');
-    expect(notice).not.toContain('--force');
+    const reason = (await r.done()).lines.join('\n');
+    expect(reason).toContain('already exists and is not a regular file');
+    expect(reason).not.toContain('--force');
     expect(readdirSync(target())).toEqual([]);
   });
 
   it.skipIf(process.platform === 'win32')(
-    'a link that appeared between the card and the answer is not written through',
+    'a link that appeared between the confirmation and the answer is not written through',
     async () => {
       const r = rig();
       await r.cardUp();
@@ -627,31 +737,31 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
       writeFileSync(victim, 'untouched\n');
       symlinkSync(victim, target());
       r.ui.input('y', ctrl);
-      expect(await r.result).toMatch(/^Not imported\. /u);
+      const done = await r.done();
+      expect(done.tone).toBe('failed');
+      expect(done.message).toBe(IMPORT_FAILED);
       expect(readFileSync(victim, 'utf8')).toBe('untouched\n');
     },
   );
 });
 
-describe('a refusal is shown in the card, and writes nothing', () => {
-  const REFUSED = 'Not imported. ';
-
-  it('an id the project already has is refused before the card asks, naming the shell command, and the file is kept', async () => {
+describe('a refusal is shown in the popup, and writes nothing', () => {
+  it('an id the project already has is refused before the confirmation asks, naming the shell command, and the file is kept', async () => {
     mkdirSync(join(root, '.relavium', 'agents'), { recursive: true });
     writeFileSync(target(), AGENT);
     const before = tree(root);
     const r = rig();
     await r.refusalUp(SOURCE);
     const card = r.ui.getSnapshot();
-    expect(card.message).toBe(
-      `Cannot import: agent 'reviewer' already exists in this project, and this card never overwrites. ${REPLACE}`,
-    );
-    expect(card.options.map((option) => option.label)).toEqual([IMPORT_CLOSE_LABEL]);
+    expect(card.message).toBe(IMPORT_CANNOT);
+    expect(card.details).toEqual([
+      `agent 'reviewer' already exists in this project, and /import never overwrites. ${REPLACE}`,
+    ]);
+    expect(card.final, 'drawn as what failed').toBe('failed');
+    expect(card.popup?.stepIndex, 'on the Review step').toBe(1);
+    expect(card.options.map((option) => option.label)).toEqual([FLOW_CLOSE_LABEL]);
     r.ui.input('', enter);
-    const notice = await r.result;
-    expect(notice).toBe(
-      `Not imported. agent 'reviewer' already exists in this project, and this card never overwrites. ${REPLACE}`,
-    );
+    expect(await r.result, 'the refusal was read where it was shown').toBeUndefined();
     expect(r.commits, 'there was nothing to commit').not.toHaveBeenCalled();
     expect(readFileSync(target(), 'utf8')).toBe(AGENT);
     expect(tree(root)).toEqual(before);
@@ -664,13 +774,11 @@ describe('a refusal is shown in the card, and writes nothing', () => {
     const before = tree(root);
     const r = rig();
     await r.refusalUp(SOURCE);
-    expect(r.ui.getSnapshot().message).toBe(
-      `Cannot import: ${DESTINATION} already exists, and this card never overwrites. ${REPLACE}`,
-    );
+    expect(r.ui.getSnapshot().details).toEqual([
+      `${DESTINATION} already exists, and /import never overwrites. ${REPLACE}`,
+    ]);
     r.ui.input('', enter);
-    expect(await r.result).toMatch(
-      /^Not imported\. \.relavium\/agents\/reviewer\.agent\.yaml already exists/u,
-    );
+    expect(await r.result).toBeUndefined();
     expect(r.commits).not.toHaveBeenCalled();
     expect(readFileSync(target(), 'utf8')).toBe('pre-existing\n');
     expect(tree(root)).toEqual(before);
@@ -682,11 +790,11 @@ describe('a refusal is shown in the card, and writes nothing', () => {
     const before = tree(root);
     const r = rig();
     await r.refusalUp(SOURCE);
-    expect(r.ui.getSnapshot().message).toContain("'reviewer' already exists as a workflow");
+    const reason = r.ui.getSnapshot().details.join('\n');
+    expect(reason).toContain("'reviewer' already exists as a workflow");
+    expect(reason).not.toContain('--force');
     r.ui.input('', enter);
-    const notice = await r.result;
-    expect(notice).toContain(REFUSED);
-    expect(notice).not.toContain('--force');
+    expect(await r.result).toBeUndefined();
     expect(tree(root)).toEqual(before);
   });
 
@@ -695,9 +803,11 @@ describe('a refusal is shown in the card, and writes nothing', () => {
     const before = tree(root);
     const r = rig();
     await r.refusalUp(SOURCE);
-    expect(r.ui.getSnapshot().message).toContain('already exists and is not a regular file');
+    expect(r.ui.getSnapshot().details.join('\n')).toContain(
+      'already exists and is not a regular file',
+    );
     r.ui.input('', enter);
-    expect(await r.result).toMatch(/^Not imported\. /u);
+    expect(await r.result).toBeUndefined();
     expect(tree(root)).toEqual(before);
   });
 
@@ -710,7 +820,9 @@ describe('a refusal is shown in the card, and writes nothing', () => {
       symlinkSync(victim, target());
       const r = rig();
       await r.refusalUp(SOURCE);
-      expect(r.ui.getSnapshot().message).toContain('already exists and is not a regular file');
+      expect(r.ui.getSnapshot().details.join('\n')).toContain(
+        'already exists and is not a regular file',
+      );
       r.ui.input('', enter);
       await r.result;
       expect(readFileSync(victim, 'utf8')).toBe('untouched\n');
@@ -725,9 +837,10 @@ describe('a refusal is shown in the card, and writes nothing', () => {
     const before = tree(root);
     const r = rig();
     await r.refusalUp(path);
-    expect(r.ui.getSnapshot().message).toBe(`Cannot import: ${reason}`);
+    expect(r.ui.getSnapshot().message).toBe(IMPORT_CANNOT);
+    expect(r.ui.getSnapshot().details).toEqual([reason]);
     r.ui.input('', enter);
-    expect(await r.result).toBe(`Not imported. ${reason}`);
+    expect(await r.result).toBeUndefined();
     expect(tree(root)).toEqual(before);
   });
 
@@ -736,24 +849,25 @@ describe('a refusal is shown in the card, and writes nothing', () => {
     const before = tree(root);
     const r = rig();
     await r.refusalUp('mystery.yaml');
-    expect(r.ui.getSnapshot().message).toMatch(
-      /^Cannot import: mystery\.yaml is not a valid workflow \(/u,
-    );
+    expect(r.ui.getSnapshot().details[0]).toMatch(/^mystery\.yaml is not a valid workflow \(/u);
     r.ui.input('', enter);
-    expect(await r.result).toMatch(/^Not imported\. mystery\.yaml is not a valid workflow/u);
+    expect(await r.result).toBeUndefined();
     expect(r.commits).not.toHaveBeenCalled();
     expect(tree(root)).toEqual(before);
   });
 
-  it('Esc closes the refusal too, and says the same', async () => {
+  it('Esc closes the refusal too, and leaves nothing more to say', async () => {
     const r = rig();
     await r.refusalUp('nope.yaml');
     r.ui.input('', esc);
-    expect(await r.result).toBe('Not imported. no file at nope.yaml');
+    expect(await r.result).toBeUndefined();
+    expect(r.ui.getSnapshot().active).toBe(false);
   });
 
   it('a fault that is not a refusal propagates, with the flow ended', async () => {
+    let now = 0;
     const channel = createNativePromptChannel({
+      now: () => now,
       guard: { settleMs: 0, quietMs: 0, typeaheadMs: 0, lockoutMs: 0 },
     });
     channel.ui.bindVisibility((snapshot) => snapshot === channel.ui.getSnapshot());
@@ -766,6 +880,7 @@ describe('a refusal is shown in the card, and writes nothing', () => {
           slug: 's',
           source: 'f.yaml',
           destination: 'g.yaml',
+          target: 'g.yaml',
           bytes: 3,
           warnings: [],
         },
@@ -782,12 +897,17 @@ describe('a refusal is shown in the card, and writes nothing', () => {
     await vi.waitFor(() => expect(channel.ui.getSnapshot().kind).toBe('text'), {
       timeout: WAIT_MS,
     });
+    now = FIELD_SHOWN_AT;
+    channel.ui.shown(channel.ui.getSnapshot());
+    now = FIELD_ANSWERED_AT;
     channel.ui.paste('f.yaml');
     channel.ui.input('', enter);
     await vi.waitFor(() => expect(channel.ui.getSnapshot().kind).toBe('chord'), {
       timeout: WAIT_MS,
     });
+    now = CARD_SHOWN_AT;
     channel.ui.shown(channel.ui.getSnapshot());
+    now = CARD_ANSWERED_AT;
     channel.ui.input('y', { ...none, ctrl: true });
     const outcome = await settled;
     expect(outcome instanceof Error && outcome.message).toBe('disk fault');
@@ -795,7 +915,7 @@ describe('a refusal is shown in the card, and writes nothing', () => {
   });
 });
 
-describe('the card fits 80×24 and can be answered there', () => {
+describe('the popup fits 80×24 and can be answered there', () => {
   /** The two notices the command can write, as long as they are. */
   const WARNINGS = [
     'Warning: authored definition has 2 string(s) matching known credential shapes. Authored content is preserved in files and run snapshots; review literals before sharing or running. This check is best effort.',
@@ -813,6 +933,7 @@ describe('the card fits 80×24 and can be answered there', () => {
         slug: 'a-workflow-with-a-fairly-long-slug-that-wraps-the-question-line-onto-more-rows',
         source: `${'a-very-long-directory-name/'.repeat(10)}workflow-to-import.yaml`,
         destination: `${'nested-directory/'.repeat(12)}code-review.relavium.yaml`,
+        target: `${'nested-directory/'.repeat(12)}code-review.relavium.yaml`,
         bytes: 4096,
         warnings: WARNINGS,
       }),
@@ -845,14 +966,14 @@ describe('the card fits 80×24 and can be answered there', () => {
     channel.flow.begin();
     void channel.flow.select({
       message: `Cannot import: ${'x'.repeat(2000)}`.slice(0, 240),
-      options: [{ value: 'close', label: IMPORT_CLOSE_LABEL }],
+      options: [{ value: 'close', label: FLOW_CLOSE_LABEL }],
       escape: 'cancel',
     });
     const h = render(createElement(NativePromptHost, { ui: channel.ui, color: false }));
     Object.defineProperty(h.stdout, 'rows', { value: 24 });
     Object.defineProperty(h.stdout, 'columns', { value: 80 });
     h.stdout.emit('resize');
-    await waitFor(() => (h.lastFrame() ?? '').includes(IMPORT_CLOSE_LABEL));
+    await waitFor(() => (h.lastFrame() ?? '').includes(FLOW_CLOSE_LABEL));
     await settleFrames();
     const lines = (h.lastFrame() ?? '').split('\n');
     expect(lines.length).toBeLessThanOrEqual(23);

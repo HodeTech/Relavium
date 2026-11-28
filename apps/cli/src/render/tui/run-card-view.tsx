@@ -1,6 +1,10 @@
-import { Box, Text, type DOMElement } from 'ink';
+import { Box, type DOMElement } from 'ink';
+import { Text } from './text.js';
 import { useLayoutEffect, useRef, type ReactElement } from 'react';
 
+import { EmphText } from './emphasis-view.js';
+import { SELECTED_ROW, type EmphasisSet } from './emphasis.js';
+import { withGlyphForm } from './glyphs.js';
 import { layoutColumns } from './layout-columns.js';
 import { colorProps, dimProps } from './projection.js';
 import {
@@ -29,10 +33,15 @@ export interface RunCardViewProps {
   readonly rows: number;
   /** Wall-clock milliseconds: the only clock the card reads, for the overdue words. */
   readonly nowMs: number;
+  /** The sheet's wait clock (the host's display value, ADR-0147 §2), drawn in the rule while the card waits. Absent: none. */
+  readonly clock?: string | undefined;
+  /** The card's lockout holds its guarded keys (`RunCard.lock`, a display value): their legend reads `(wait)`. Absent: free. */
+  readonly locked?: boolean | undefined;
   readonly color: boolean;
   readonly onFrame?: ((node: DOMElement | null) => void) | undefined;
 }
 
+/** The colour of a row by its role (none with colour off); the weight of a row is {@link rowEmphasis}, which colour does not switch. */
 function rowProps(
   color: boolean,
   row: RunCardRow,
@@ -40,22 +49,36 @@ function rowProps(
 ): Record<string, unknown> {
   const role: RunCardRole = row.role;
   switch (role) {
+    case 'rule':
+      return colorProps(color, 'yellow');
     case 'title':
-      return color ? { color: projection.tone, bold: true } : {};
+      return color ? { color: projection.tone } : {};
     case 'warn':
       return colorProps(color, 'yellow');
     case 'cursor':
-      return color ? { color: 'cyan', bold: true } : {};
+      return colorProps(color, 'cyan');
     case 'note':
       return projection.state === 'not-answered' ? colorProps(color, 'red') : {};
     case 'fact':
     case 'keys':
       return dimProps(color);
     case 'amount':
-      return { bold: true };
     case 'author':
     case 'list':
       return {};
+  }
+}
+
+/** The weight of a row by its role, with colour on and off alike: the title and the amount are bold, the gate under the cursor is the selected row. */
+function rowEmphasis(row: RunCardRow): EmphasisSet | undefined {
+  switch (row.role) {
+    case 'title':
+    case 'amount':
+      return 'bold';
+    case 'cursor':
+      return SELECTED_ROW;
+    default:
+      return undefined;
   }
 }
 
@@ -64,11 +87,15 @@ export function RunCardView(props: Readonly<RunCardViewProps>): ReactElement {
   useLayoutEffect(() => {
     props.onFrame?.(frame.current);
   });
-  const projection = projectRunCard(props.snapshot, {
-    columns: props.columns,
-    rows: props.rows,
-    nowMs: props.nowMs,
-  });
+  const projection = withGlyphForm(!props.color, () =>
+    projectRunCard(props.snapshot, {
+      columns: props.columns,
+      rows: props.rows,
+      nowMs: props.nowMs,
+      clock: props.clock,
+      locked: props.locked,
+    }),
+  );
   const { color } = props;
   return (
     <Box ref={frame} flexDirection="column" width={layoutColumns(props.columns)}>
@@ -78,13 +105,14 @@ export function RunCardView(props: Readonly<RunCardViewProps>): ReactElement {
         </Text>
       )}
       {projection.rows.map((row, index) => (
-        <Text
+        <EmphText
           key={`${String(index)}:${row.role}:${row.text}`}
           {...rowProps(color, row, projection)}
+          emphasis={rowEmphasis(row)}
           wrap="truncate-end"
         >
           {row.text}
-        </Text>
+        </EmphText>
       ))}
     </Box>
   );

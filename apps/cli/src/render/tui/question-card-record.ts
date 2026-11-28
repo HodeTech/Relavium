@@ -11,6 +11,8 @@
 import type { AskUserAnswer, AskUserRequest } from '@relavium/core';
 import type { SessionAskRecord } from '@relavium/shared';
 
+import { glyph } from './glyphs.js';
+
 interface Item {
   readonly header: string;
   /** Absent for a skipped call: the person may never have been shown it, so no entry quotes it. */
@@ -26,7 +28,7 @@ interface Item {
  * could begin a row that looks exactly like the host's `  → <answer>` line (the forged-row-at-a-wrap-boundary class the
  * card's gutter closes; there the model's rows are marked, here the host's are).
  */
-const ASKED_ROW = '› ';
+const askedRow = (): string => `${glyph('yourTurn')} `;
 const ANSWER_ROW = '  └ ';
 
 /** One quoted answer: the chosen labels, then the person's own text in quotes. */
@@ -38,12 +40,12 @@ function answerText(selected: readonly string[], other: string | undefined): str
 function render(status: 'answered' | 'skipped', items: readonly Item[]): string {
   if (status === 'skipped') {
     const headers = items.map((item) => item.header).join(' · ');
-    return `${ASKED_ROW}Skipped the agent's ${items.length === 1 ? 'question' : 'questions'}: ${headers}`;
+    return `${askedRow()}Skipped the agent's ${items.length === 1 ? 'question' : 'questions'}: ${headers}`;
   }
   return items
     .map(
       (item) =>
-        `${ASKED_ROW}Asked: ${item.header}${item.question === undefined ? '' : ` — ${item.question}`}\n${ANSWER_ROW}${answerText(item.selected, item.other)}`,
+        `${askedRow()}Asked: ${item.header}${item.question === undefined ? '' : ` — ${item.question}`}\n${ANSWER_ROW}${answerText(item.selected, item.other)}`,
     )
     .join('\n');
 }

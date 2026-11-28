@@ -347,3 +347,12 @@ function scratchFloorPath(
 export function fsPolicyWorkspace(policy: FsPathPolicy | undefined): string {
   return policyData(policy).workspace.canonical;
 }
+
+/**
+ * The canonical spelling of the directory `path` names, without building a policy: the very pin {@link fsPolicyWorkspace} returns for a
+ * policy over `path` (resolved, then the native realpath). Throws {@link FsPolicyError} when it cannot be pinned (missing, not a
+ * directory, unreadable).
+ */
+export function fsPolicyCanonicalPath(path: string): string {
+  return pinDirectory(path).canonical;
+}

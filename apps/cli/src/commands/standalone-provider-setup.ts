@@ -18,6 +18,12 @@ import {
   sampleProviderSetup,
   type ProviderSetupOutcome,
 } from '../home/provider-setup.js';
+import {
+  leftoverSetupNote,
+  STARTER_ONCE_NOTICE,
+  STARTER_SAVED_NOTICE,
+  STARTER_UNCONFIRMED_NOTICE,
+} from '../onboarding/setup-notes.js';
 import { CliError } from '../process/errors.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
@@ -77,7 +83,8 @@ export async function runStandaloneProviderSetup(deps: {
           return setupSignal;
         },
         end: async () => {
-          finalNote = ui.getSnapshot().note;
+          // What the flow left on its card, minus a note that only said what a step was (the first-run sentence, the destination).
+          finalNote = leftoverSetupNote(ui.getSnapshot().note);
           await nativeFlow.end();
         },
       };
@@ -133,7 +140,7 @@ export async function runStandaloneProviderSetup(deps: {
           keychain: deps.keychain,
           io,
           workOwner: owner,
-          writeDefaultModel: async (model, provider, admit) => {
+          writeDefaultModel: async (model, provider, admit, runWrite = (prepared) => prepared) => {
             const assertAdmitting = (): void => {
               owner.assertAdmitting();
               setupSignal?.throwIfAborted();
@@ -142,19 +149,18 @@ export async function runStandaloneProviderSetup(deps: {
             for (;;) {
               try {
                 assertAdmitting();
-                const saved = await publish(
-                  prepareGlobalPreferences(
-                    { defaultModel: model, defaultProvider: provider },
-                    deps.loaded.homeDir,
-                    deps.global.configPath === undefined ? undefined : deps.loaded.globalConfigPath,
-                    deps.configReadObserver,
-                  ),
-                  assertAdmitting,
+                const prepared = prepareGlobalPreferences(
+                  { defaultModel: model, defaultProvider: provider },
+                  deps.loaded.homeDir,
+                  deps.global.configPath === undefined ? undefined : deps.loaded.globalConfigPath,
+                  deps.configReadObserver,
                 );
+                // The setup run's view of its own writes: a config it created a moment before draws no rewrite notice (W7 item 5).
+                const saved = await publish(runWrite(prepared), assertAdmitting);
                 defaultNotice =
                   saved.durability === 'unconfirmed'
-                    ? 'Default saved, but persistence after a crash is unconfirmed.'
-                    : 'Starter default saved. Project settings may override it.';
+                    ? STARTER_UNCONFIRMED_NOTICE
+                    : STARTER_SAVED_NOTICE;
                 return { kind: 'saved', durability: saved.durability };
               } catch (cause) {
                 assertAdmitting();
@@ -170,7 +176,7 @@ export async function runStandaloneProviderSetup(deps: {
                   message: 'How would you like to continue?',
                   options: [
                     ...(refused ? [] : [{ value: 'retry', label: 'Retry saving' }]),
-                    { value: 'once', label: 'Use this model for this invocation only' },
+                    { value: 'once', label: `Use ${model} for this invocation only` },
                     { value: 'cancel', label: 'Cancel' },
                   ],
                 });
@@ -178,8 +184,8 @@ export async function runStandaloneProviderSetup(deps: {
                 if (choice === 'once') {
                   assertAdmitting();
                   ephemeralDefault = { model, provider };
-                  defaultNotice = 'Default applies to this invocation only; it was not saved.';
-                  flow.note(defaultNotice);
+                  defaultNotice = STARTER_ONCE_NOTICE;
+                  flow.note(STARTER_ONCE_NOTICE);
                   return { kind: 'ephemeral' };
                 }
                 flow.cancel();
@@ -192,16 +198,25 @@ export async function runStandaloneProviderSetup(deps: {
       return await coordinator.run('automatic');
     },
   );
-  const notice = [
-    ...new Set(
-      [result.notice, defaultNotice, finalNote].filter((part) => part !== undefined && part !== ''),
-    ),
-  ].join(' ');
+  const notice = saidOnce([result.notice, defaultNotice, finalNote]);
   if (notice !== '') {
     owner.assertAdmitting();
     await io.writeErrAcknowledged(`${notice}\n`);
   }
   return { ...result, ...(ephemeralDefault === undefined ? {} : { ephemeralDefault }) };
+}
+
+/**
+ * The parts of the notice a setup leaves behind, in order, each fact said once: an empty part and a repeat go, and so does a part that another
+ * part already contains (a granted source's outcome carries the starter default's sentence, and the writer that chose it speaks the same one).
+ */
+function saidOnce(parts: readonly (string | undefined)[]): string {
+  const said = [
+    ...new Set(parts.filter((part): part is string => part !== undefined && part !== '')),
+  ];
+  return said
+    .filter((part) => !said.some((other) => other !== part && other.includes(part)))
+    .join(' ');
 }
 
 /** Shared model precedence with Home; provider-source authority is independent. */

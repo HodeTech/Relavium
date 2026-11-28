@@ -21,11 +21,12 @@ import { HOSTED_RUN_POLL_MS } from './tui-constants.js';
 const RUN = '3f2a9c1e-7b64-4d0a-9c11-5a2e8f6d0b13';
 const OTHER = '9c41b0aa-2d17-45f3-8e6b-0f1a7c33d2e4';
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const IDLE: RunHostSnapshot = { launching: false, active: undefined, last: undefined };
@@ -62,6 +63,8 @@ function rig(start: RunHostSnapshot = executing(RUN)) {
   const timers = new Map<number, { at: number; run: () => void }>();
   const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
   const note = vi.spyOn(store, 'note');
+  // The Home's one notification channel: what the refused `/resume` says (ADR-0148 §6), never a line in the chat.
+  const announced: string[] = [];
   const session: HomeChatSession = {
     store,
     sessionId: 'chat-1',
@@ -71,10 +74,12 @@ function rig(start: RunHostSnapshot = executing(RUN)) {
     teardown: () => Promise.resolve(),
   };
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => Promise.resolve(session),
-    // A native action that ends in the chat reads the run host again: the one way a chat's Home looks at the host with no leg live.
-    initializeProject: () => Promise.resolve('initialized'),
+    // A native action that ends in the chat reads the run host again: the one way a chat's Home looks at the host with no leg live. `/resume`
+    // is the one such action a chat has (`/init` is the Home's: ADR-0145 §7.5), and a resume that is refused with a notice ends in the chat.
+    pickSession: () => Promise.resolve('another-session'),
+    resumeChat: () => Promise.resolve({ notice: 'resumed' }),
+    announce: (text) => announced.push(text),
     homeStore: { read: () => EMPTY },
     hostedRuns: { snapshot: () => host, cancel: () => true, close: () => Promise.resolve() },
     gateCards: {
@@ -114,6 +119,7 @@ function rig(start: RunHostSnapshot = executing(RUN)) {
   return {
     controller,
     note,
+    announced,
     host: (next: RunHostSnapshot): void => {
       host = next;
     },
@@ -190,17 +196,18 @@ describe('a leg that ends while a chat is in front', () => {
     await home.advance(HOSTED_RUN_POLL_MS);
     expect(aboutRuns(home)).toHaveLength(1);
 
-    // The gate is answered elsewhere and a resumed leg executes: the host still holds the first end as its last. `/init` in the chat reads
+    // The gate is answered elsewhere and a resumed leg executes: the host still holds the first end as its last. `/resume` in the chat reads
     // the host again as it ends, and the first end is not announced a second time.
     home.host({
       launching: false,
       active: { leg: 'resume', runId: RUN, cancelling: false },
       last: first,
     });
-    home.controller.handlePaste('/init');
+    home.controller.handlePaste('/resume');
     home.controller.handleKey('', { return: true });
     await home.advance(HOSTED_RUN_POLL_MS * 4);
-    expect(said(home)).toContain('initialized');
+    expect(home.announced, 'the resume ended (its one notification)').toContain('resumed');
+    expect(said(home), 'and nothing of it is a line in the chat').not.toContain('resumed');
     expect(aboutRuns(home), 'the first end is not announced again').toHaveLength(1);
 
     // That leg parks again: a new end, and the chat is told once more, and only once.
@@ -271,11 +278,12 @@ describe('a leg that ends with no chat in front', () => {
   it('says nothing of an end the host already held when the Home opened', async () => {
     const home = rig(settled(endOf('completed')));
     await home.startChat();
-    // `/init` in the chat reads the host again as it ends: the end it holds is older than this Home.
-    home.controller.handlePaste('/init');
+    // `/resume` in the chat reads the host again as it ends: the end it holds is older than this Home.
+    home.controller.handlePaste('/resume');
     home.controller.handleKey('', { return: true });
     await home.advance(HOSTED_RUN_POLL_MS * 4);
-    expect(said(home)).toContain('initialized');
+    expect(home.announced, 'the resume ended (its one notification)').toContain('resumed');
+    expect(said(home)).not.toContain('resumed');
     expect(aboutRuns(home)).toEqual([]);
     await home.controller.teardownActive();
   });

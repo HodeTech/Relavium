@@ -11,6 +11,7 @@ import {
 import {
   createSuspendPort,
   defaultJobControlLifecycle,
+  ORPHANED_STOP_GRACE_MS,
   suspendFullScreen,
   wireJobControl,
   type JobControlLifecycle,
@@ -544,6 +545,13 @@ describe('createSuspendPort — the suspension window', () => {
  * on an irreversible termination handler. These use a named signal seam: emitting a real SIGTSTP in a test would
  * stop the Vitest worker, so the harness proves the release → self-stop → CONT → reclaim ordering without a shell.
  */
+/** A Node timer: the one thing a timer has that a handle that keeps the loop open is read from (`hasRef`). */
+const isTimer = (value: unknown): value is NodeJS.Timeout =>
+  typeof value === 'object' &&
+  value !== null &&
+  'hasRef' in value &&
+  typeof value.hasRef === 'function';
+
 describe('wireJobControl (G0)', () => {
   it('waits for a no-Ink release acknowledgement and joins reentry without self-stopping after disposal', async () => {
     const h = harness();
@@ -566,6 +574,8 @@ describe('wireJobControl (G0)', () => {
   });
   interface Harness {
     readonly trace: string[];
+    /** Everything `trace` has, in order, and what the loop's handle and the size refresh did (kept apart so `trace` stays what the older tests pin). */
+    readonly order: string[];
     readonly port: ReturnType<typeof createSuspendPort>;
     readonly lifecycle: JobControlLifecycle;
     readonly suspendSelf: ReturnType<typeof vi.fn>;
@@ -573,20 +583,45 @@ describe('wireJobControl (G0)', () => {
     readonly fireContinue: () => void;
     readonly removeSuspend: ReturnType<typeof vi.fn>;
     readonly removeContinue: ReturnType<typeof vi.fn>;
+    /** How many handles the lifecycle's `keepAlive` has taken and not yet let go, and the most it ever had at once. */
+    readonly holds: () => { readonly now: number; readonly most: number; readonly taken: number };
+    readonly refreshSize: ReturnType<typeof vi.fn>;
   }
 
   const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
   const harness = (): Harness => {
     const trace: string[] = [];
+    const order: string[] = [];
     const port = createSuspendPort();
     let onSuspend: (() => void) | undefined;
     let onContinue: (() => void) | undefined;
     const removeSuspend = vi.fn();
     const removeContinue = vi.fn();
-    const suspendSelf = vi.fn(() => trace.push('self-stop'));
+    const suspendSelf = vi.fn(() => {
+      trace.push('self-stop');
+      order.push('self-stop');
+    });
+    let held = 0;
+    let most = 0;
+    let taken = 0;
+    const refreshSize = vi.fn(() => order.push('refresh-size'));
     const lifecycle: JobControlLifecycle = {
       supported: true,
+      keepAlive: () => {
+        held += 1;
+        taken += 1;
+        most = Math.max(most, held);
+        order.push('hold');
+        let open = true;
+        return () => {
+          if (!open) return;
+          open = false;
+          held -= 1;
+          order.push('let-go');
+        };
+      },
+      refreshSize,
       onSuspend: (listener) => {
         onSuspend = listener;
         return () => {
@@ -605,6 +640,7 @@ describe('wireJobControl (G0)', () => {
     };
     return {
       trace,
+      order,
       port,
       lifecycle,
       suspendSelf,
@@ -612,6 +648,8 @@ describe('wireJobControl (G0)', () => {
       fireContinue: () => onContinue?.(),
       removeSuspend,
       removeContinue,
+      holds: () => ({ now: held, most, taken }),
+      refreshSize,
     };
   };
 
@@ -901,6 +939,397 @@ describe('wireJobControl (G0)', () => {
     releaseHatch();
     await hatch;
     binding.dispose();
+  });
+
+  describe('the event loop is held open while a stop is pending (round 3, observation: Ctrl+Z then `fg` ended an idle Home)', () => {
+    it('takes ONE handle before the process stops and lets it go only when the suspension has settled, the redraw included', async () => {
+      const h = harness();
+      h.port.attach(async (callback) => {
+        try {
+          await callback();
+        } finally {
+          h.order.push('ink:redraw');
+        }
+      });
+      const binding = bind(h);
+
+      h.fireSuspend();
+      await flush();
+      expect(h.holds()).toEqual({ now: 1, most: 1, taken: 1 });
+      // The handle is taken BEFORE the stop (the process is stopped inside the self-signal), not after it.
+      expect(h.order).toEqual(['hold', 'self-stop']);
+
+      h.fireContinue();
+      await flush();
+      // Let go once Ink has the terminal back and has redrawn, not at the signal.
+      expect(h.holds()).toEqual({ now: 0, most: 1, taken: 1 });
+      expect(h.order).toEqual(['hold', 'self-stop', 'ink:redraw', 'let-go', 'refresh-size']);
+      binding.dispose();
+    });
+
+    it('holds again for the next stop, and a burst of stop requests holds one at a time', async () => {
+      const h = harness();
+      h.port.attach(async (callback) => callback());
+      const binding = bind(h);
+
+      h.fireSuspend();
+      await flush();
+      h.fireSuspend(); // coalesced until the first stop has settled
+      h.fireSuspend();
+      expect(h.holds()).toEqual({ now: 1, most: 1, taken: 1 });
+      h.fireContinue();
+      await flush();
+      // The one retained request is replayed: a second stop, a second handle, never two at once.
+      expect(h.suspendSelf).toHaveBeenCalledTimes(2);
+      expect(h.holds()).toEqual({ now: 1, most: 1, taken: 2 });
+      h.fireContinue();
+      await flush();
+      expect(h.holds()).toEqual({ now: 0, most: 1, taken: 2 });
+      binding.dispose();
+    });
+
+    it('lets it go when the binding is disposed while stopped, and a later SIGCONT holds nothing (no handle outlives it)', async () => {
+      const h = harness();
+      h.port.attach(async (callback) => callback());
+      const binding = bind(h);
+
+      h.fireSuspend();
+      await flush();
+      expect(h.holds().now).toBe(1);
+      binding.dispose();
+      expect(h.holds().now).toBe(0);
+      h.fireContinue();
+      await flush();
+      expect(h.holds()).toEqual({ now: 0, most: 1, taken: 1 });
+    });
+
+    it('lets it go on an owned finish that drains a pending stop', async () => {
+      const h = harness();
+      h.port.attach(async (callback) => callback());
+      const binding = bind(h);
+
+      h.fireSuspend();
+      await flush();
+      expect(h.holds().now).toBe(1);
+      const closing = binding.finish();
+      await flush();
+      await closing;
+      expect(h.holds().now).toBe(0);
+      // A binding that is finished is being torn down with its terminal: nothing is asked to redraw at a new size.
+      expect(h.refreshSize).not.toHaveBeenCalled();
+    });
+
+    it('a handle that cannot be taken is reported, and the stop still happens', async () => {
+      const h = harness();
+      const failures: unknown[] = [];
+      h.port.attach(async (callback) => callback());
+      const binding = wireJobControl({
+        suspendPort: h.port,
+        lifecycle: {
+          ...h.lifecycle,
+          keepAlive: () => {
+            throw new Error('no timers');
+          },
+        },
+        onFailure: (cause) => failures.push(cause),
+        run: (suspendTerminal, waitForContinue) =>
+          suspendFullScreen(
+            {
+              suspendTerminal,
+              writeControl: () => undefined,
+              inkOwnsAltScreen: false,
+              altActive: true,
+              mouseActive: true,
+            },
+            waitForContinue,
+          ),
+      });
+      h.fireSuspend();
+      await flush();
+      expect(failures).toHaveLength(1);
+      expect(h.suspendSelf).toHaveBeenCalledOnce();
+      h.fireContinue();
+      await flush();
+      expect(h.refreshSize).toHaveBeenCalledOnce();
+      binding.dispose();
+    });
+
+    it('lets it go when the self-signal fails (there was no stop, so there is no continuation to wait for)', async () => {
+      const h = harness();
+      h.suspendSelf.mockImplementation(() => {
+        throw new Error('kill failed');
+      });
+      h.port.attach(async (callback) => callback());
+      const failures: unknown[] = [];
+      const binding = wireJobControl({
+        suspendPort: h.port,
+        lifecycle: h.lifecycle,
+        onFailure: (cause) => failures.push(cause),
+        run: (suspendTerminal, waitForContinue) =>
+          suspendFullScreen(
+            {
+              suspendTerminal,
+              writeControl: () => undefined,
+              inkOwnsAltScreen: false,
+              altActive: true,
+              mouseActive: true,
+            },
+            waitForContinue,
+          ),
+      });
+
+      h.fireSuspend();
+      await flush();
+      expect(failures).toHaveLength(1);
+      expect(h.holds()).toEqual({ now: 0, most: 1, taken: 1 });
+      binding.dispose();
+    });
+
+    describe('a stop the kernel discarded (an orphaned process group: no job-control shell, so no SIGCONT will ever come)', () => {
+      const attached = (h: Harness): ReturnType<typeof bind> => {
+        h.port.attach(async (callback) => {
+          h.trace.push('ink:begin');
+          try {
+            await callback();
+          } finally {
+            h.trace.push('ink:redraw');
+          }
+        });
+        return bind(h);
+      };
+
+      it('continues on its own after the grace: the renderer is reclaimed and the loop handle is let go (it used to be held for ever)', async () => {
+        vi.useFakeTimers();
+        try {
+          const h = harness();
+          const binding = attached(h);
+          h.fireSuspend(); // `suspendSelf()` returns at once and nothing ever fires SIGCONT
+          await vi.advanceTimersByTimeAsync(0);
+          expect(h.suspendSelf).toHaveBeenCalledOnce();
+          expect(h.port.isSuspended()).toBe(true);
+          expect(h.holds().now).toBe(1);
+          await vi.advanceTimersByTimeAsync(ORPHANED_STOP_GRACE_MS - 1);
+          expect(h.port.isSuspended(), 'one millisecond before the grace it still waits').toBe(
+            true,
+          );
+          expect(h.holds().now).toBe(1);
+          await vi.advanceTimersByTimeAsync(1);
+          expect(h.port.isSuspended()).toBe(false);
+          expect(h.holds().now).toBe(0);
+          expect(h.trace.at(-1)).toBe('ink:redraw');
+          expect(h.refreshSize).toHaveBeenCalledOnce();
+          expect(vi.getTimerCount()).toBe(0);
+          binding.dispose();
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('the grace is the same as the pinned constant (400 ms: past a loop turn, short enough to be a flicker and not a hang)', () => {
+        expect(ORPHANED_STOP_GRACE_MS).toBe(400);
+      });
+
+      it('a SIGCONT that arrives first is the continuation, once: the guard is cleared and nothing fires later', async () => {
+        vi.useFakeTimers();
+        try {
+          const h = harness();
+          const binding = attached(h);
+          h.fireSuspend();
+          await vi.advanceTimersByTimeAsync(0);
+          h.fireContinue();
+          await vi.advanceTimersByTimeAsync(0);
+          expect(h.port.isSuspended()).toBe(false);
+          expect(h.trace.filter((entry) => entry === 'ink:redraw')).toHaveLength(1);
+          expect(vi.getTimerCount(), 'no guard is left behind a continuation').toBe(0);
+          await vi.advanceTimersByTimeAsync(ORPHANED_STOP_GRACE_MS * 3);
+          expect(h.trace.filter((entry) => entry === 'ink:redraw')).toHaveLength(1);
+          expect(h.refreshSize).toHaveBeenCalledOnce();
+          binding.dispose();
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('a binding disposed while waiting leaves no guard behind, and a late grace cannot reclaim behind the teardown', async () => {
+        vi.useFakeTimers();
+        try {
+          const h = harness();
+          const binding = attached(h);
+          h.fireSuspend();
+          await vi.advanceTimersByTimeAsync(0);
+          binding.dispose();
+          expect(vi.getTimerCount()).toBe(0);
+          expect(h.holds().now).toBe(0);
+          await vi.advanceTimersByTimeAsync(ORPHANED_STOP_GRACE_MS * 3);
+          expect(h.refreshSize).not.toHaveBeenCalled();
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    });
+
+    it('holds nothing where the process stops with no Ink to wait for (the signal is handled in the same tick)', () => {
+      const h = harness();
+      const binding = bind(h); // no `port.attach` ⇒ the no-Ink branch
+      h.fireSuspend();
+      expect(h.suspendSelf).toHaveBeenCalledOnce();
+      expect(h.holds().taken).toBe(0);
+      binding.dispose();
+    });
+
+    it('holds nothing where a hatch already owns the suspension', async () => {
+      const h = harness();
+      let releaseHatch: () => void = () => undefined;
+      const inHatch = new Promise<void>((resolve) => {
+        releaseHatch = resolve;
+      });
+      let entered: () => void = () => undefined;
+      const inside = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      h.port.attach(async (callback) => callback());
+      const binding = bind(h);
+      const suspend = h.port.current();
+      if (suspend === undefined) throw new Error('no Ink attached');
+      const hatch = suspend(async () => {
+        entered();
+        await inHatch;
+      });
+      await inside;
+      h.fireSuspend();
+      expect(h.suspendSelf).toHaveBeenCalledOnce();
+      expect(h.holds().taken).toBe(0);
+      releaseHatch();
+      await hatch;
+      binding.dispose();
+    });
+
+    it('is, in production, a ref’d timer that is cleared when let go, and never one that fires', () => {
+      const spy = vi.spyOn(globalThis, 'setInterval');
+      const clear = vi.spyOn(globalThis, 'clearInterval');
+      try {
+        const keepAlive = defaultJobControlLifecycle.keepAlive;
+        if (keepAlive === undefined) throw new Error('the production lifecycle holds the loop');
+        const release = keepAlive();
+        const timer: unknown = spy.mock.results[0]?.value;
+        expect(isTimer(timer) && timer.hasRef()).toBe(true);
+        // The longest delay Node takes without clamping it to 1 ms: well over a day.
+        const delay = spy.mock.calls[0]?.[1];
+        expect(delay).toBe(2 ** 31 - 1);
+        release();
+        expect(clear).toHaveBeenCalledWith(timer);
+      } finally {
+        spy.mockRestore();
+        clear.mockRestore();
+      }
+    });
+  });
+
+  describe('the terminal’s size is brought up to date when a stop has settled (a resize while stopped goes to the shell)', () => {
+    it('runs once, after the redraw, when the continuation has settled, and not before it', async () => {
+      const h = harness();
+      h.port.attach(async (callback) => {
+        try {
+          await callback();
+        } finally {
+          h.order.push('ink:redraw');
+        }
+      });
+      const binding = bind(h);
+
+      h.fireSuspend();
+      await flush();
+      expect(h.refreshSize).not.toHaveBeenCalled();
+      h.fireContinue();
+      await flush();
+      expect(h.refreshSize).toHaveBeenCalledOnce();
+      expect(h.order.indexOf('refresh-size')).toBeGreaterThan(h.order.indexOf('ink:redraw'));
+      binding.dispose();
+    });
+
+    it('runs after each stop, and not after a binding that was disposed', async () => {
+      const h = harness();
+      h.port.attach(async (callback) => callback());
+      const binding = bind(h);
+
+      h.fireSuspend();
+      await flush();
+      h.fireContinue();
+      await flush();
+      h.fireSuspend();
+      await flush();
+      h.fireContinue();
+      await flush();
+      expect(h.refreshSize).toHaveBeenCalledTimes(2);
+
+      h.fireSuspend();
+      await flush();
+      binding.dispose();
+      h.fireContinue();
+      await flush();
+      expect(h.refreshSize).toHaveBeenCalledTimes(2);
+    });
+
+    it('in production it raises the SIGWINCH the stopped process missed, on itself, and only where stdout is a terminal', (ctx) => {
+      if (process.platform === 'win32') {
+        ctx.skip();
+        return;
+      }
+      const refresh = defaultJobControlLifecycle.refreshSize;
+      if (refresh === undefined) throw new Error('the production lifecycle refreshes the size');
+      const kill = vi.spyOn(process, 'kill').mockReturnValue(true);
+      const tty = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+      try {
+        Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+        refresh();
+        expect(kill).toHaveBeenCalledExactlyOnceWith(process.pid, 'SIGWINCH');
+        kill.mockClear();
+        Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true });
+        refresh();
+        expect(kill).not.toHaveBeenCalled();
+      } finally {
+        kill.mockRestore();
+        if (tty === undefined) Reflect.deleteProperty(process.stdout, 'isTTY');
+        else Object.defineProperty(process.stdout, 'isTTY', tty);
+      }
+    });
+
+    it('a refresh that throws is reported and does not stop the surface from re-arming', async () => {
+      const h = harness();
+      h.refreshSize.mockImplementation(() => {
+        throw new Error('no such terminal');
+      });
+      h.port.attach(async (callback) => callback());
+      const failures: unknown[] = [];
+      const binding = wireJobControl({
+        suspendPort: h.port,
+        lifecycle: h.lifecycle,
+        onFailure: (cause) => failures.push(cause),
+        run: (suspendTerminal, waitForContinue) =>
+          suspendFullScreen(
+            {
+              suspendTerminal,
+              writeControl: () => undefined,
+              inkOwnsAltScreen: false,
+              altActive: true,
+              mouseActive: true,
+            },
+            waitForContinue,
+          ),
+      });
+      h.fireSuspend();
+      await flush();
+      h.fireContinue();
+      await flush();
+      expect(failures).toHaveLength(1);
+      // Re-armed: the next Ctrl-Z stops again.
+      h.fireSuspend();
+      await flush();
+      expect(h.suspendSelf).toHaveBeenCalledTimes(2);
+      h.fireContinue();
+      await flush();
+      binding.dispose();
+    });
   });
 
   it('unsupported platforms register nothing and make raw Ctrl-Z a no-op', () => {

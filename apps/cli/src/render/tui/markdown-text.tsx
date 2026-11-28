@@ -1,7 +1,8 @@
-import { Text } from 'ink';
+import { Text } from './text.js';
 import type { ComponentProps, ReactElement } from 'react';
 
 import type { MarkdownSpan } from '../markdown/types.js';
+import { Emph } from './emphasis-view.js';
 import { syntaxStyle } from './syntax-palette.js';
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
@@ -20,7 +21,11 @@ function semanticProps(span: MarkdownSpan, color: boolean): Partial<ComponentPro
   };
 }
 
-/** One grapheme gets one style even when markup put a style edge inside it. */
+/**
+ * One grapheme gets one style even when markup put a style edge inside it. The span styles are the MODEL's content (a heading, strong text, a
+ * link, a code class) and are drawn under the colour gate; the highlight of a mouse selection is the HOST's feedback, so it is drawn through
+ * `emphasis.ts` as inverse with colour on and off alike (ADR-0145 §5), and never vanishes where chalk is at level 0.
+ */
 export function MarkdownText(
   props: Readonly<{
     spans: readonly MarkdownSpan[];
@@ -29,7 +34,7 @@ export function MarkdownText(
   }>,
 ): ReactElement {
   const source = props.spans.map((span) => span.text).join('');
-  const chunks: { text: string; span: MarkdownSpan; inverse: boolean }[] = [];
+  const chunks: { text: string; span: MarkdownSpan; highlighted: boolean }[] = [];
   let spanIndex = 0;
   let spanEnd = props.spans[0]?.text.length ?? 0;
   for (const { segment, index } of segmenter.segment(source)) {
@@ -38,23 +43,19 @@ export function MarkdownText(
       spanEnd += props.spans[spanIndex]?.text.length ?? 0;
     }
     const span = props.spans[spanIndex] ?? { text: segment };
-    const inverse =
+    const highlighted =
       props.selected !== undefined &&
       index < props.selected.end &&
       index + segment.length > props.selected.start;
     const previous = chunks.at(-1);
-    if (previous?.span === span && previous.inverse === inverse) previous.text += segment;
-    else chunks.push({ text: segment, span, inverse });
+    if (previous?.span === span && previous.highlighted === highlighted) previous.text += segment;
+    else chunks.push({ text: segment, span, highlighted });
   }
   return (
     <>
       {chunks.map((chunk, index) => (
-        <Text
-          key={index}
-          {...semanticProps(chunk.span, props.color)}
-          {...(chunk.inverse ? { inverse: true } : {})}
-        >
-          {chunk.text}
+        <Text key={index} {...semanticProps(chunk.span, props.color)}>
+          <Emph kinds={chunk.highlighted ? 'inverse' : undefined}>{chunk.text}</Emph>
         </Text>
       ))}
     </>

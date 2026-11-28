@@ -17,12 +17,15 @@
 
 import type { HostedRunDisposition } from '../../home/hosted-run-terminal.js';
 import type { HostedLegEnd, RunHostSnapshot } from '../../home/run-host.js';
+import { formatElapsed } from '../notation.js';
 import { sanitizeInline } from '../sanitize.js';
+import { screenText } from './screen-text.js';
 import type { StatusColor } from './format.js';
+import { glyph, toneOf, type StatusGlyphRole } from './glyphs.js';
 import { homeFitsTerminal, tooSmallMessage } from './home-projection.js';
 import { boundedNotice } from './home-notice.js';
 import type { HostedLegState } from './interrupt-keymap.js';
-import { LEGEND_SEPARATOR, legend, type LegendItem } from './legend.js';
+import { exitKey, legend, type LegendItem } from './legend.js';
 import { HOSTED_RUN_EXIT_GRACE_MS } from './tui-constants.js';
 import { clipLine } from './sheet-frame.js';
 import { wrapText } from './viewport.js';
@@ -53,28 +56,31 @@ export type RunScreenPhase =
   /** The host no longer holds this run: another run started or ended since, or it never held it. */
   | 'replaced';
 
-/** The words and glyphs of a state, colour apart. */
+/** The words and glyph role of a state, colour apart; the colour is the role's own unless the state is graver or lighter than it. */
 interface Appearance {
-  readonly glyph: string;
+  readonly role: StatusGlyphRole;
   readonly word: string;
-  readonly tone: StatusColor;
+  readonly tone?: StatusColor;
 }
 
 const PHASE_APPEARANCE: Readonly<Record<Exclude<RunScreenPhase, 'settled'>, Appearance>> = {
-  running: { glyph: '▶', word: 'running', tone: 'cyan' },
-  cancelling: { glyph: '■', word: 'cancelling', tone: 'yellow' },
-  replaced: { glyph: '○', word: 'not held', tone: 'gray' },
+  running: { role: 'running', word: 'running' },
+  cancelling: { role: 'stopping', word: 'cancelling' },
+  replaced: { role: 'ended', word: 'not held' },
 };
 
 const DISPOSITION_APPEARANCE: Readonly<Record<HostedRunDisposition, Appearance>> = {
-  completed: { glyph: '✓', word: 'completed', tone: 'green' },
-  failed: { glyph: '✗', word: 'failed', tone: 'red' },
-  cancelled: { glyph: '⊘', word: 'cancelled', tone: 'gray' },
-  paused: { glyph: '‖', word: 'paused', tone: 'yellow' },
-  uncertain: { glyph: '⚠', word: 'needs attention', tone: 'red' },
-  taken_over: { glyph: '⚠', word: 'taken over', tone: 'yellow' },
-  settled: { glyph: '✓', word: 'already settled', tone: 'gray' },
+  completed: { role: 'completed', word: 'completed' },
+  failed: { role: 'failed', word: 'failed' },
+  cancelled: { role: 'cancelled', word: 'cancelled' },
+  paused: { role: 'paused', word: 'paused' },
+  uncertain: { role: 'warning', word: 'needs attention', tone: 'red' },
+  taken_over: { role: 'warning', word: 'taken over' },
+  settled: { role: 'completed', word: 'already settled', tone: 'gray' },
 };
+
+const toneOfAppearance = (appearance: Appearance): StatusColor =>
+  appearance.tone ?? toneOf(appearance.role);
 
 /** Where the view's run is, and (once it ended here) how. The one place "is it this run's" is decided. */
 type Location =
@@ -190,7 +196,7 @@ function noticeRows(
   for (const raw of notices) {
     // Bounded BEFORE it is sanitized and clipped: `clipLine` measures the whole line's width first, and a notice is whatever a caller
     // was handed (the same unbounded text the Home's own notice is bounded for, `MAX_HOME_NOTICE_CHARS`).
-    const line = sanitizeInline(boundedNotice(raw)).trim();
+    const line = screenText(sanitizeInline(boundedNotice(raw))).trim();
     if (line !== '') clean.push(clipLine(line, room));
   }
   const rows = clean.slice(-RUN_SCREEN_NOTICE_ROWS);
@@ -199,7 +205,7 @@ function noticeRows(
 
 /** `text` wrapped to `width` and cut to `maxRows`, the last row ending in an ellipsis when something was left out. */
 function wrapped(text: string, width: number, maxRows: number): readonly string[] {
-  const lines = wrapText(sanitizeInline(text), width)
+  const lines = wrapText(screenText(sanitizeInline(text)), width)
     .map((line) => line.trimEnd())
     .filter((line) => line !== '');
   if (lines.length <= maxRows) return lines;
@@ -213,10 +219,11 @@ function cardOf(end: HostedLegEnd, width: number): RunScreenCard {
   const appearance = DISPOSITION_APPEARANCE[terminal.disposition];
   const rows: string[] = [...wrapped(terminal.headline, width, HEADLINE_MAX_ROWS)];
   if (terminal.remedy !== undefined) rows.push(...wrapped(terminal.remedy, width, REMEDY_MAX_ROWS));
-  if (end.fault !== undefined) rows.push(clipLine(`Reason: ${sanitizeInline(end.fault)}`, width));
+  if (end.fault !== undefined)
+    rows.push(clipLine(`Reason: ${screenText(sanitizeInline(end.fault))}`, width));
   return {
     disposition: terminal.disposition,
-    tone: appearance.tone,
+    tone: toneOfAppearance(appearance),
     rows: rows.slice(0, RUN_SCREEN_CARD_ROWS),
   };
 }
@@ -226,29 +233,25 @@ function keysFor(
   armed: boolean,
   offered: { readonly openGate: boolean; readonly gateOpenFailed: boolean; readonly fits: boolean },
 ): string {
-  const leave: LegendItem = { keys: 'Esc', verb: 'leaves it running' };
   switch (phase) {
     case 'running':
-      return legend([
-        { keys: 'Ctrl+C', verb: armed ? 'again cancels the run' : 'twice cancels the run' },
-        leave,
-      ]);
+      return legend(
+        [{ keys: 'Ctrl+C', verb: `cancel the run (${armed ? 'again' : 'twice'})` }],
+        exitKey.leave('leaves it running'),
+      );
     case 'cancelling':
-      return [
-        'Waiting for the run to stop',
-        legend([{ keys: 'Esc', verb: 'leaves the view' }]),
-      ].join(LEGEND_SEPARATOR);
+      return legend([{ text: 'Waiting for the run to stop' }], exitKey.leave('leaves the view'));
     case 'settled':
     case 'replaced': {
       // Below 80×24 only `Esc` and `Ctrl+C` are delivered (the Home's key route), so no other key is named there.
       const gate: LegendItem = {
         keys: 'Enter',
-        verb: offered.gateOpenFailed ? 'tries the gate again' : 'opens the gate',
+        verb: offered.gateOpenFailed ? 'try the gate again' : 'open the gate',
       };
-      return legend([
-        ...(offered.openGate && offered.fits && phase === 'settled' ? [gate] : []),
-        { keys: 'Esc / Ctrl+C', verb: 'close' },
-      ]);
+      return legend(
+        offered.openGate && offered.fits && phase === 'settled' ? [gate] : [],
+        exitKey.close(['Esc', 'Ctrl+C']),
+      );
     }
   }
 }
@@ -256,7 +259,7 @@ function keysFor(
 function statusFor(phase: RunScreenPhase): string | undefined {
   switch (phase) {
     case 'cancelling':
-      return `Cancelling · the run stops at its next safe point (up to ${String(HOSTED_RUN_EXIT_GRACE_MS / 1000)} s)`;
+      return `Cancelling · the run stops at its next safe point (up to ${formatElapsed(HOSTED_RUN_EXIT_GRACE_MS)})`;
     case 'replaced':
       return 'This run is no longer held by the Home. Its record is in the history.';
     case 'running':
@@ -287,7 +290,8 @@ export function runScreenModel(input: RunScreenInput): RunScreenModel {
   const status = statusFor(phase);
   const resumed = (end?.leg ?? input.snapshot?.active?.leg) === 'resume';
   const resumedMark = resumed ? `${SEPARATOR}resumed` : '';
-  const header = `${appearance.glyph} ${appearance.word}${SEPARATOR}run ${sanitizeInline(input.runId)}${resumedMark}`;
+  const mark = glyph(appearance.role);
+  const header = `${mark} ${appearance.word}${SEPARATOR}run ${sanitizeInline(input.runId)}${resumedMark}`;
   const fixed =
     1 + // the header
     (status === undefined ? 0 : 1) +
@@ -300,9 +304,9 @@ export function runScreenModel(input: RunScreenInput): RunScreenModel {
     leg,
     fits,
     tooSmall: fits ? undefined : tooSmallMessage(input.columns, input.rows),
-    glyph: appearance.glyph,
+    glyph: mark,
     word: appearance.word,
-    tone: appearance.tone,
+    tone: toneOfAppearance(appearance),
     header,
     status,
     notices: shown,

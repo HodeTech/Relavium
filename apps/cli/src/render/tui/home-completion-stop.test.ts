@@ -1,24 +1,19 @@
 import type { UserCommandOutcome } from '@relavium/core';
-import type { ModelCatalogEntry } from '@relavium/llm';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { RefreshReport } from '../../engine/model-refresh.js';
 import type { HomeSnapshot } from '../../home/home-store.js';
 import { createChatStore } from './chat-store.js';
-import {
-  createHomeController,
-  type HomeChatSession,
-  type HomeModelsPort,
-} from './home-controller.js';
+import { createHomeController, type HomeChatSession } from './home-controller.js';
 import type { MentionReader } from './mention.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 
 const EMPTY_HOME: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
@@ -37,7 +32,6 @@ function fixture(
     runShellCommand?: HomeChatSession['runShellCommand'];
     processLine?: HomeChatSession['processLine'];
     shouldStop?: HomeChatSession['shouldStop'];
-    models?: HomeModelsPort;
   } = {},
 ) {
   const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
@@ -68,8 +62,6 @@ function fixture(
     homeStore: { read: () => EMPTY_HOME },
     onExit: vi.fn(),
     onError,
-    doctorProbes: { keychain: () => undefined, config: () => undefined, toolHost: {} },
-    ...(options.models === undefined ? {} : { models: options.models }),
   });
   const start = async (): Promise<void> => {
     controller.handlePaste('hello');
@@ -170,55 +162,8 @@ describe('Home deferred results respect permanent controller stop', () => {
     },
   );
 
-  it.each([false, true])(
-    'model refresh after stopped=%s cannot start a new catalog read',
-    async (stopped) => {
-      const raw = deferred<RefreshReport | undefined>();
-      const entry = (modelId: string): ModelCatalogEntry => ({
-        modelId,
-        provider: 'anthropic',
-        displayName: modelId,
-        pricingSource: 'catalog',
-        priceKnown: true,
-        available: true,
-        deprecated: false,
-      });
-      let refreshed = false;
-      const load = vi.fn(() => ({
-        entries: [entry(refreshed ? 'new-result' : 'initial-cache')],
-        refreshedAt: refreshed ? 2 : 1,
-      }));
-      const f = fixture({
-        models: {
-          load,
-          refreshIfStale: () => raw.promise,
-          refresh: () => Promise.resolve({ providers: [] }),
-          currentDefault: () => undefined,
-          currentEffort: () => undefined,
-          writeDefault: vi.fn(),
-        },
-      });
-      try {
-        f.controller.handleKey('/', {});
-        for (const ch of 'models') f.controller.handleKey(ch, {});
-        f.controller.handleKey('', { return: true });
-        expect(load).toHaveBeenCalledOnce();
-        expect(f.controller.getSnapshot().modelPicker?.loading).toBe(true);
-        if (stopped) await f.controller.teardownActive();
-        refreshed = true;
-        raw.resolve({ providers: [] });
-        await tick();
-        expect(load, 'HOME_STOPPED_CATALOG_READ').toHaveBeenCalledTimes(stopped ? 1 : 2);
-        expect(
-          f.controller.getSnapshot().modelPicker?.entries.map((value) => value.modelId),
-        ).toEqual([stopped ? 'initial-cache' : 'new-result']);
-        expect(f.onError).not.toHaveBeenCalled();
-      } finally {
-        raw.resolve(undefined);
-        await f.controller.teardownActive();
-      }
-    },
-  );
+  // The catalog refresh of `/models` is the popup's work now (`popups/models-session.ts`): a refresh that settles after the popup closed (the
+  // Home's teardown disposes its popup host, which closes it) reads nothing and lands nowhere (`models-session.test.ts`).
 
   it.each([false, true])(
     'a clear turn settling after stopped=%s cannot rebuild a session',

@@ -117,7 +117,7 @@ describe('the states of the view', () => {
       snapshot: running(),
       phase: 'running',
       leg: 'executing',
-      glyph: '▶',
+      glyph: '◐',
       word: 'running',
     },
     {
@@ -192,14 +192,14 @@ describe('the states of the view', () => {
       active: { leg: 'resume', runId: RUN, cancelling: false },
       last: undefined,
     };
-    expect(model({ snapshot }).header).toBe('▶ running  ·  run run-0001  ·  resumed');
-    expect(model({ snapshot: running() }).header).toBe('▶ running  ·  run run-0001');
+    expect(model({ snapshot }).header).toBe('◐ running  ·  run run-0001  ·  resumed');
+    expect(model({ snapshot: running() }).header).toBe('◐ running  ·  run run-0001');
   });
 
   it('says what the view is waiting for, and for how long a stop can take', () => {
     expect(model({ snapshot: preparing() }).status).toContain('no longer held by the Home');
     expect(model({ snapshot: running(RUN, true) }).status).toBe(
-      'Cancelling · the run stops at its next safe point (up to 10 s)',
+      'Cancelling · the run stops at its next safe point (up to 10s)',
     );
     expect(model({ snapshot: running() }).status).toBeUndefined();
     expect(model({ snapshot: IDLE }).status).toContain('no longer held by the Home');
@@ -230,7 +230,8 @@ describe('the disposition card', () => {
       over: { outcome: 'failed' },
       glyph: '✗',
       word: 'failed',
-      says: 'relavium logs run-0001',
+      // The card is drawn inside the Home, so its remedy is the Home's own browser, not a shell command (MVP-11 OD-20).
+      says: '/workflows, then [h]',
     },
     {
       disposition: 'cancelled',
@@ -285,7 +286,7 @@ describe('the disposition card', () => {
     expect((m.card?.rows ?? []).join(' ').replace(/\s+/g, ' ')).toContain(
       end.terminal.headline.split(' ').slice(0, 4).join(' '),
     );
-    expect(m.keys).toBe('Esc / Ctrl+C close');
+    expect(m.keys).toBe('Esc / [Ctrl+C] close');
   });
 
   it('carries the reason a fault ended the leg, once, after the remedy', () => {
@@ -309,7 +310,7 @@ describe('the disposition card', () => {
     expect(m.word).toBe('running');
     expect(m.leg).toBe('executing');
     expect(m.card, "the card is the leg's end, and this leg has not ended").toBeUndefined();
-    expect(m.keys).toBe('Ctrl+C twice cancels the run · Esc leaves it running');
+    expect(m.keys).toBe('[Ctrl+C] cancel the run (twice) · Esc leaves it running');
   });
 
   it('is bounded: a headline, remedy and reason that are very long take at most the card budget', () => {
@@ -401,21 +402,21 @@ describe('the notice rows', () => {
 });
 
 describe('the key line', () => {
-  it('says that Ctrl+C twice cancels the run and Esc leaves it running; armed, that one more press cancels', () => {
-    expect(model().keys).toBe('Ctrl+C twice cancels the run · Esc leaves it running');
+  it('says that [Ctrl+C] cancel the run (twice) and Esc leaves it running; armed, that one more press cancels', () => {
+    expect(model().keys).toBe('[Ctrl+C] cancel the run (twice) · Esc leaves it running');
     expect(model({ armed: true }).keys).toBe(
-      'Ctrl+C again cancels the run · Esc leaves it running',
+      '[Ctrl+C] cancel the run (again) · Esc leaves it running',
     );
     // Armed but not executing: a leg that has not named its run is not this view's, so there is nothing for the press to cancel.
-    expect(model({ armed: true, snapshot: preparing() }).keys).toBe('Esc / Ctrl+C close');
+    expect(model({ armed: true, snapshot: preparing() }).keys).toBe('Esc / [Ctrl+C] close');
   });
 
   it('names Enter for a run that ended parked only where Enter is delivered: at 80×24 or more, never below', () => {
     const parked = settled(ended({ outcome: 'paused' }));
     const offered = { snapshot: parked, openGate: true } as const;
-    expect(model(offered).keys).toBe('Enter opens the gate · Esc / Ctrl+C close');
+    expect(model(offered).keys).toBe('Enter open the gate · Esc / [Ctrl+C] close');
     expect(model({ ...offered, gateOpenFailed: true }).keys).toBe(
-      'Enter tries the gate again · Esc / Ctrl+C close',
+      'Enter try the gate again · Esc / [Ctrl+C] close',
     );
     for (const [columns, rows] of [
       [79, 24],
@@ -428,7 +429,7 @@ describe('the key line', () => {
       expect(
         below.keys,
         `${String(columns)}×${String(rows)}: only the keys that are delivered`,
-      ).toBe('Esc / Ctrl+C close');
+      ).toBe('Esc / [Ctrl+C] close');
     }
   });
 
@@ -437,7 +438,7 @@ describe('the key line', () => {
       'Waiting for the run to stop · Esc leaves the view',
     );
     for (const snapshot of [settled(ended({})), IDLE, running(OTHER)])
-      expect(model({ armed: true, snapshot }).keys).toBe('Esc / Ctrl+C close');
+      expect(model({ armed: true, snapshot }).keys).toBe('Esc / [Ctrl+C] close');
   });
 });
 
@@ -496,9 +497,9 @@ describe('fitting the terminal', () => {
     expect(m.liveRows).toBe(0);
     expect(m.notices).toEqual([]);
     expect(m.card).toBeUndefined();
-    expect(m.keys).toBe('Esc / Ctrl+C close');
+    expect(m.keys).toBe('Esc / [Ctrl+C] close');
     // Still a state with a glyph and a word, and still the key line of that state.
-    expect(model({ columns: 79, rows: 24 }).keys).toContain('Ctrl+C twice cancels the run');
+    expect(model({ columns: 79, rows: 24 }).keys).toContain('[Ctrl+C] cancel the run (twice)');
     expect(model({ columns: 80, rows: 23 }).fits).toBe(false);
   });
 });

@@ -2,19 +2,21 @@ import type { ToolDisplay } from './tool-display.js';
 import { ToolReviewHost } from './tool-review-view.js';
 import { QuestionCardHost } from './question-card-view.js';
 import { CheckpointCardHost } from './checkpoint-card-view.js';
+import { waitClockForm } from './wait-clock.js';
 import { NativePromptHost } from './native-prompt-host.js';
 import { ownSessionSubscriber } from '../../chat/session-presentation.js';
 import {
   Box,
   Static,
-  Text,
   render,
   useApp,
   useInput,
   usePaste,
   useStdout,
   useWindowSize,
+  type Key,
 } from 'ink';
+import { BackdropDim, Text, type TextProps } from './text.js';
 import {
   createElement,
   useCallback,
@@ -25,6 +27,7 @@ import {
   useState,
   useSyncExternalStore,
   type ReactElement,
+  type ReactNode,
 } from 'react';
 
 import type { SuspendPort } from '../suspend.js';
@@ -45,49 +48,17 @@ import {
   type ChatDriveContext,
   type ChatDriveOutcome,
   type ChatDriver,
-  type ChatModelsPort,
   type ReseatTarget,
 } from '../../commands/chat.js';
-import { CHAT_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
-import type { RefreshReport } from '../../engine/model-refresh.js';
-import {
-  canControlEffort,
-  foldEffortPickerKey,
-  initialEffortPickerState,
-  type EffortPickerState,
-} from './effort-picker.js';
-import { effortRowLabel } from '../../chat/effort-notice.js';
-import { EffortTierList } from './effort-tier-list.js';
-import type { PermissionsPort } from '../../permissions/chat-permissions.js';
-import type { BoundAgentView } from '../../chat/bound-agent-view.js';
-import { disarmPermissionsSheet, sheetCanArm } from './permissions-sheet.js';
-import {
-  foldPermissionsSheetThroughPort,
-  openPermissionsSheetThroughPort,
-} from './permissions-sheet-port.js';
-import { AGENT_UNREADABLE, foldAgentSheetKey } from './agent-sheet.js';
-import {
-  agentChatSheet,
-  permissionsChatSheet,
-  permissionsSheetOf,
-  type ChatSheetState,
-} from './chat-sheet.js';
-import { ChatSheetView } from './chat-sheet-view.js';
-import {
-  foldModelPickerKey,
-  partialFailureBanner,
-  type ModelPickerKey,
-  type ModelPickerState,
-  type ModelPickerStep,
-} from './model-picker.js';
-import { ModelPickerView } from './model-picker-view.js';
+import { unavailableNotice } from '../../commands/repl-commands.js';
 import { EXIT_CODES } from '../../process/exit-codes.js';
 import { detectOutputMode, isCiEnv } from '../../process/output-mode.js';
 import { resolveRenderMode } from '../render-mode.js';
-import { colorProps, dimProps, transcriptStyleProps } from './projection.js';
+import { colorProps, dimProps } from './projection.js';
 import { COPIED_TOAST_MS, FORCE_TEARDOWN_MS, FRAME_MS } from './tui-constants.js';
 import {
   applyEditorAction,
+  draftText,
   editorFromText,
   emptyEditor,
   insertAtCursor,
@@ -95,6 +66,7 @@ import {
   reduceChatKey,
   type EditorState,
 } from './chat-input.js';
+import { pressesOnly } from './chord-guard.js';
 import {
   DISARMED,
   INTERRUPT_ARM_WINDOW_MS,
@@ -105,6 +77,49 @@ import {
   type InterruptState,
 } from './interrupt-keymap.js';
 import {
+  cardFlagsFrom,
+  holdsCustody,
+  interruptContextFrom,
+  occupiesRows,
+  overlayOwnsKeyboard,
+  pasteFlagsFrom,
+  pointerBlocked,
+  promptHidden,
+  type OverlayFlags,
+} from './overlay-flags.js';
+import { createNativePromptAcknowledgement } from './native-prompt-acknowledgement.js';
+import type { NativePromptSnapshot, NativePromptUi } from './native-prompt-channel.js';
+import { openDoctor, type DoctorPort } from '../../popups/doctor-port.js';
+import { turnInFlight, type TurnFacts } from '../../popups/turn-in-flight.js';
+import { openReport, type ReportsPort } from '../../popups/report-port.js';
+import { bindModelSwitch, openSettings, type SettingsPort } from '../../popups/settings-port.js';
+import { bindPopupHost, type PopupSheetSources } from '../../popups/popup-bind.js';
+import { popupRefusal } from '../../popups/popup-refusal.js';
+import { routePopupLine, type PopupRoute } from '../../popups/popup-route.js';
+import type { PopupPlacement } from '../../popups/geometry.js';
+import { nativeFramed } from '../../popups/native-popup-body.js';
+import {
+  createNotificationChannel,
+  type Announce,
+  type NotificationChannel,
+  type NotificationSnapshot,
+} from '../../popups/notifications.js';
+import { createPopupAcknowledgement } from '../../popups/popup-acknowledgement.js';
+import {
+  createPopupHost,
+  type PopupHost,
+  type PopupHostSnapshot,
+  type PopupRefusal,
+} from '../../popups/popup-host.js';
+import { currentStep } from '../../popups/popup-reducer.js';
+import {
+  dimsBackdrop,
+  PopupSlot,
+  slotDrawing,
+  type PopupSlotProps,
+  type SlotDrawing,
+} from '../../popups/popup-slot.js';
+import {
   foldMentionKey,
   mentionOpensAt,
   type MentionReader,
@@ -113,8 +128,10 @@ import {
 import { MentionView } from './mention-view.js';
 import {
   appendAttachment,
+  attachmentsOfDraft,
   buildOutbound,
   commandResultPreview,
+  createPickEnterLock,
   fileAttachmentWarning,
   mentionMarker,
   MAX_PENDING_ATTACHMENTS,
@@ -141,34 +158,72 @@ import {
   type InputHistory,
   type ReverseSearchState,
 } from './input-history.js';
-import { PaletteView } from './palette-view.js';
+import { EmphText } from './emphasis-view.js';
+import { PaletteAbovePrompt } from './palette-block.js';
+import { chatPaletteRows } from './palette-view.js';
 import { PromptEditor } from './prompt-view.js';
+import {
+  CHAT_HEADER_ROWS,
+  chatEditorRows,
+  chatFrameRows,
+  chatSessionTitle,
+  firstUserLine,
+  hasConversation,
+  headerRow,
+  liveRegionRows,
+} from './chat-layout.js';
+import { WORDMARK, thinRule } from './home-layout.js';
+import {
+  chatGrid,
+  marginCell,
+  startsWithMarginWord,
+  type ChatGrid,
+  type MarginForm,
+} from './chat-grid.js';
+import { screenText } from './screen-text.js';
+import { MarginRow, marginFormFor } from './margin-row.js';
+import type { Surface } from '../surface.js';
 import { layoutColumns } from './layout-columns.js';
 import { ReverseSearchView } from './reverse-search-view.js';
+import { buildPaletteEntries } from './palette-entries.js';
 import {
   foldPaletteKey,
-  INITIAL_PALETTE_STATE,
+  openPalette,
   shouldOpenPalette,
+  type OpenPalette,
+  type PaletteList,
   type PaletteState,
 } from './palette-reducer.js';
 import { spinnerFrame } from './format.js';
+import { GLYPHS, glyphOf, withGlyphForm } from './glyphs.js';
+import { chatStatusLine } from './chat-status.js';
+import { emphasize } from './emphasis.js';
 import {
+  dockedTurnRows,
+  entryDrawsRows,
   formatBusyLine,
   formatReasoningPanel,
-  formatSessionFooterWithMode,
-  formatToolCall,
-  liveScrollGeometry,
+  toolCallText,
+  screenStreamRow,
   reasoningLabelActive,
+  STOP_THE_TURN,
   streamingAbortHint,
   stripTerminalControls,
-  wrapTranscript,
+  transcriptRows,
+  transcriptScrollGeometry,
+  transcriptSelectionText,
   liveAnswerRowBudget,
+  type DockedTurnRow,
+  type ReasoningPanel,
 } from './chat-projection.js';
+import { sheetTranscriptRows } from './tool-review-card.js';
+import { exitKey, legend, type LegendExit } from './legend.js';
 import { TranscriptViewport } from './transcript-viewport.js';
+import { clipLine } from './sheet-frame.js';
+import { wrapText, wrapWords } from './viewport.js';
 import { createMouseReportReader, type MouseEvent as TerminalMouseEvent } from './mouse.js';
 import {
   normalizeSelection,
-  selectionText,
   type SelectionRange,
   type SelectionState,
   routeMouseSelection,
@@ -188,6 +243,7 @@ import type { ReasoningEffort } from '@relavium/shared';
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
 import { attemptClipboardWrite, type ClipboardWriter } from '../clipboard.js';
 import { MarkdownText } from './markdown-text.js';
+import { TranscriptRow } from './transcript-row.js';
 import type { MarkdownStream } from '../markdown/index.js';
 import type { ChatStoreController } from './chat-store.js';
 import { assertRenderStoreAgree } from './session-view-model.js';
@@ -206,9 +262,17 @@ import type { SessionViewState, TranscriptEntry } from './session-view-model.js'
  * only a second inside the window ends the session (`/cancel`). (Re-verify on a real TTY when changing the input.)
  */
 
+/**
+ * One entry of the inline renderer's scrollback, printed once by `<Static>` on the chat's grid (MVP-11 unit 9, §3.3): each row is the margin in
+ * its WORD form (`you`, `agent`, `tool`, `note`: the closed set of `MARGIN_WORDS`, which a screen reader reads where it would skip a glyph) and
+ * the content, with the same rows as the full-screen viewport ({@link transcriptRows}): a row of a reply or a notice that starts with one of the
+ * words carries its own entry's word, so it is never read as the person's turn. `previous` is the entry printed before it, so the blank row
+ * between turns is the same here as there.
+ */
 function TranscriptLine(
   props: Readonly<{
     entry: TranscriptEntry;
+    previous: TranscriptEntry | undefined;
     displays?: ReadonlyMap<string, ToolDisplay> | undefined;
     color: boolean;
     columns?: number | undefined;
@@ -216,23 +280,15 @@ function TranscriptLine(
   }>,
 ): ReactElement {
   const { entry, color } = props;
-  const lines = wrapTranscript([entry], props.columns ?? 80, color, props.displays);
+  const grid = chatGrid(props.columns ?? 80);
+  const lines = transcriptRows([entry], grid, color, props.displays, props.previous);
   useLayoutEffect(() => {
     if (entry.role === 'notice' && lines.length > 0) props.acknowledgement?.inlineNotice(entry);
   }, [entry, props.acknowledgement, lines.length]);
   return (
     <Box flexDirection="column">
       {lines.map((line, index) => (
-        <Text key={index} {...transcriptStyleProps(line.style, color)}>
-          {line.spans === undefined ? (
-            line.text || ' '
-          ) : (
-            <MarkdownText
-              spans={line.spans.length === 0 ? [{ text: ' ' }] : line.spans}
-              color={color}
-            />
-          )}
-        </Text>
+        <TranscriptRow key={index} line={line} grid={grid} color={color} form="word" />
       ))}
     </Box>
   );
@@ -266,25 +322,35 @@ interface ChatAppProps {
   readonly onAbort?: (() => void) | undefined;
   /** Switch the chat mode (Shift+Tab cycle) — re-applies the turn policy on the same session (ADR-0057). */
   readonly onModeChange: (mode: ChatMode) => void;
-  /** Set the reasoning-effort tier (ADR-0066 §5) — the `/models` effort sub-step calls it on a SAME-model pick (a
-   *  per-turn session override, NO reseat). Absent ⇒ the effort sub-step is not offered. `| undefined` for the
-   *  createElement passthrough. */
+  /** Set the reasoning-effort tier (ADR-0066 §5): a per-turn session override, NO reseat. `| undefined` for the createElement passthrough. */
   readonly onSetEffort?: ((effort: ReasoningEffort) => void) | undefined;
-  /** Request a mid-session model switch (ADR-0059) — the `/models` picker overlay calls it on accept. Absent (a
-   *  driver/test wired without it) ⇒ the overlay never opens (see `modelPicker`). `| undefined` for the passthrough. */
+  /**
+   * Request a mid-session model switch (ADR-0059): the `/models` popup's `This chat` calls it, through this chat's switch
+   * (`bindModelSwitch`), which then ends the driver so the loop rebuilds on the new model. Absent (a driver or a test wired without it) ⇒
+   * the session's `/models` member is not offered here, and a typed `/models` is dispatched. `| undefined` for the passthrough.
+   */
   readonly onReseat?: ((target: ReseatTarget) => void) | undefined;
-  /** The `/models` reseat picker catalog port (ADR-0059). When present (with `onReseat`), a typed `/models` opens a
-   *  keyboard-owning model-picker overlay whose accept triggers a live reseat. Absent ⇒ `/models` is a normal
-   *  message/slash (no overlay). `| undefined` so the createElement passthrough forwards an absent `ctx.modelPicker`. */
-  readonly modelPicker?: ChatModelsPort | undefined;
-  /** The `/permissions` sheet's port (ADR-0137 §2). When present, a typed (or palette-selected) bare `/permissions` opens the
-   *  keyboard-owning sheet instead of dispatching. Absent ⇒ the command says remembered commands are not available. `| undefined`
-   *  so the createElement passthrough forwards an absent `ctx.permissions`. */
-  readonly permissions?: PermissionsPort | undefined;
-  /** The view of the agent this chat is bound to ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
-   *  §3). When present, a typed (or palette-selected) bare `/agent` opens the docked, read-only sheet instead of dispatching. Absent ⇒ the
-   *  command dispatches and prints the same fields as a notice. `| undefined` so the createElement passthrough forwards an absent `ctx.boundAgent`. */
-  readonly boundAgent?: (() => BoundAgentView) | undefined;
+  /**
+   * What this chat's report popups read ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+   * §10, MVP-11 step 4b): `/agent`, `/cost` (and `/cost --release`), `/workflows` and `/help`. For each report whose member is present, a typed
+   * or palette-selected line opens the popup instead of dispatching, as `/doctor` does: before the line is counted as a submit. Absent ⇒ the
+   * command is dispatched and prints its text into the transcript as before. `| undefined` so the createElement passthrough forwards an absent
+   * `ctx.reports`.
+   */
+  readonly reports?: ReportsPort | undefined;
+  /**
+   * What this chat's settings popups read and apply ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+   * §3, §6; MVP-11 step 5): today `/effort`. A typed or palette-selected bare command whose member can open opens the popup instead of
+   * dispatching, before the line is counted as a submit; a command with its value (`/effort high`) dispatches and applies it. Absent ⇒ the
+   * command is dispatched, as before. `| undefined` so the createElement passthrough forwards an absent `ctx.settings`.
+   */
+  readonly settings?: SettingsPort | undefined;
+  /**
+   * Bind the session's announcements (its typed settings, its mode control and its settings popups) to THIS chat's notification channel while
+   * it is mounted, and unbind them when it unmounts (`ChatLineHandler.setAnnouncer`): a notification with no popup as its source, so it
+   * outlives the popup that applied a setting. Absent ⇒ nothing is bound (a driver or a test without a session handler).
+   */
+  readonly setAnnouncer?: ((announce: Announce | undefined) => void) | undefined;
   /** The `@`-mention completion reader (2.5.D, ADR-0061) — a READ-ONLY fs jail at the session's fs-scope tier +
    *  workspace. When present, `@` at a word boundary opens dir-navigable file completion whose accepted file is
    *  injected as UNTRUSTED, user-position context. Absent (a driver/test wired without it) ⇒ `@` is a literal char.
@@ -308,6 +374,28 @@ interface ChatAppProps {
   readonly clipboard?: ClipboardWriter | undefined;
   /** Explicit masked review copy; independent of mouse selection preferences. */
   readonly reviewClipboard?: ClipboardWriter | undefined;
+  /**
+   * The chat's popup host ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §2): this
+   * root routes keys and pastes to it while a popup is open and draws it in the one overlay slot. Absent ⇒ the chat builds its own, on the
+   * store's key history (one key history per host).
+   */
+  readonly popups?: PopupHost | undefined;
+  /** The chat's one notification channel, drawn on the hint row. Absent ⇒ the chat builds its own. */
+  readonly notifications?: NotificationChannel | undefined;
+  /**
+   * What this chat's `/doctor` popup reads ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+   * §8). When present, a typed or palette-selected `/doctor` (or `/doctor --deep`) opens the popup instead of dispatching, as the reports and
+   * the settings do: before the line is counted as a submit, so the popup's open gate never takes the command's own line for a turn in flight.
+   * Absent ⇒ the command is dispatched and prints the text report into the transcript.
+   */
+  readonly doctor?: DoctorPort | undefined;
+  /** The lowercase provider id of the bound agent, first on the status line (ADR-0146 §2). Absent ⇒ the line starts at the model. */
+  readonly provider?: string | undefined;
+  /**
+   * The inline renderer wrote an intro (a resume banner, the `/clear` notice, the model switch) above this chat before it mounted ({@link emitIntro}):
+   * the first entry it prints follows it with the blank row between turns ({@link ChatViewProps.printedAbove}). Absent ⇒ nothing was written.
+   */
+  readonly introPrinted?: boolean | undefined;
 }
 
 interface ChatViewProps {
@@ -320,19 +408,53 @@ interface ChatViewProps {
   readonly acknowledgement?: TranscriptAcknowledgement | undefined;
   readonly state: SessionViewState;
   readonly tick: number;
-  /** Wall-clock ms at render, for the live in-flight turn timer ("thinking…/working… {elapsed} · Esc to stop",
-   *  2.5.H). Render-only + cosmetic (no engine-purity concern — parity with `ModelPickerView`'s `nowMs`); the
+  /** Wall-clock ms at render, for the live in-flight turn timer ("thinking…/working… {elapsed} · Esc stops the turn",
+   *  2.5.H). Render-only + cosmetic (no engine-purity concern); the
    *  owner (`ChatApp` / the Home's `RootApp`) passes `Date.now()` so it advances with the frame loop. */
   readonly nowMs: number;
   readonly color: boolean;
   /** The current prompt editor — text + cursor (owned by the input owner — `ChatApp` or the Home's `RootApp`). */
   readonly editor: EditorState;
+  /**
+   * Whether the composer draws its cursor cell (ADR-0148 §2, one owner of the keys): `false` while the slot draws a popup, whose keys they are, so a
+   * lit cursor beside it does not say the composer takes keys it does not. Absent ⇒ drawn. The text stays as it is; the cursor is back where it
+   * was once the popup closes.
+   */
+  readonly composerCursor?: boolean | undefined;
   readonly running: boolean;
-  /** The active chat mode (ADR-0057) — shown in the footer so `auto` is never a hidden state. */
+  /** The active chat mode (ADR-0057) — shown on the status line so `auto` is never a hidden state. */
   readonly mode: ChatMode;
-  /** The active reasoning-effort tier (ADR-0066) — shown in the footer (parity with `mode`) so the tier is never a
+  /** The active reasoning-effort tier (ADR-0066) — shown on the status line (parity with `mode`) so the tier is never a
    *  hidden state; absent ⇒ not shown (a non-reasoning model / no tier). */
   readonly reasoningEffort?: ReasoningEffort | undefined;
+  /**
+   * Which host draws this chat ([ADR-0146](../../../../../docs/decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md)
+   * §4): `home-chat` (the Home is behind it, so the second `Ctrl+C` goes back to it and the hints say so) or `standalone-chat` (nothing is behind
+   * it, so the second `Ctrl+C` ends it). Absent ⇒ stand-alone.
+   */
+  readonly surface?: ChatHost | undefined;
+  /** The lowercase provider id of the bound agent, first on the status line. Absent ⇒ the line starts at the model. */
+  readonly provider?: string | undefined;
+  /**
+   * The open `/` palette, drawn ABOVE the prompt in the order the chat reads (its first row beside the prompt: ADR-0145 §7.1): the list ends on the
+   * row above the prompt, the prompt row shows the typed `/query`, and the hint row carries the palette's legend; no status line is drawn while
+   * it is open. `maxRows` is the budget of the palette with its prompt row, rule and hint row ({@link chatPaletteRows}). Absent ⇒ no palette.
+   */
+  readonly palette?:
+    | { readonly list: PaletteList; readonly state: PaletteState; readonly maxRows: number }
+    | undefined;
+  /**
+   * Inline renderer only: print the chat's header (the wordmark and a blank row) once, as the first item of the scrollback it writes. The Home's
+   * chat region sets it for a chat's first mount and not for a reseat or a `/clear`; the stand-alone chat prints its header before it mounts
+   * (`driveInk`), once per process. Ignored by the full-screen renderer, whose header is its first child.
+   */
+  readonly introduction?: boolean | undefined;
+  /**
+   * Inline renderer only: rows were written above this chat before it mounted that are not part of its transcript (the stand-alone chat's intro: a
+   * resume banner, the `/clear` notice, the model switch: {@link emitIntro}), so the first entry it prints is not the first thing on the screen and has
+   * the blank row between turns above it. The header's own blank row is the gap of a chat with no intro, which is why this is not set for one.
+   */
+  readonly printedAbove?: boolean | undefined;
   /** Whether the collapsible "thinking" panel is EXPANDED (2.5.H — `/thinking` / Ctrl+T). Only affects the render
    *  when the turn streamed reasoning (`state.liveReasoning` non-empty). */
   readonly reasoningVisible: boolean;
@@ -353,6 +475,24 @@ interface ChatViewProps {
   readonly columns?: number | undefined;
   /** The interrupt keymap is armed (ADR-0115 §1): a second `Ctrl+C` inside the window ends the session, and the idle hint says so. */
   readonly interruptArmed?: boolean | undefined;
+  /**
+   * The terminal's height in rows, which bounds the prompt editor ({@link promptEditorRows}) so a long draft cannot push the cursor, the rule, the
+   * status line and the hint out of the frame (OB7-M3). The full-screen frame's own `viewport.rows` is read first; this is what the inline renderer
+   * has. Absent ⇒ the editor is unbounded, as it always was.
+   */
+  readonly terminalRows?: number | undefined;
+  /**
+   * A sheet is docked below this view (an approval or command card, the agent's question, the continue checkpoint: {@link dockedCardOpen}). The
+   * sheet takes the prompt block's place ([ADR-0147](../../../../../docs/decisions/0147-a-system-started-question-is-a-sheet-with-a-frame-and-a-wait-clock.md)
+   * §1): its key lines are the legend and its rule the label, so the block (the leading row, the prompt or the in-flight turn, the rule, the status
+   * line and the hint) is not drawn while it is open, and the rows it took go to the conversation.
+   */
+  readonly cardDocked?: boolean | undefined;
+  /**
+   * The one notification of the host's channel (`popups/notifications.ts`), drawn on the hint row in place of the idle hint for its few seconds
+   * (ADR-0148 §2). Never appended to the transcript: a notification leaves nothing behind.
+   */
+  readonly notification?: string | undefined;
   /** PRESENT ⇒ the full-screen **alt-screen** renderer (2.6.F Step 4b, ADR-0068 §c): the tree is constrained to
    *  `rows` and the transcript renders through the scroll {@link TranscriptViewport} (wrapped at `cols`) instead of
    *  ink's `<Static>` (the alt buffer has no scrollback). ABSENT ⇒ the default inline renderer (`<Static>` + native
@@ -370,13 +510,6 @@ interface ChatViewProps {
     | undefined;
 }
 
-/**
- * The PURE chat render — transcript / in-flight turn / prompt echo / warnings / footer — with no `useInput`,
- * no state, and no store subscription. Extracted from `ChatApp` so the 2.5.B Home can render the chat region
- * inside its OWN single-`useInput` tree (one raw-mode owner) without duplicating this JSX. The live input echo
- * and every model/transcript string are sanitized at this display boundary so a pasted/streamed control
- * sequence cannot corrupt the terminal or inject ANSI/OSC.
- */
 /**
  * The transient "Sent to terminal clipboard" toast state (2.6.F Step 6i). Copy-on-select was silent on success because the only notice
  * channel — `store.note` — appends a TRANSCRIPT entry, which re-wraps and shifts the very lines the user just selected
@@ -402,14 +535,438 @@ export function useCopiedToast(): { readonly copied: boolean; readonly flashCopi
   return { copied, flashCopied };
 }
 
-/** The idle prompt's hint bar (2.5.C S6): the second `Ctrl+C` while the first is armed, the `/` palette at an empty prompt, else the submit hint. */
-export function idleHint(interruptArmed: boolean, emptyDraft: boolean): string {
-  if (interruptArmed) return 'Press Ctrl+C again to end the session';
+/**
+ * The chat's two hosts, the only two places a chat is drawn ([ADR-0145](../../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §7):
+ * the Home's (`home-chat`: the second `Ctrl+C` goes back to the Home, which is behind it) and a stand-alone `relavium chat` (`standalone-chat`:
+ * nothing is behind it, so the second `Ctrl+C` ends the session). A hint names the destination, so it is the one thing a host changes in the words.
+ */
+export type ChatHost = Extract<Surface, 'home-chat' | 'standalone-chat'>;
+
+/**
+ * The second `Ctrl+C` of the interrupt keymap ends the session ([ADR-0115](../../../../../docs/decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md)):
+ * what the armed idle hint and the `Interrupting` line say, as one legend exit.
+ */
+export const END_THE_SESSION_AGAIN = exitKey.leave('end the session (again)', 'Ctrl+C');
+
+/** The first `Ctrl+C` of an idle prompt with nothing typed: it arms, and the second one ends the session, so it is the key that LEAVES. */
+export const END_THE_SESSION_TWICE = exitKey.leave('end (twice)', 'Ctrl+C');
+
+/** The same second `Ctrl+C` in a chat the Home hosts (ADR-0146 §4): it goes back to the Home, and the word names where. */
+const BACK_TO_HOME_AGAIN = exitKey.leave('back to Home (again)', 'Ctrl+C');
+
+/** The first `Ctrl+C` of an idle, empty prompt in a chat the Home hosts: it arms, and the second one goes back to the Home. */
+const BACK_TO_HOME_TWICE = exitKey.leave('back to Home (twice)', 'Ctrl+C');
+
+/** The second `Ctrl+C` of the armed state, in the words of `host`: the destination is the Home where there is one, and the end where there is not. */
+const leavesAgain = (host: ChatHost): LegendExit =>
+  host === 'home-chat' ? BACK_TO_HOME_AGAIN : END_THE_SESSION_AGAIN;
+
+/** The unarmed first `Ctrl+C` of an empty prompt, in the words of `host` ({@link leavesAgain}). */
+const leavesTwice = (host: ChatHost): LegendExit =>
+  host === 'home-chat' ? BACK_TO_HOME_TWICE : END_THE_SESSION_TWICE;
+
+/**
+ * The idle prompt's hint bar (2.5.C S6, ADR-0146 §4): the second `Ctrl+C` while the first is armed, the `/` palette at an empty prompt with the
+ * key that leaves and where it leads (the Home, or the end of a stand-alone chat), else the draft's own keys. With a draft the first `Ctrl+C`
+ * only clears it, so a hint that said `back to Home (twice)` there would be false.
+ */
+export function idleHint(
+  interruptArmed: boolean,
+  emptyDraft: boolean,
+  host: ChatHost = 'standalone-chat',
+): string {
+  if (interruptArmed) return legend([], leavesAgain(host));
   return emptyDraft
-    ? '/ for commands · /exit or Ctrl+C twice to end'
-    : 'Enter to send · Ctrl+J newline · Ctrl+C clears the draft';
+    ? legend([{ keys: '/', verb: 'commands' }], leavesTwice(host))
+    : legend(
+        [
+          { keys: 'Enter', verb: 'send' },
+          { keys: 'Ctrl+J', verb: 'newline' },
+        ],
+        // Not a leaving key: with a draft the first `Ctrl+C` only clears it, so this stays the `close` class (the legend needs an exit key).
+        exitKey.close('Ctrl+C', 'clear the draft'),
+      );
 }
 
+/**
+ * The hint row while a turn runs (the prompt row is the busy line then): there is no prompt to type in and no palette to open, so the only key it
+ * has to name is `Ctrl+C`, whose first press stops the turn and arms and whose second ends the chat (or goes back to the Home): the same two
+ * states as the idle hint's, in the same words.
+ */
+export function runningHint(interruptArmed: boolean, host: ChatHost = 'standalone-chat'): string {
+  return legend([], interruptArmed ? leavesAgain(host) : leavesTwice(host));
+}
+
+/** What is in flight behind a chat, as the host knows it. */
+export interface ChatWork {
+  /** A turn is streaming (the store's `status` is `running`). */
+  readonly turnRunning: boolean;
+  /** A `!`-shell command is running. */
+  readonly shellBusy: boolean;
+  /** A submit is in flight: a turn, a compaction, or a slash command that has not returned yet. */
+  readonly submitBusy: boolean;
+  /** A card of the native prompt channel (`/mode`, `/export`, `/resume`, ...) is on screen and answers every key. */
+  readonly nativePrompt: boolean;
+  /** An approval card (or the agent's question card) is open (the store's `approvalSinceMs`): it owns the keyboard and answers `Esc` itself. */
+  readonly approvalCard: boolean;
+}
+
+/**
+ * Whether the chat draws its busy line (`Working… · Esc stops the turn`). A slash command that is only waiting on its own card is a submit in
+ * flight too, but no turn runs and the card answers `Esc` (it closes the card and stops nothing): the busy line would say a key does what it
+ * does not, so it is not drawn while a card holds the screen and nothing else is running. A `!` shell command that waits on its own approval
+ * card is the same case: it has not started, the card's `Esc` denies it, and "running · Esc cancels it" above that card would put two `Esc`
+ * effects on one screen. A turn that is running keeps its line while its approval card is open (the line then says it waits for the person,
+ * and the card's `Esc` does stop the turn). The input gate is not this: it keeps reading `submitBusy`, so a key still never reaches the
+ * composer behind a card.
+ */
+export function chatIsBusy(work: ChatWork): boolean {
+  return (
+    work.turnRunning ||
+    (work.shellBusy && !work.approvalCard) ||
+    (work.submitBusy && !work.nativePrompt && !work.approvalCard)
+  );
+}
+
+/**
+ * The grid the chat's chrome (the header, the prompt block, the live region, the rows under the prompt) is drawn on for a host that reports `columns`:
+ * {@link chatGrid} of the width with the 80-column fallback a width that is not usable gets ({@link layoutColumns}: a suspended terminal reports 0, NaN or
+ * Infinity), so the chrome is never asked for a width it cannot draw. The one place the fallback is applied.
+ */
+export function chromeGridFor(columns: number): ChatGrid {
+  return chatGrid(layoutColumns(columns));
+}
+
+/**
+ * A column of the chat's chrome BELOW the prompt block (the history search, the `@` completion list) for a host that reports `columns`: a
+ * {@link ContentColumn} on {@link chromeGridFor} of that width. Both hosts draw them through it, so they stand where the prompt block above them does.
+ */
+export function ChromeColumn(
+  props: Readonly<{ columns: number; children?: ReactNode }>,
+): ReactElement {
+  return <ContentColumn grid={chromeGridFor(props.columns)}>{props.children}</ContentColumn>;
+}
+
+/**
+ * The chat's header ([ADR-0146](../../../../../docs/decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md)
+ * §4): the wordmark (bold, in the accent when it is the full-screen frame's first row, bold alone inline) with the session title right-aligned to the
+ * content column's last column, then one blank row: {@link CHAT_HEADER_ROWS} rows. It stands ON THE GRID (unit 9, {@link chatGrid}): the box starts
+ * at the content column, where the Home's wordmark starts, and is exactly the content column wide, so the title ends where the rail ends.
+ * The title is already scrubbed and bounded by {@link headerRow}; with none (before the first message, inline) the wordmark stands alone.
+ */
+function ChatHeaderView(
+  props: Readonly<{ title: string; columns: number; color: boolean; accent: boolean }>,
+): ReactElement {
+  const grid = chromeGridFor(props.columns);
+  const row = headerRow(props.title, grid.content);
+  return (
+    <Box
+      flexDirection="column"
+      flexShrink={0}
+      height={CHAT_HEADER_ROWS}
+      marginLeft={grid.margin}
+      width={grid.content}
+    >
+      <Box>
+        {/* The accent is the full-screen frame's first row. The inline header scrolls into the terminal's own history among the transcript, and it
+            is bold only there in both hosts: the stand-alone chat writes it before it mounts (`emitChatHeader`, bold), so the Home's hosted chat
+            must not print the same header in a colour the stand-alone one has not (OB7-L8). */}
+        <EmphText
+          emphasis="bold"
+          {...(props.accent ? colorProps(props.color, 'cyan') : {})}
+          wrap="truncate-end"
+        >
+          {row.wordmark}
+        </EmphText>
+        {row.title !== '' && (
+          <Text {...dimProps(props.color)} wrap="truncate-end">
+            {`${row.gap}${row.title}`}
+          </Text>
+        )}
+      </Box>
+      <Text> </Text>
+    </Box>
+  );
+}
+
+/** One item of the inline scrollback: a transcript entry, or the header printed once as the introduction of the chat. */
+type ScrollbackItem = TranscriptEntry | { readonly role: 'introduction' };
+
+/**
+ * What stands above the first entry of a chat whose intro was written before it mounted: a notice (it hugs what is above it, a turn or a reply gets
+ * the separator, as after any entry), never drawn itself. The text only has to be a row, so that the entry above is not a row-less one.
+ */
+const PRINTED_ABOVE: TranscriptEntry = { role: 'notice', text: 'printed above' };
+
+/**
+ * The transcript entry printed just before `items[index]` (`<Static>` passes the absolute index), or none: the first entry, or after the header (the
+ * header's own blank row is its gap). `printedAbove` says the first entry follows rows written before the chat mounted ({@link ChatViewProps.printedAbove}).
+ * An entry that printed no row (`draws` says no: a reply with neither words nor a summary) is passed over, as the full-screen transcript passes over
+ * it, so the entry after it gets the separator of what is really above it (review round 2, C2-4).
+ */
+function entryBefore(
+  items: readonly ScrollbackItem[],
+  index: number,
+  printedAbove: boolean,
+  draws: (entry: TranscriptEntry) => boolean,
+): TranscriptEntry | undefined {
+  for (let at = index - 1; at >= 0; at -= 1) {
+    const before = items[at];
+    if (before === undefined || before.role === 'introduction') return undefined;
+    if (draws(before)) return before;
+  }
+  return printedAbove ? PRINTED_ABOVE : undefined;
+}
+
+/**
+ * The inline renderer's scrollback: ink `<Static>` prints each item once into the terminal's own history. The header, when asked for, is its
+ * FIRST item, so it is written once with the first frame of the chat and never again (Static tracks what it printed by the array's length).
+ */
+function InlineScrollback(
+  props: Readonly<{
+    entries: readonly TranscriptEntry[];
+    introduction: boolean;
+    printedAbove: boolean;
+    displays: ReadonlyMap<string, ToolDisplay> | undefined;
+    color: boolean;
+    columns: number | undefined;
+    acknowledgement: TranscriptAcknowledgement | undefined;
+  }>,
+): ReactElement {
+  const items: readonly ScrollbackItem[] = props.introduction
+    ? [{ role: 'introduction' }, ...props.entries]
+    : props.entries;
+  const grid = chatGrid(props.columns ?? 80);
+  const draws = (entry: TranscriptEntry): boolean =>
+    entryDrawsRows(entry, grid, props.color, props.displays);
+  return (
+    <Static items={[...items]}>
+      {(item, index) =>
+        item.role === 'introduction' ? (
+          <ChatHeaderView
+            key={index}
+            title=""
+            columns={props.columns ?? 80}
+            color={props.color}
+            accent={false}
+          />
+        ) : (
+          <TranscriptLine
+            key={index}
+            entry={item}
+            previous={entryBefore(items, index, props.printedAbove, draws)}
+            displays={props.displays}
+            color={props.color}
+            columns={props.columns}
+            acknowledgement={props.acknowledgement}
+          />
+        )
+      }
+    </Static>
+  );
+}
+
+/**
+ * What the empty prompt invites: a conversation has something to reply to ({@link hasConversation}: a user or an assistant entry, or the turns a
+ * reseat or a resume carried in), a new one has nothing yet. A notice is not a conversation. Never part of the draft, never sent.
+ */
+const PLACEHOLDER_REPLY = 'reply to continue';
+const PLACEHOLDER_FIRST = 'type a message';
+
+/**
+ * The leading row of the prompt block: the copy confirmation while it shows (it is the answer to the person's own gesture), else the latest
+ * warning with the earlier ones after it as far as the row has room, else the blank row that separates the block from the conversation.
+ * One row whichever it is, so the block never grows (ADR-0146 §4).
+ */
+function LeadRow(
+  props: Readonly<{
+    copied: boolean;
+    warnings: readonly string[];
+    color: boolean;
+    columns: number;
+  }>,
+): ReactElement {
+  const { color } = props;
+  if (props.copied) {
+    // A green pill when colour is on; a plain `[Sent to terminal clipboard]` under `NO_COLOR` / `--no-color` (colour is never the only carrier, ADR-0145 §5).
+    return color ? (
+      <EmphText backgroundColor="green" color="black" emphasis="bold">
+        {' Sent to terminal clipboard '}
+      </EmphText>
+    ) : (
+      <Text>[Sent to terminal clipboard]</Text>
+    );
+  }
+  if (props.warnings.length === 0) return <Text> </Text>;
+  // The newest first: a row too narrow for all of them cuts the oldest, never the one that just happened. Cut by the repo's own measure
+  // (`clipLine`), not left to ink's: a warning can quote a name in a script ink counts narrower than a terminal draws (review round 4, R4-S-1).
+  return (
+    <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
+      {clipLine(
+        [...props.warnings]
+          .reverse()
+          .map((warning) => `${glyphOf('warning', !color)} ${stripTerminalControls(warning)}`)
+          .join('  '),
+        props.columns,
+      )}
+    </Text>
+  );
+}
+
+/**
+ * A column of the chat's chrome that stands in the content column ({@link chatGrid}, unit 9): it starts where the content starts and is as wide as
+ * the row budget it is given, `content` (the rail: the transcript's, the editor's, the live stream's) or `text` (what the terminal leaves right of
+ * the margin: a one-line row such as the status line or the hint). The margin on its left is blank: nothing a person or a model wrote can stand in it.
+ */
+function ContentColumn(
+  props: Readonly<{ grid: ChatGrid; budget?: 'content' | 'text'; children?: ReactNode }>,
+): ReactElement {
+  const { grid } = props;
+  return (
+    <Box
+      flexDirection="column"
+      flexShrink={0}
+      marginLeft={grid.margin}
+      width={props.budget === 'content' ? grid.content : grid.text}
+    >
+      {props.children}
+    </Box>
+  );
+}
+
+interface PromptBlockProps {
+  readonly state: SessionViewState;
+  readonly color: boolean;
+  readonly host: ChatHost;
+  readonly mode: ChatMode;
+  readonly reasoningEffort: ReasoningEffort | undefined;
+  readonly provider: string | undefined;
+  /** The chat's grid: the content column the editor and the rule are laid for, and the terminal width the status line is fitted to. */
+  readonly grid: ChatGrid;
+  readonly running: boolean;
+  readonly interruptArmed: boolean;
+  readonly editor: EditorState;
+  readonly cursor: boolean;
+  readonly attachments: readonly PendingAttachment[];
+  /** The idle prompt is drawn: nothing is running and no submode owns the bottom of the view. */
+  readonly promptShown: boolean;
+  readonly palette: ChatViewProps['palette'];
+  readonly notification: string | undefined;
+  readonly copied: boolean;
+  /** The most rows the idle prompt's editor may take ({@link promptEditorRows}); `undefined` ⇒ unbounded. */
+  readonly editorRows: number | undefined;
+  /** The in-flight turn, drawn where the prompt row would be while one runs. */
+  readonly live: ReactElement | undefined;
+}
+
+/** The hint row's words: a notification in place of the hint, else the hint of the state (running or idle); the open palette's block draws its own legend there. */
+function hintFor(props: PromptBlockProps): string {
+  if (props.notification !== undefined) return props.notification;
+  return props.running
+    ? runningHint(props.interruptArmed, props.host)
+    : idleHint(props.interruptArmed, props.editor.text.length === 0, props.host);
+}
+
+/**
+ * The prompt block, in the Home's order ([ADR-0146](../../../../../docs/decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md)
+ * §4): a leading row, the prompt, a thin rule, the status line and the hint (5 rows at rest). While a turn runs the in-flight turn stands where the
+ * prompt row would be. While the `/` palette is open the list is drawn above the prompt, the prompt row shows the typed query, and the hint row
+ * carries the palette's legend; the leading row and the status line give their rows up (a list ends directly above the prompt). While another
+ * submode (the history search, an `@` completion) owns the bottom of the view its own lines come below, so the block keeps its rule and its
+ * status line and draws neither a prompt nor a hint that would name keys it does not take.
+ */
+function PromptBlock(props: Readonly<PromptBlockProps>): ReactElement {
+  const { color, palette, grid } = props;
+  const rule = (
+    <Text {...dimProps(color)} wrap="truncate-end">
+      {thinRule(grid.content, !color)}
+    </Text>
+  );
+  const prefix = glyphOf('yourTurn', !color);
+  if (palette !== undefined) {
+    // The in-flight turn stands above the palette's list with its own margin (its tool rows mark it); the palette is the content column's.
+    return (
+      <Box flexDirection="column" flexShrink={0}>
+        {props.live}
+        <ContentColumn grid={grid}>
+          <PaletteAbovePrompt
+            palette={palette}
+            maxRows={palette.maxRows}
+            ruleColumns={grid.content}
+            contentColumns={grid.content}
+            color={color}
+          />
+        </ContentColumn>
+      </Box>
+    );
+  }
+  // The status line is fitted to what the terminal leaves right of the margin (the Home's budget: `W` would drop `used` and the turns at 80 columns).
+  const status = chatStatusLine(
+    props.state,
+    { mode: props.mode, reasoningEffort: props.reasoningEffort, provider: props.provider },
+    grid.columns,
+    grid.margin,
+  );
+  const showsHint = props.promptShown || props.running;
+  return (
+    <Box flexDirection="column" flexShrink={0}>
+      <ContentColumn grid={grid}>
+        <LeadRow
+          copied={props.copied}
+          warnings={props.state.warnings}
+          color={color}
+          columns={grid.text}
+        />
+      </ContentColumn>
+      {props.live}
+      <ContentColumn grid={grid}>
+        {/* The pending `@`/`!` attachment chip bar (2.5.D) — shown above the idle prompt so the queued file/command
+          context is always visible without flooding the editor. */}
+        {props.promptShown && props.attachments.length > 0 && (
+          <AttachmentBar attachments={props.attachments} color={color} columns={grid.content} />
+        )}
+        {/* The multi-line input prompt (idle) with the cursor at its position, in a box of EXACTLY the content column: the editor's own hard wrap
+          (`columns`, its windowed draft) and Ink's wrap of an unbounded draft are then the same width. Every segment is sanitized inside
+          PromptEditor so a pasted/typed control sequence cannot corrupt the display or inject ANSI/OSC. Shared
+          with the Home's prompt so both surfaces render the editor identically. */}
+        {props.promptShown && (
+          <Box flexDirection="column" flexShrink={0} width={grid.content}>
+            <PromptEditor
+              editor={props.editor}
+              color={color}
+              glyph={prefix}
+              cursor={props.cursor}
+              placeholder={hasConversation(props.state) ? PLACEHOLDER_REPLY : PLACEHOLDER_FIRST}
+              maxRows={props.editorRows}
+              columns={grid.content}
+            />
+          </Box>
+        )}
+        {rule}
+        {/* Not `truncate-end`: the model fits its line to the width whenever the mode and the effort can (`statusLine`'s last resort), so a row that
+          fits is drawn whole, and below the supported 80 columns, where even those words do not fit, the row WRAPS between words rather than being
+          cut by Ink inside the cost (SE7-2: a cut row drew `$12…`, an amount without its qualifier). */}
+        <Text {...colorProps(color, 'gray')}>{status.text}</Text>
+        {/* The context-aware hint (2.5.C S6): at an EMPTY idle prompt the `/` palette is the command-discovery entry point and the key that
+          leaves says where it leads; with a draft it is the draft's own keys; while a turn runs it is the key that ends the chat. */}
+        {showsHint && (
+          <Text {...dimProps(color)} wrap="truncate-end">
+            {/* cut by the repo's measure: a notification can name a path in a script ink counts narrower than a terminal draws (R4-S-1) */}
+            {clipLine(hintFor(props), grid.text)}
+          </Text>
+        )}
+      </ContentColumn>
+    </Box>
+  );
+}
+
+/**
+ * The PURE chat render — transcript / in-flight turn / prompt echo / warnings / footer — with no `useInput`,
+ * no state, and no store subscription. Extracted from `ChatApp` so the 2.5.B Home can render the chat region
+ * inside its OWN single-`useInput` tree (one raw-mode owner) without duplicating this JSX. The live input echo
+ * and every model/transcript string are sanitized at this display boundary so a pasted/streamed control
+ * sequence cannot corrupt the terminal or inject ANSI/OSC.
+ */
 export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   const {
     state,
@@ -423,14 +980,24 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
     paletteOpen,
   } = props;
   const attachments = props.attachments ?? [];
-  // The turn streamed reasoning ⇒ render the collapsible "thinking" panel (2.5.H).
+  // The chat's grid (unit 9, `chat-grid.ts`): a margin the host owns and a content column that holds every word a person or a model wrote. Computed
+  // ONCE here and read by every part of the frame, so the transcript, the live region and the prompt block cannot disagree about where the content is.
+  // `grid` is the width as the host reports it (a suspended terminal, whose width is not a number, has no grid and so no transcript rows); `chromeGrid`
+  // is the same grid with the 80-column fallback a width that is not usable gets ({@link chromeGridFor}), so the chrome is never asked for a width it cannot draw.
+  const hostColumns = props.viewport?.cols ?? props.columns ?? 80;
+  const grid = chatGrid(hostColumns);
+  const chromeGrid = chromeGridFor(hostColumns);
+  // The form of the margin a row of the live region is drawn with: the glyph (ASCII without colour) full-screen, the role word inline.
+  const marginForm = marginFormFor(props.viewport !== undefined, color);
+  // The turn streamed reasoning ⇒ render the collapsible "thinking" panel (2.5.H). Its body is the model's words in the content column, so its row
+  // tail is estimated at the content column's width.
   const hasReasoning = state.liveReasoning.length > 0;
   const reasoningPanel = hasReasoning
     ? formatReasoningPanel({
         liveReasoning: state.liveReasoning,
         liveReasoningTruncated: state.liveReasoningTruncated,
         visible: reasoningVisible,
-        columns: props.columns,
+        columns: chromeGrid.content,
       })
     : undefined;
   // The pre-token busy line reads "Thinking…" ONLY while the model is plausibly reasoning (reasoning streamed AND no
@@ -441,7 +1008,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   const showIdlePrompt = !running && paletteOpen !== true;
   // The whole-second live-turn elapsed (2.5.H) — `undefined` before a turn starts (no `turnStartedAtMs`), so the
   // pre-first-token status shows only when a turn is actually in flight.
-  // An open approval card is the person's time, not the turn's: the timer excludes it (and shows the wait itself).
+  // An open approval card is the person's time, not the turn's: the timer excludes it (the sheet's own rule shows the wait, ADR-0147 §2).
   const awaitingApprovalMs =
     state.approvalSinceMs === undefined
       ? undefined
@@ -454,16 +1021,26 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           props.nowMs - state.turnStartedAtMs - state.approvalWaitMs - (awaitingApprovalMs ?? 0),
         );
   // The in-flight busy line — the labeled compaction moment (ADR-0062 §7), the `!`-shell command line, the
-  // pre-token live-turn status ("Working… {elapsed} · Esc to stop"), or the streaming token line (with the
+  // pre-token live-turn status ("Working… {elapsed} · Esc stops the turn"), or the streaming token line (with the
   // elision marker). The branch matrix lives in the pure, unit-tested {@link formatBusyLine}; here we only map
   // its `dim` flag to `<Text>`. Only rendered while `running`.
-  const renderBusyLine = (): ReactElement => {
+  // The element AND the rows it takes: the live region is bounded as a whole (`liveRegionRows`), and what the busy line takes is what the tool calls
+  // and the reasoning panel above it have left.
+  const renderBusyLine = (): { readonly node: ReactElement; readonly rows: number } => {
     if (props.displaySuspended)
-      return (
-        <Text {...dimProps(color)} wrap="truncate-end">
-          Display paused for an oversized control sequence · Esc to stop
-        </Text>
-      );
+      return {
+        rows: 1,
+        node: (
+          <ContentColumn grid={chromeGrid} budget="content">
+            <Text {...dimProps(color)} wrap="truncate-end">
+              {legend(
+                [{ text: 'Display paused for an oversized control sequence' }],
+                STOP_THE_TURN,
+              )}
+            </Text>
+          </ContentColumn>
+        ),
+      };
     if (
       props.markdown !== undefined &&
       !state.compacting &&
@@ -471,27 +1048,52 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       awaitingApprovalMs === undefined &&
       state.liveTokens.length > 0
     ) {
-      const cols = props.viewport?.cols ?? props.columns ?? 80;
       const maxRows = props.viewport === undefined ? 24 : liveAnswerRowBudget(props.viewport.rows);
       const answerRows = Math.max(0, maxRows - 1);
-      const lines = color
-        ? props.markdown.tail(cols, answerRows)
-        : props.markdown.plainTail(cols, answerRows);
-      return (
-        <Box flexDirection="column">
-          {lines.map((line, index) => (
-            <Text key={index}>
-              <MarkdownText
-                spans={line.text === '' ? [{ text: ' ' }] : (line.spans ?? [{ text: line.text }])}
-                color={color}
-              />
-            </Text>
-          ))}
-          <Text {...dimProps(color)} wrap="truncate-end">
-            {spinnerFrame(tick)} {props.markdown.elided ? '… ' : ''}Esc to stop
-          </Text>
-        </Box>
-      );
+      // The live tail is the model's words, laid out in the content column at its width: the finished reply is laid out at the same width
+      // (`transcriptRows`), so the stream never reflows when the turn completes. The stream went through the screen's filter before this layout
+      // (`ScreenStream` in the store: review round 3, R3S-1), and its rows have the marker glyphs blanked, as the finished reply's do
+      // (`screenStreamRow`; ADR-0145 §6, OQ4 as revised after review round 1 of unit 9).
+      const answerColumns = chromeGrid.content;
+      const lines = (
+        color
+          ? props.markdown.tail(answerColumns, answerRows)
+          : props.markdown.plainTail(answerColumns, answerRows)
+      ).map(screenStreamRow);
+      // Each row stands on the grid with the reply's own role: `agent` on the first row of the stream and on a row that starts with a margin
+      // word, drawn only as the inline renderer's word (the full-screen margin of a reply is blank), so a streamed `you   …` row is read as the
+      // agent's WHILE it streams, as the finished reply's row will be (review round 2, S2-3).
+      return {
+        rows: lines.length + 1,
+        node: (
+          <Box flexDirection="column">
+            {lines.map((line, index) => (
+              <MarginRow
+                key={index}
+                role={index === 0 || startsWithMarginWord(line.text) ? 'agent' : undefined}
+                grid={chromeGrid}
+                form={marginForm}
+              >
+                {/* full-screen the row is one physical row whatever a width says (cut at the cell's edge, never wrapped: review round 3, R3S-1) */}
+                <Text wrap={marginForm === 'word' ? 'wrap' : 'truncate-end'}>
+                  <MarkdownText
+                    spans={
+                      line.text === '' ? [{ text: ' ' }] : (line.spans ?? [{ text: line.text }])
+                    }
+                    color={color}
+                  />
+                </Text>
+              </MarginRow>
+            ))}
+            <ContentColumn grid={chromeGrid} budget="content">
+              <Text {...dimProps(color)} wrap="truncate-end">
+                {spinnerFrame(tick)} {props.markdown.elided ? '… ' : ''}
+                {legend([], STOP_THE_TURN)}
+              </Text>
+            </ContentColumn>
+          </Box>
+        ),
+      };
     }
     const line = formatBusyLine({
       spinner: spinnerFrame(tick),
@@ -500,35 +1102,45 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       liveTokens: props.markdown?.sourceTail() ?? state.liveTokens,
       liveTokensTruncated: state.liveTokensTruncated,
       elapsedMs,
-      awaitingApprovalMs,
       reasoningActive,
       // `props.viewport` is present exactly on the ALT screen, and it carries the terminal's size. Only that surface
       // has a FIXED-HEIGHT frame to overflow; the inline renderer's live region grows and the terminal scrolls it, so
       // it passes no bound and its output stays byte-identical.
       ...(props.viewport === undefined
         ? {}
-        : { columns: props.viewport.cols, maxRows: liveAnswerRowBudget(props.viewport.rows) }),
+        : { columns: chromeGrid.content, maxRows: liveAnswerRowBudget(props.viewport.rows) }),
     });
-    // A STATUS line (compaction / shell / pre-token) already carries its inline "· Esc to …" hint; a streaming
+    // A STATUS line (compaction / shell / pre-token) already carries its inline "· Esc …" hint; a streaming
     // CONTENT line has no room for it, so surface the abort affordance on a compact dim line beneath it — `Esc`
     // aborts the whole turn (EA7), so the hint must persist for the ENTIRE turn, not just the pre-token wait.
     const abortHint = streamingAbortHint(line);
-    return (
-      <Box flexDirection="column">
-        {line.dim ? (
-          <Text {...dimProps(color)} wrap="truncate-end">
-            {line.text}
-          </Text>
-        ) : (
-          <Text>{line.text}</Text>
-        )}
-        {abortHint !== undefined && (
-          <Text {...dimProps(color)} wrap="truncate-end">
-            {abortHint}
-          </Text>
-        )}
-      </Box>
-    );
+    // the streamed words, laid out by the repo's measure in rows of the content column (a status line is one row, cut to it)
+    const answerRows = line.dim ? undefined : wrapText(line.text, Math.max(1, chromeGrid.content));
+    return {
+      rows: (answerRows?.length ?? 1) + (abortHint === undefined ? 0 : 1),
+      node: (
+        <ContentColumn grid={chromeGrid} budget="content">
+          {answerRows === undefined ? (
+            <Text {...dimProps(color)} wrap="truncate-end">
+              {/* a status line (a `!` command the person typed, the pre-token wait): cut by the repo's measure (review round 4, R4-S-1) */}
+              {clipLine(line.text, chromeGrid.content)}
+            </Text>
+          ) : (
+            // drawn row by row, so ink never wraps them by its own (narrower) count of a conjunct (review round 4, R4-S-1)
+            answerRows.map((row, index) => (
+              <Text key={index} wrap="truncate-end">
+                {row === '' ? ' ' : row}
+              </Text>
+            ))
+          )}
+          {abortHint !== undefined && (
+            <Text {...dimProps(color)} wrap="truncate-end">
+              {abortHint}
+            </Text>
+          )}
+        </ContentColumn>
+      ),
+    };
   };
   // The full-screen alt-screen renderer (ADR-0068 §c, 2.6.F Step 4b) renders the transcript through the scroll
   // VIEWPORT (the alt buffer has no scrollback for `<Static>` to use); the inline renderer (default) keeps `<Static>`
@@ -536,16 +1148,18 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   // ChatRegion) leaves below any keyboard-owning overlay, inside their terminal-`rows`-bounded container — so the
   // TranscriptViewport inside has a bound to flex-grow into, and the overlays are never pushed off-screen.
   const viewport = props.viewport;
+  const host = props.surface ?? 'standalone-chat';
   // Alt-screen only: flatten + width-wrap the transcript to display lines, MEMOIZED on (transcript, cols) so a
   // streaming turn (which re-renders each frame with the SAME completed-transcript reference) reuses the prior wrap
   // instead of re-wrapping all history every frame. `state.transcript` is a stable reference until an entry is
   // appended (immutable session-view-model), so the memo hits across ticks and busts on a real append or a resize.
+  // The rows are the grid's (`transcriptRows`, at the content column's width): the scroll, the copy and the acknowledgement read the same rows.
+  const fullScreen = viewport !== undefined;
   const wrappedTranscript = useMemo(
     () =>
-      viewport === undefined
-        ? undefined
-        : wrapTranscript(state.transcript, viewport.cols, color, props.toolDisplays),
-    [viewport?.cols, state.transcript, color, props.toolDisplays],
+      fullScreen ? transcriptRows(state.transcript, grid, color, props.toolDisplays) : undefined,
+    // `grid` is rebuilt every render; its content width is what the rows depend on.
+    [fullScreen, grid.content, state.transcript, color, props.toolDisplays],
   );
   // Static advances its cursor even when a child paints no rows. Retain its
   // admitted prefix during width suspension, then deliver pending entries once
@@ -560,31 +1174,66 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   const inlineTranscript = inlineWidthReady
     ? state.transcript
     : state.transcript.slice(0, admittedInlineCount.current);
+  // The header's title: the first user line, derived again only when that line changes (a pasted log dump is not scanned on every frame).
+  const firstLine = firstUserLine(state.transcript);
+  const title = useMemo(() => chatSessionTitle(firstLine), [firstLine]);
+  // The in-flight turn: tool annotations + the streaming assistant text + a spinner. A `!`-shell command in
+  // flight (busyCommand set) emits no session tokens, so it shows a distinct LABELED line — what is running +
+  // the honest Esc-to-cancel affordance (Esc or the first Ctrl+C aborts the command, keeping the session; a second Ctrl+C
+  // within two seconds ends it). It stands where the prompt row would, in the prompt block.
+  // On the grid (unit 9, `LiveTurn`): a tool call's row has the host's mark in the margin and the call's words in the content column; every other
+  // row of the turn is the content column's, and the margin beside it is blank, so nothing the model wrote can stand where a mark does.
+  // Full-screen the live region is ONE budget (`liveRegionRows`): the busy line or the answer and the interrupt note keep their rows, and the tool calls
+  // and the reasoning panel above them are cut to what is left (`maxTopRows`), so the rule, the status line and the hint stay on the frame.
+  const busy = running ? renderBusyLine() : undefined;
+  const frameBudget = liveRegionRows(viewport?.rows);
+  const maxTopRows =
+    frameBudget === undefined || busy === undefined
+      ? undefined
+      : Math.max(0, frameBudget - busy.rows - (props.interruptArmed === true ? 1 : 0));
+  const liveTurn =
+    busy === undefined ? undefined : (
+      <LiveTurn
+        state={state}
+        color={color}
+        grid={chromeGrid}
+        marginForm={marginForm}
+        toolDisplays={props.toolDisplays}
+        reasoning={reasoningPanel}
+        busyLine={busy.node}
+        maxTopRows={maxTopRows}
+        interruptArmed={props.interruptArmed === true}
+        host={host}
+      />
+    );
   return (
     <Box
       display={props.hidden === true ? 'none' : 'flex'}
       flexDirection="column"
       {...(viewport === undefined ? {} : { flexGrow: 1 })}
     >
+      {/* The header (ADR-0146 §4): the wordmark and the session title, then a blank row. Full-screen it is the first child; inline it is the
+          first item of the scrollback (below), because inline has no fixed top row. */}
+      {viewport !== undefined && (
+        <ChatHeaderView title={title} columns={viewport.cols} color={color} accent />
+      )}
       {/* Completed transcript. Inline: ink `<Static>` prints each entry once → native scrollback. Alt-screen: the
           {@link TranscriptViewport} flex-grows to the leftover height and renders only the visible window (tail-
-          following at Step 4b-1), since the alt buffer has no scrollback for `<Static>`. */}
+          following at Step 4b-1), since the alt buffer has no scrollback for `<Static>` to use. */}
       {viewport === undefined || wrappedTranscript === undefined ? (
-        <Static items={[...inlineTranscript]}>
-          {(entry, index) => (
-            <TranscriptLine
-              key={index}
-              entry={entry}
-              displays={props.toolDisplays}
-              color={color}
-              columns={props.columns}
-              acknowledgement={props.acknowledgement}
-            />
-          )}
-        </Static>
+        <InlineScrollback
+          entries={inlineTranscript}
+          introduction={props.introduction === true}
+          printedAbove={props.printedAbove === true}
+          displays={props.toolDisplays}
+          color={color}
+          columns={props.columns}
+          acknowledgement={props.acknowledgement}
+        />
       ) : (
         <TranscriptViewport
           lines={wrappedTranscript}
+          grid={grid}
           color={color}
           scroll={viewport.scroll}
           selection={viewport.selection}
@@ -603,90 +1252,275 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
         />
       )}
 
-      {/* The in-flight turn: tool annotations + the streaming assistant text + a spinner. A `!`-shell command in
-          flight (busyCommand set) emits no session tokens, so it shows a distinct LABELED line — what is running +
-          the honest Esc-to-cancel affordance (Esc or the first Ctrl+C aborts the command, keeping the session; a second Ctrl+C
-          within two seconds ends it). */}
-      {running && (
-        <Box flexDirection="column">
-          {state.liveToolCalls
-            .filter((call) => state.liveObserver !== true || !call.resolved)
-            .map((call) => (
-              <Text key={call.id} {...colorProps(color, 'yellow')}>
-                {formatToolCall(call, props.toolDisplays?.get(call.id))}
-              </Text>
-            ))}
-          {/* The collapsible "thinking" panel (2.5.H) — a dim header with the Ctrl+T toggle hint, and the reasoning
-              body only when expanded. Shown above the busy line whenever the turn streamed reasoning. */}
-          {reasoningPanel !== undefined && (
-            <Box flexDirection="column">
-              <Text {...dimProps(color)} wrap="truncate-end">
-                {reasoningPanel.header}
-              </Text>
-              {reasoningPanel.body !== undefined && (
-                <Text {...dimProps(color)}>{reasoningPanel.body}</Text>
-              )}
-            </Box>
-          )}
-          {renderBusyLine()}
-          {/* The first Ctrl+C on a running turn interrupts it and arms: say so right here, because a turn that is slow to stop (a
-              hung tool) would otherwise show nothing at all. At an idle prompt the hint row below carries the same words. */}
-          {props.interruptArmed === true && (
-            <Text {...dimProps(color)} wrap="truncate-end">
-              Interrupting · press Ctrl+C again to end the session
-            </Text>
-          )}
-        </Box>
+      {/* The prompt block (ADR-0146 §4): a blank row, the prompt, a thin rule, the status line, the hint. While a turn runs the in-flight turn
+          stands where the prompt would (below), and the rule, the status line and the hint stay. A docked sheet takes the block's place
+          (ADR-0147 §1): the prompt, its rule, the status line and the hint are not drawn, and the in-flight turn stays above the sheet. */}
+      {props.cardDocked === true ? (
+        <DockedTurn
+          state={state}
+          color={color}
+          running={running}
+          toolDisplays={props.toolDisplays}
+          reasoning={reasoningPanel}
+          interruptArmed={props.interruptArmed === true}
+          host={host}
+          grid={chromeGrid}
+          marginForm={marginForm}
+          viewportRows={viewport?.rows}
+          terminalRows={props.terminalRows}
+        />
+      ) : (
+        <PromptBlock
+          state={state}
+          color={color}
+          host={host}
+          mode={mode}
+          reasoningEffort={reasoningEffort}
+          provider={props.provider}
+          grid={chromeGrid}
+          running={running}
+          interruptArmed={props.interruptArmed === true}
+          editor={editor}
+          cursor={props.composerCursor !== false}
+          attachments={attachments}
+          promptShown={showIdlePrompt}
+          palette={props.palette}
+          notification={props.notification}
+          copied={props.copied === true}
+          editorRows={chatEditorRows(viewport?.rows, props.terminalRows)}
+          live={liveTurn}
+        />
       )}
-
-      {/* The pending `@`/`!` attachment chip bar (2.5.D) — shown above the idle prompt so the queued file/command
-          context is always visible without flooding the editor. */}
-      {showIdlePrompt && attachments.length > 0 && (
-        <AttachmentBar attachments={attachments} color={color} />
-      )}
-
-      {/* The multi-line input prompt (idle) with the cursor at its position. Every segment is sanitized inside
-          PromptEditor so a pasted/typed control sequence cannot corrupt the display or inject ANSI/OSC. Shared
-          with the Home's prompt so both surfaces render the editor identically. */}
-      {showIdlePrompt && <PromptEditor editor={editor} color={color} />}
-      {/* The context-aware idle hint bar (2.5.C S6). At an EMPTY prompt, surface the `/` palette as the command-
-          discovery entry point (it lists /export, /doctor, /workflows, …) — `/` only opens it from an empty
-          buffer, so the hint appears exactly when it works. Once the user is composing, swap to the submit hint
-          (which surfaces Ctrl+J for a newline). The palette renders its own nav hints when open. */}
-      {showIdlePrompt && (
-        <Text {...dimProps(color)} wrap="truncate-end">
-          {idleHint(props.interruptArmed === true, editor.text.length === 0)}
-        </Text>
-      )}
-
-      {/* Sequence-gap / out-of-order diagnostics (the live stream is no-drop, so any gap is a defect worth
-          surfacing — mirrors RunApp). Integer-only today, but sanitized for belt-and-suspenders defence. Joined
-          into a single newline-separated Text so there is no keyed list — sidestepping both a duplicate React
-          key (two identical warning strings) and an array-index key. */}
-      {state.warnings.length > 0 && (
-        <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
-          {state.warnings.map((w) => `⚠ ${stripTerminalControls(w)}`).join('\n')}
-        </Text>
-      )}
-
-      {/* The copy-on-select confirmation (2.6.F Step 6i) — a transient pill above the footer, auto-dismissed by the
-          owner's timer. It lives OUTSIDE the transcript, so confirming a copy never re-wraps the selected lines. A
-          green pill when colour is on; a plain `[Copied]` under `NO_COLOR` / `--no-color` (parity with the banner). */}
-      {props.copied === true &&
-        (color ? (
-          <Text backgroundColor="green" color="black" bold>
-            {' Sent to terminal clipboard '}
-          </Text>
-        ) : (
-          <Text>[Sent to terminal clipboard]</Text>
-        ))}
-
-      <Text {...colorProps(color, 'gray')}>
-        {formatSessionFooterWithMode(state, mode, reasoningEffort)}
-      </Text>
     </Box>
   );
 }
+
+/**
+ * The in-flight turn of a chat that is not waiting on a sheet, on the grid (unit 9): a tool call's row through {@link MarginRow} (the host's mark in the
+ * margin, the call's words in the content column), then the collapsible "thinking" panel (2.5.H, a dim header with the Ctrl+T toggle hint and the
+ * reasoning body only when expanded: {@link ReasoningRows}), the busy line or the streamed answer (`busyLine`, drawn by the view that owns the timer;
+ * it places its own rows on the grid, a streamed row with its margin), and the interrupt note in the content column: the first Ctrl+C on a running
+ * turn interrupts it and arms, and a turn that is slow to stop (a hung tool) would otherwise show nothing at all (at an idle prompt the hint row
+ * carries the same words).
+ */
+function LiveTurn(
+  props: Readonly<{
+    state: SessionViewState;
+    color: boolean;
+    grid: ChatGrid;
+    marginForm: MarginForm;
+    toolDisplays: ChatViewProps['toolDisplays'];
+    reasoning: ReasoningPanel | undefined;
+    busyLine: ReactElement;
+    /**
+     * The rows the tool calls and the reasoning panel together may take (the live region's budget less the busy line's and the interrupt note's
+     * rows: {@link liveRegionRows}); `undefined` for a renderer that has no fixed frame to overflow. The reasoning body gives up its oldest rows
+     * first, then the oldest tool calls, so the newest of each stays.
+     */
+    maxTopRows: number | undefined;
+    interruptArmed: boolean;
+    host: ChatHost;
+  }>,
+): ReactElement {
+  const { state, color, reasoning } = props;
+  const calls = state.liveToolCalls.filter((call) => state.liveObserver !== true || !call.resolved);
+  const toolRows = calls.flatMap((call) =>
+    // laid out by the repo's measure in rows of the content column (ink would wrap a conjunct by its own narrower count: review round 4,
+    // R4-S-1); the call's first row carries the mark, a row after it hangs, and one that starts with a margin word carries the reply's word
+    wrapText(
+      withGlyphForm(!color, () => screenText(toolCallText(call, props.toolDisplays?.get(call.id)))),
+      Math.max(1, props.grid.content),
+      true,
+    ).map((row, index) => (
+      <MarginRow
+        key={`${call.id}:${String(index)}`}
+        role={index === 0 ? 'toolCall' : startsWithMarginWord(row) ? 'agent' : undefined}
+        grid={props.grid}
+        form={props.marginForm}
+        mark={colorProps(color, 'yellow')}
+      >
+        <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
+          {row === '' ? ' ' : row}
+        </Text>
+      </MarginRow>
+    )),
+  );
+  const panel =
+    reasoning === undefined
+      ? undefined
+      : reasoningRows(reasoning, props.grid, props.marginForm, color);
+  const top = fitLiveTop(toolRows, panel, props.maxTopRows);
+  return (
+    <Box flexDirection="column">
+      {top}
+      {/* The busy line places itself on the grid: the streamed answer's rows each with their margin, a status line in the content column. */}
+      {props.busyLine}
+      {props.interruptArmed && (
+        <ContentColumn grid={props.grid} budget="content">
+          <Text {...dimProps(color)} wrap="truncate-end">
+            {legend([{ text: 'Interrupting' }], leavesAgain(props.host))}
+          </Text>
+        </ContentColumn>
+      )}
+    </Box>
+  );
+}
+
+/**
+ * The live reasoning panel on the grid, as its rows: its header in the content column, and its body in rows at the content column's width, laid
+ * out by the repo's own measure in both renderers (review round 4, R4-S-1: ink's wrap counts an Indic conjunct narrower than a terminal draws it). A
+ * row that starts with a margin word carries the reply's `agent` while it streams (review round 2, S2-3), as a reply's row does: the inline renderer
+ * writes the word, the full-screen margin draws nothing for it. Every row is one element and one terminal row, so the panel can be cut by rows
+ * ({@link fitLiveTop}).
+ */
+function reasoningRows(
+  reasoning: ReasoningPanel,
+  grid: ChatGrid,
+  form: MarginForm,
+  color: boolean,
+): { readonly header: ReactElement; readonly body: readonly ReactElement[] } {
+  const header = (
+    <ContentColumn key="reasoning:header" grid={grid} budget="content">
+      <Text {...dimProps(color)} wrap="truncate-end">
+        {reasoning.header}
+      </Text>
+    </ContentColumn>
+  );
+  // the body is laid out in rows by the repo's measure in both renderers (ink's wrap would count a conjunct narrower than a terminal draws
+  // it: review round 4, R4-S-1); full-screen a row's `agent` draws nothing
+  if (reasoning.body === undefined) return { header, body: [] };
+  return {
+    header,
+    body: wrapText(reasoning.body, Math.max(1, grid.content), true).map((row, index) => (
+      <MarginRow
+        key={`reasoning:${String(index)}`}
+        role={startsWithMarginWord(row) ? 'agent' : undefined}
+        grid={grid}
+        form={form}
+      >
+        <Text {...dimProps(color)} wrap="truncate-end">
+          {row === '' ? ' ' : row}
+        </Text>
+      </MarginRow>
+    )),
+  };
+}
+
+/**
+ * The tool-call rows and the reasoning panel's rows of the live region, in their order (the calls, then the panel), cut to `maxRows` when the
+ * renderer has a frame to keep (`undefined`: not cut). The newest rows stay: the reasoning body gives up its oldest rows first, its header goes
+ * next, and only then do the oldest tool calls (a turn that makes sixteen of them would otherwise leave no room for the answer or the hint).
+ */
+function fitLiveTop(
+  toolRows: readonly ReactElement[],
+  panel: { readonly header: ReactElement; readonly body: readonly ReactElement[] } | undefined,
+  maxRows: number | undefined,
+): readonly ReactElement[] {
+  if (maxRows === undefined)
+    return panel === undefined ? toolRows : [...toolRows, panel.header, ...panel.body];
+  let room = Math.max(0, maxRows);
+  const tools = toolRows.slice(Math.max(0, toolRows.length - room));
+  room -= tools.length;
+  if (panel === undefined || room < 1) return tools;
+  room -= 1; // the panel's header
+  const body = room > 0 ? panel.body.slice(Math.max(0, panel.body.length - room)) : [];
+  return [...tools, panel.header, ...body];
+}
+
+/** The colour of a row of the in-flight turn above a docked sheet: the prompt block's own for the same row (warnings and tool lines amber). */
+function dockedTone(tone: DockedTurnRow['tone'], color: boolean): Partial<TextProps> {
+  return tone === 'warning' || tone === 'tool' ? colorProps(color, 'yellow') : dimProps(color);
+}
+
+/**
+ * The in-flight turn while a sheet is docked ([ADR-0147](../../../../../docs/decisions/0147-a-system-started-question-is-a-sheet-with-a-frame-and-a-wait-clock.md)
+ * §1, ADR-0129 "the conversation visible above it"): the lead row's warnings, and while the turn runs its tool-call lines with their outcomes,
+ * the reasoning panel and the interrupt note ({@link dockedTurnRows}), never the busy line. Bounded by the rows the conversation keeps above the
+ * largest sheet ({@link sheetTranscriptRows}), the newest kept, so the sheet keeps its rows; in the full-screen frame it stands at the bottom of
+ * the conversation's flex region, and the transcript above it takes what is left. It stands on the grid (unit 9) as the live region does: a tool
+ * call's row has the host's mark in the margin and the call's words in the content column ({@link MarginRow}), every other row is the content
+ * column's, and the rows are cut at the content column's width; the row budget is the sheet's and does not move.
+ */
+function DockedTurn(
+  props: Readonly<{
+    state: SessionViewState;
+    color: boolean;
+    running: boolean;
+    toolDisplays: ChatViewProps['toolDisplays'];
+    reasoning: ReasoningPanel | undefined;
+    interruptArmed: boolean;
+    host: ChatHost;
+    grid: ChatGrid;
+    /** The margin's form: the glyph full-screen, the role word inline ({@link marginFormFor}). */
+    marginForm: MarginForm;
+    /** The alternate screen's viewport rows (the terminal's less the one its frame keeps free), absent inline. */
+    viewportRows: number | undefined;
+    /** The terminal's rows as the host reports them (inline), absent when it does not. */
+    terminalRows: number | undefined;
+  }>,
+): ReactElement | null {
+  const { state, running } = props;
+  const terminalRows =
+    props.viewportRows === undefined ? props.terminalRows : props.viewportRows + 1;
+  const calls = running
+    ? state.liveToolCalls.filter((call) => state.liveObserver !== true || !call.resolved)
+    : [];
+  const rows = withGlyphForm(!props.color, () =>
+    dockedTurnRows({
+      warnings: state.warnings,
+      toolLines: calls.map((call) =>
+        screenText(toolCallText(call, props.toolDisplays?.get(call.id))),
+      ),
+      reasoning: running ? props.reasoning : undefined,
+      interrupt:
+        running && props.interruptArmed
+          ? legend([{ text: 'Interrupting' }], leavesAgain(props.host))
+          : undefined,
+      columns: props.grid.content,
+      maxRows: sheetTranscriptRows(terminalRows ?? DOCKED_FALLBACK_ROWS),
+    }),
+  );
+  if (rows.length === 0) return null;
+  return (
+    <Box flexDirection="column" flexShrink={0}>
+      {rows.map((row, index) => (
+        <DockedRow
+          key={index}
+          row={row}
+          color={props.color}
+          grid={props.grid}
+          marginForm={props.marginForm}
+        />
+      ))}
+    </Box>
+  );
+}
+
+/** One row of the in-flight turn above a docked sheet: a tool call's through {@link MarginRow} (the mark in the margin), every other in the content column. */
+function DockedRow(
+  props: Readonly<{ row: DockedTurnRow; color: boolean; grid: ChatGrid; marginForm: MarginForm }>,
+): ReactElement {
+  const tone = dockedTone(props.row.tone, props.color);
+  const text = (
+    <Text wrap="truncate-end" {...tone}>
+      {props.row.text}
+    </Text>
+  );
+  if (props.row.tone === 'tool')
+    return (
+      <MarginRow role="toolCall" grid={props.grid} form={props.marginForm} mark={tone}>
+        {text}
+      </MarginRow>
+    );
+  return (
+    <ContentColumn grid={props.grid} budget="content">
+      {text}
+    </ContentColumn>
+  );
+}
+
+/** The terminal height the docked turn is bounded for when a host does not say (the product's floor). */
+const DOCKED_FALLBACK_ROWS = 24;
 
 /** Preserve explicit native widths that Ink's fallback would normalize to 80. */
 function useRawTerminalColumns(): number | undefined {
@@ -705,7 +1539,114 @@ function useRawTerminalColumns(): number | undefined {
 }
 
 const subscribeNoPrompt = (): (() => void) => () => undefined;
+const NO_PROMPT: NativePromptSnapshot = {
+  active: false,
+  kind: 'idle',
+  message: '',
+  note: '',
+  options: [],
+  selected: 0,
+  display: '',
+  error: '',
+  escape: 'cancel',
+  details: [],
+};
+const noPrompt = (): NativePromptSnapshot => NO_PROMPT;
+const CLOSED_POPUPS: PopupHostSnapshot = {
+  open: false,
+  depth: 0,
+  placement: 'overlay',
+  frame: undefined,
+};
+const closedPopupsSnapshot = (): PopupHostSnapshot => CLOSED_POPUPS;
+const NO_NOTIFICATION: NotificationSnapshot = { current: undefined, queued: 0, held: false };
+const noNotificationSnapshot = (): NotificationSnapshot => NO_NOTIFICATION;
 
+/**
+ * The composer as a host hands it to its view (ADR-0148 §2, one owner of the keys): while the slot draws a popup the keys are the popup's, so
+ * the composer's cursor block is not drawn (a lit cursor beside a popup says the composer takes keys it does not), and its text stays as it is;
+ * once the popup closes the cursor is back where it was. `promptRows` places the cursor only on a row whose span holds its offset, so an offset
+ * before the text places it on none. The Home's body takes its composer this way; the chat says the same thing with `ChatView`'s `composerCursor`.
+ */
+export function composerEditor(editor: EditorState, drawing: SlotDrawing | undefined): EditorState {
+  return drawing === undefined ? editor : { text: editor.text, cursor: -1 };
+}
+
+/**
+ * Whether a sheet docked below the chat is open (OB7-L2, ADR-0147 §1): an approval or command card, the agent's question, or the continue
+ * checkpoint. Each draws its own legend and owns the keyboard, and it takes the prompt block's place (`ChatViewProps.cardDocked`): the two legends
+ * disagreed about what `Esc` and `Ctrl+C` do. The card's full view and the details screen take the whole screen (the view is hidden then), and a
+ * popup is drawn over the view with its own legend row, so neither is among them.
+ */
+export function dockedCardOpen(
+  flags: Pick<OverlayFlags, 'approval' | 'question' | 'checkpoint'>,
+): boolean {
+  return flags.approval || flags.question || flags.checkpoint;
+}
+
+/**
+ * The notification a host's hint row draws (ADR-0148 §2 "Notifications"): none while the slot draws an overlay popup, which draws it in its own
+ * legend row (the hint row around the box would otherwise repeat it, dimmed, at the popup's edges); otherwise the channel's current one. An
+ * inline popup replaces the body, hint row included, so it needs no exception here; once the popup closes the hint row shows the notification as
+ * before.
+ */
+export function hintRowNotification(
+  current: string | undefined,
+  drawing: SlotDrawing | undefined,
+): string | undefined {
+  // A notification can name what a person or a project wrote (a path, a name): it goes through the screen's filter like every other row.
+  return drawing?.placement === 'overlay' || current === undefined
+    ? undefined
+    : screenText(current);
+}
+
+/**
+ * The kinds of sheet a stand-alone chat has (its store's cards, its native prompt channel) and how to follow them, for {@link bindPopupHost}:
+ * a sheet of either kind that ARRIVES over a popup closes it unanswered (ADR-0148 §2: the sheet wins, nothing is restored). A card that was
+ * already there when a popup opened (a race the open gate refuses) does not close it: its custody is revoked and its evidence reset instead.
+ */
+export function chatSheetSources(
+  store: Pick<ChatStoreController, 'getSnapshot' | 'subscribe'>,
+  native: Pick<NativePromptUi, 'getSnapshot' | 'subscribe'> | undefined,
+): PopupSheetSources<'card' | 'native'> {
+  return {
+    present: () => {
+      const cards = cardFlagsFrom(store.getSnapshot());
+      return {
+        card: cards.approval || cards.question || cards.checkpoint,
+        native: native?.getSnapshot().active === true,
+      };
+    },
+    subscribe: (onChange) => {
+      const stopStore = store.subscribe(onChange);
+      const stopNative = native?.subscribe(onChange);
+      return () => {
+        stopStore();
+        stopNative?.();
+      };
+    },
+  };
+}
+
+/**
+ * Why a popup may not open in a stand-alone chat now (ADR-0148 §2), or `undefined`: the one refusal (`popup-refusal.ts`) over this chat's facts.
+ * A card is open (an approval or its review, a question, a checkpoint), a native card is, a turn, a submit or a `!` command runs, the interrupt
+ * keymap is armed, or another overlay owns the keyboard. A stand-alone chat is never starting and has no native action.
+ */
+export function chatPopupRefusal(facts: {
+  readonly overlays: OverlayFlags;
+  readonly turn: TurnFacts;
+  readonly interruptArmed: boolean;
+}): PopupRefusal | undefined {
+  const { overlays } = facts;
+  return popupRefusal({
+    cards: overlays.approval || overlays.review || overlays.question || overlays.checkpoint,
+    sheet: overlays.nativePrompt,
+    turn: facts.turn,
+    armed: facts.interruptArmed,
+    overlay: overlayOwnsKeyboard(overlays),
+  });
+}
 export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   const clipboardFeedbackMounted = useRef(true);
   useLayoutEffect(() => {
@@ -714,12 +1655,59 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       clipboardFeedbackMounted.current = false;
     };
   }, []);
-  const nativeActive = useSyncExternalStore(
+  const nativeSnapshot = useSyncExternalStore(
     props.modePrompt?.ui.subscribe ?? subscribeNoPrompt,
-    () => props.modePrompt?.ui.getSnapshot().active === true,
+    props.modePrompt?.ui.getSnapshot ?? noPrompt,
   );
+  const nativeActive = nativeSnapshot.active;
+  /** Where a popup is drawn on this renderer: over the chat in the alternate screen, in its place inline (ADR-0148 §4). */
+  const placement: PopupPlacement = props.alternateScreen === true ? 'overlay' : 'replace';
+  // One notification channel and one popup host per chat, on the store's key history (ADR-0148 §2), unless the driver gave them.
+  const [ownNotifications] = useState<NotificationChannel | undefined>(() =>
+    props.notifications === undefined ? createNotificationChannel() : undefined,
+  );
+  const notifications = props.notifications ?? ownNotifications;
+  const [ownPopups] = useState<PopupHost | undefined>(() =>
+    props.popups === undefined
+      ? createPopupHost({ history: props.store.keyHistory, notifications, placement })
+      : undefined,
+  );
+  const popups: PopupHost | undefined = props.popups ?? ownPopups;
+  useEffect(
+    () => () => {
+      ownPopups?.dispose();
+      ownNotifications?.dispose();
+    },
+    [ownPopups, ownNotifications],
+  );
+  // The session's announcements (its typed settings, its mode control and its settings popups) are THIS chat's own notifications while it is
+  // mounted (ADR-0148 §2, §6): raised with no popup as their source, so a setting's word outlives the popup that applied it, and never written
+  // into the transcript. Unbound when the chat unmounts (a `/clear` or a reseat mounts the next chat, which binds its own).
+  const setAnnouncer = props.setAnnouncer;
+  useLayoutEffect(() => {
+    if (setAnnouncer === undefined || notifications === undefined) return;
+    setAnnouncer((text, topic) => {
+      notifications.notify(text, undefined, topic);
+    });
+    return () => {
+      setAnnouncer(undefined);
+    };
+  }, [setAnnouncer, notifications]);
+  const popupSnapshot = useSyncExternalStore(
+    popups?.subscribe ?? subscribeNoPrompt,
+    popups?.getSnapshot ?? closedPopupsSnapshot,
+  );
+  const notification = useSyncExternalStore(
+    notifications?.subscribe ?? subscribeNoPrompt,
+    notifications?.getSnapshot ?? noNotificationSnapshot,
+  );
+  /** A popup is open and no native prompt is over it: this root's reader routes its keys (the native prompt has its own reader). */
+  const popupReads = (): boolean =>
+    props.inputEnabled?.() !== false &&
+    popups?.getSnapshot().open === true &&
+    props.modePrompt?.ui.getSnapshot().active !== true;
   const acceptsInput = (): boolean =>
-    props.inputEnabled?.() !== false && props.modePrompt?.ui.getSnapshot().active !== true;
+    props.inputEnabled?.() !== false && holdsCustody(liveOverlays());
   const storeRef = useRef(props.store);
   storeRef.current = props.store;
   const [acknowledgement] = useState(() => createTranscriptAcknowledgement(() => storeRef.current));
@@ -748,6 +1736,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     const value = next(editorRef.current);
     editorRef.current = value;
     setEditor(value);
+    keepNamedAttachments(value.text);
   };
   const cancelFired = useRef(false);
   // The one interrupt keymap (ADR-0115 §1). `interruptRef` is its whole state (when it was armed, on the monotonic clock);
@@ -825,11 +1814,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // keeps it in HomeControllerState); both surfaces drive the SAME foldPaletteKey + render the SAME PaletteView.
   // A ref SHADOW (like `editorRef`) keeps the latest value across a COALESCED stdin chunk — ink fires every event
   // in one chunk synchronously with no render flush, so reading the render-closure `palette` would be stale (a
-  // close/select in event A would not be seen by a same-chunk event B, re-opening the palette). `applyPalette`
-  // keeps the ref in lockstep with state; the input handler reads `paletteRef.current`, the render reads `palette`.
-  const [palette, setPalette] = useState<PaletteState | undefined>(undefined);
-  const paletteRef = useRef<PaletteState | undefined>(undefined);
-  const applyPalette = (next: PaletteState | undefined): void => {
+  // close/select in event A would not be seen by a same-chunk event B, re-opening the palette). `applyPalette` keeps the ref in
+  // lockstep with state; the input handler reads `paletteRef.current`, the render reads `palette`. The palette is ONE value, its state and the
+  // rows that state reads (MVP-11 Step 2.2: built once per change, shared by the key fold and the view), so the two cannot be stored apart.
+  const [palette, setPalette] = useState<OpenPalette | undefined>(undefined);
+  const paletteRef = useRef<OpenPalette | undefined>(undefined);
+  const applyPalette = (next: OpenPalette | undefined): void => {
     paletteRef.current = next;
     setPalette(next);
   };
@@ -854,33 +1844,106 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     mentionRef.current = next;
     setMention(next);
   };
-  // The `/models` reseat picker overlay (ADR-0059) — a keyboard-owning submode (like the palette/mention/search),
-  // React-local + ref-shadowed so a coalesced stdin chunk sees a just-applied open/close/accept. A monotonic epoch
-  // drops a stale async refresh whose picker has since closed/reopened (the Home controller's `pickerEpoch` pattern).
-  const [modelPicker, setModelPicker] = useState<ModelPickerState | undefined>(undefined);
-  const modelPickerRef = useRef<ModelPickerState | undefined>(undefined);
-  const applyModelPicker = (next: ModelPickerState | undefined): void => {
-    modelPickerRef.current = next;
-    setModelPicker(next);
-  };
-  const pickerEpochRef = useRef(0);
-  // The standalone `/effort` overlay (ADR-0066 §6) — a keyboard-owning submode like `/models`, ref-shadowed so a
-  // coalesced stdin chunk sees a just-applied open/close/accept. Opened only on a reasoning-capable bound model.
-  const [effortPicker, setEffortPicker] = useState<EffortPickerState | undefined>(undefined);
-  const effortPickerRef = useRef<EffortPickerState | undefined>(undefined);
-  const applyEffortPicker = (next: EffortPickerState | undefined): void => {
-    effortPickerRef.current = next;
-    setEffortPicker(next);
-  };
-  // The chat's docked sheet (ADR-0137 §2 `/permissions`, ADR-0140 §3 `/agent`) — ONE slot, a keyboard-owning submode like `/effort`,
-  // ref-shadowed so a coalesced stdin chunk sees a just-applied open, arm, withdraw or close. Opened only at an idle prompt, so no card can
-  // arrive while it is open, and holding one value, so two sheets cannot be open at once.
-  const [chatSheet, setChatSheet] = useState<ChatSheetState | undefined>(undefined);
-  const chatSheetRef = useRef<ChatSheetState | undefined>(undefined);
-  const applyChatSheet = (next: ChatSheetState | undefined): void => {
-    chatSheetRef.current = next;
-    setChatSheet(next);
-  };
+  // What owns the keyboard (`overlay-flags.ts`), built in ONE place from the values given: the refs in a handler (a coalesced stdin chunk
+  // sees what an earlier key of the same chunk just opened) and React's state at a render. A stand-alone chat has no screen, no exit-guard
+  // card and no native action, so those three are written out as `false` (never defaulted: a flag added to the record must be decided here
+  // too); the cards are the store's, read now, and the native prompt is the channel's.
+  const overlayFlagsFrom = (
+    open: Readonly<{
+      palette: unknown;
+      search: unknown;
+      mention: unknown;
+    }>,
+    prompt: NativePromptSnapshot,
+    popup: PopupHostSnapshot,
+  ): OverlayFlags => ({
+    palette: open.palette !== undefined,
+    search: open.search !== undefined,
+    mention: open.mention !== undefined,
+    screen: false,
+    exitGuard: false,
+    nativePrompt: prompt.active,
+    popup: popup.open,
+    // A native card takes the chat's rows (it is drawn in its place); a prompt drawn as a popup, and a popup, only as a block in the flow.
+    replacesBody:
+      (prompt.active && (!nativeFramed(prompt) || placement === 'replace')) ||
+      (popup.open && popup.placement === 'replace'),
+    nativeActionBusy: false,
+    ...cardFlagsFrom(props.store.getSnapshot()),
+  });
+  const liveOverlays = (): OverlayFlags =>
+    overlayFlagsFrom(
+      {
+        palette: paletteRef.current,
+        search: searchRef.current,
+        mention: mentionRef.current,
+      },
+      props.modePrompt?.ui.getSnapshot() ?? NO_PROMPT,
+      popups?.getSnapshot() ?? closedPopupsSnapshot(),
+    );
+  /** What is in flight in this chat now, read from the store and the refs (a coalesced chunk sees what an earlier key of it just started). */
+  const liveTurnFacts = (): TurnFacts => ({
+    running: props.store.getSnapshot().state.status === 'running',
+    shellBusy: shellBusyRef.current,
+    submitBusy: submitBusyRef.current,
+  });
+  const renderedOverlays = overlayFlagsFrom(
+    { palette, search, mention },
+    nativeSnapshot,
+    popupSnapshot,
+  );
+  // ---- The popup (ADR-0148 §2) ----------------------------------------------------------------------------------------------------
+  const { stdout } = useStdout();
+  const terminalSize = (): { cols: number; rows: number } => ({
+    cols: stdout.columns,
+    rows: stdout.rows,
+  });
+  const terminalOwned = (): boolean =>
+    props.inputEnabled?.() !== false &&
+    props.suspendPort?.isSuspended() !== true &&
+    stdout.writable !== false &&
+    !stdout.destroyed &&
+    !stdout.writableEnded;
+  // The native prompt's acknowledgement, held here so the card (its own reader's view) and a prompt drawn as a popup (the slot) share it.
+  const [nativeAcknowledgement] = useState(() =>
+    props.modePrompt === undefined
+      ? undefined
+      : createNativePromptAcknowledgement(props.modePrompt.ui, terminalSize, terminalOwned),
+  );
+  // The popup's evidence: its content node, exactly the geometry's, measured and flushed while no native prompt is over it.
+  const [popupAcknowledgement] = useState(() =>
+    popups === undefined
+      ? undefined
+      : createPopupAcknowledgement<PopupHostSnapshot>({
+          current: popups.getSnapshot,
+          getSize: terminalSize,
+          hasCustody: () => terminalOwned() && props.modePrompt?.ui.getSnapshot().active !== true,
+          shown: (snapshot) => popups.shown(snapshot),
+        }),
+  );
+  useEffect(() => {
+    if (popups === undefined || popupAcknowledgement === undefined) return;
+    return bindPopupHost({
+      popups,
+      acknowledgement: popupAcknowledgement,
+      // The opening rules (ADR-0148 §2), read now: no card, no native card, no turn or submit, nothing armed, no other overlay.
+      gate: () =>
+        chatPopupRefusal({
+          overlays: liveOverlays(),
+          turn: liveTurnFacts(),
+          interruptArmed: interruptRef.current.armedAt !== undefined,
+        }),
+      // A popup that opens over a card (a race) resets the card's acknowledgement and dwell origin, synchronously.
+      onRevoke: () => {
+        props.store.invalidateToolReview();
+        nativeAcknowledgement?.invalidate();
+      },
+      // A sheet that ARRIVES over a popup wins: the popup closes unanswered.
+      watchSheets: chatSheetSources(props.store, props.modePrompt?.ui),
+    });
+    // `liveOverlays` reads refs and the store at the call; the subscriptions are bound once per host.
+  }, [popups, popupAcknowledgement, nativeAcknowledgement, props.store, props.modePrompt]);
+  useEffect(() => () => nativeAcknowledgement?.dispose(), [nativeAcknowledgement]);
   // A monotonic submit generation: bumped every time the compose buffer is submitted (cleared). An async mention
   // read captures it at accept time and DROPS its inject if a submit has since happened — so a slow read that
   // resolves after Enter can never splice the file into the (now-empty) buffer meant for the NEXT message.
@@ -918,10 +1981,22 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // file entry per path (dedup).
   const [attachments, setAttachments] = useState<readonly PendingAttachment[]>([]);
   const attachmentsRef = useRef<readonly PendingAttachment[]>([]);
+  // The list is the attachments the draft still names (`attachmentsOfDraft`, the Home's own rule; round 2 sitting #3): pruned on every
+  // change to the list here and on every edit of the draft (`applyEditor`), so a file whose marker left the draft is gone for good, the chip
+  // bar shows what the next send carries, and a marker typed or pasted later is plain text.
   const applyAttachments = (next: readonly PendingAttachment[]): void => {
-    attachmentsRef.current = next;
-    setAttachments(next);
+    const kept = attachmentsOfDraft(editorRef.current.text, next);
+    attachmentsRef.current = kept;
+    setAttachments(kept);
   };
+  const keepNamedAttachments = (draft: string): void => {
+    const pending = attachmentsRef.current;
+    if (pending.length === 0) return;
+    const kept = attachmentsOfDraft(draft, pending);
+    if (kept !== pending) applyAttachments(kept);
+  };
+  // A held `Enter` that chose a file in the `@` picker sends nothing (`PickEnterLock`, shared with the Home's controller).
+  const [pickEnter] = useState(createPickEnterLock);
   const addAttachment = (a: PendingAttachment): void => {
     const { list, dropped } = appendAttachment(attachmentsRef.current, a);
     applyAttachments(list);
@@ -1039,268 +2114,20 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     );
   };
 
-  // ---- The `/models` reseat picker overlay (ADR-0059) — mirrors the Home controller's picker functions --------
-  // Apply a refresh result INTO the same picker generation that kicked it (drop a stale/closed/reopened one via the
-  // epoch); keep the user's filter/selection, surface the per-provider partial-failure banner. Never crash the REPL.
-  const applyPickerRefresh = (epoch: number, report: RefreshReport | undefined): void => {
-    if (!acceptsInput()) return;
-    const port = props.modelPicker;
-    const open = modelPickerRef.current;
-    if (epoch !== pickerEpochRef.current || open === undefined || port === undefined) return;
-    const failed =
-      report?.providers.filter((p) => p.status === 'failed').map((p) => p.provider) ?? [];
-    let view: ReturnType<ChatModelsPort['load']>;
-    try {
-      view = port.load(); // a DB read — never crash the REPL (parity with the Home)
-    } catch {
-      applyModelPicker({ ...open, loading: false, banner: partialFailureBanner(failed) });
-      return;
-    }
-    applyModelPicker({
-      ...open,
-      entries: view.entries,
-      refreshedAt: view.refreshedAt,
-      loading: false,
-      banner: partialFailureBanner(failed),
-    });
-  };
-  const runPickerRefresh = (refresh: () => Promise<RefreshReport | undefined>): void => {
-    if (!acceptsInput()) return;
-    const epoch = pickerEpochRef.current; // capture THIS generation so a reopened picker never adopts this result
-    const open = modelPickerRef.current;
-    if (open === undefined) return;
-    applyModelPicker({ ...open, loading: true });
-    void refresh().then(
-      (report) => applyPickerRefresh(epoch, report),
-      () => {
-        // Owner refusal rejects; never publish after input admission has sealed.
-        const cur = modelPickerRef.current;
-        if (acceptsInput() && epoch === pickerEpochRef.current && cur !== undefined)
-          applyModelPicker({ ...cur, loading: false });
-      },
-    );
-  };
-  // Open the picker on a typed `/models` (interactive only — the port is present): render the cached catalog
-  // synchronously (the ✓ is the session's BOUND model — the reseat "you are here"), then kick a TTL-bounded refresh.
-  const openModelPicker = (): void => {
-    const port = props.modelPicker;
-    if (port === undefined) return;
-    let view: ReturnType<ChatModelsPort['load']>;
-    try {
-      view = port.load(); // a DB read — a fault must not crash the REPL (the "never crash the REPL" discipline)
-    } catch {
-      props.store.note('/models: could not read the model catalog.');
-      return;
-    }
-    pickerEpochRef.current += 1; // a fresh generation — invalidates any in-flight refresh from a prior (closed) open
-    applyModelPicker({
-      entries: view.entries,
-      filter: '',
-      selected: 0,
-      loading: false,
-      currentDefault: port.boundModel,
-      refreshedAt: view.refreshedAt,
-      banner: undefined,
-      hint: undefined,
-      // ADR-0066: offer the effort sub-step when the setter is wired (interactive). `currentEffort` reads the LIVE
-      // store tier (not a stale build-time value), so after a no-reseat `/effort` change the sub-list opens on it.
-      phase: 'model',
-      effortStep: props.onSetEffort !== undefined,
-      pending: undefined,
-      effortTiers: [], // no model pending yet — populated on the model→effort transition
-      effortSelected: 0,
-      currentEffort: props.store.getSnapshot().reasoningEffort,
-    });
-    runPickerRefresh(() => port.refreshIfStale());
-  };
-  // A DIMMED (unavailable) model's actionable hint (ADR-0064 §6) — a keyless provider names the remedy, else the
-  // pre-existing "not on your key" note.
-  const blockedHint = (step: Extract<ModelPickerStep, { kind: 'blocked' }>): string =>
-    step.reason === 'no-key'
-      ? `${step.displayName}: no key for ${step.provider} — run \`relavium provider set-key ${step.provider}\``
-      : `${step.displayName} is not available on your key — pick another`;
-
-  // Act on an accepted pick. A SAME-model pick is an effort-only change (ADR-0066 §5) — a per-turn SESSION override
-  // (no reseat, no teardown/approval-wipe/MCP-reconnect/context-loss); a re-pick of the same tier (or a non-reasoning
-  // model with no tier) is a gentle no-op. A DIFFERENT-model pick is a live reseat (ADR-0059) carrying the chosen
-  // effort, then ends the driver loop so runReplLoop rebuilds on the new model.
-  const acceptModelPick = (
-    step: Extract<ModelPickerStep, { kind: 'accept' }>,
-    open: ModelPickerState,
-  ): void => {
-    if (!acceptsInput()) return;
-    if (step.modelId === open.currentDefault) {
-      if (step.reasoningEffort === undefined || step.reasoningEffort === open.currentEffort) {
-        const at =
-          step.reasoningEffort === undefined
-            ? ''
-            : ` at effort ${effortRowLabel(step.modelId, step.reasoningEffort).label}`;
-        props.store.note(`Already on ${step.displayName}${at}.`);
-      } else {
-        const label = effortRowLabel(step.modelId, step.reasoningEffort).label;
-        props.onSetEffort?.(step.reasoningEffort);
-        props.store.note(`Reasoning effort set to ${label} — applies to your next message.`);
-      }
-      return;
-    }
-    // DIFFERENT model: a live reseat — only when `onReseat` is actually wired. Without it (a driver/test with the
-    // picker but no reseat support), do NOT call `onExit()` — that would close the chat WITHOUT applying the switch;
-    // the pick is simply dropped (defensive — production always wires `onReseat` alongside the picker).
-    if (props.onReseat === undefined) return;
-    props.onReseat({
-      modelId: step.modelId,
-      provider: step.provider,
-      ...(step.reasoningEffort === undefined ? {} : { reasoningEffort: step.reasoningEffort }),
-    });
-    props.onExit(); // the reseat set the stop state; end the loop so runReplLoop swaps in the new-model session
-  };
-
-  // The open picker owns every key (mirrors routeMentionKey). Route the fold's step; the accept/blocked cases
-  // delegate to the helpers above.
-  const routeModelPickerKey = (char: string, key: ModelPickerKey): void => {
-    const open = modelPickerRef.current;
-    if (open === undefined) return;
-    const step = foldModelPickerKey(char, key, open);
-    switch (step.kind) {
-      case 'close':
-        applyModelPicker(undefined);
-        return;
-      case 'accept':
-        applyModelPicker(undefined);
-        acceptModelPick(step, open);
-        return;
-      case 'blocked':
-        applyModelPicker({ ...open, hint: blockedHint(step) });
-        return;
-      case 'refresh':
-        runPickerRefresh(() => props.modelPicker?.refresh() ?? Promise.resolve(undefined));
-        return;
-      case 'state':
-        // Clear the transient hint only on a REAL interaction — the fold returns the SAME state ref for an inert key.
-        applyModelPicker(step.state === open ? open : { ...step.state, hint: undefined });
-        return;
-      default: {
-        const exhaustive: never = step;
-        return exhaustive;
-      }
-    }
-  };
-
-  // ---- The standalone `/effort` overlay (ADR-0066 §6) — interactive tier selection (no reseat) ----------------
-  // Open on the LIVE bound model + the LIVE store tier (so it opens on the currently-bound effort). The caller
-  // (submit) gates this on a reasoning-capable model + a wired setter, so opening here is unconditional.
-  const openEffortPicker = (): void => {
-    const snap = props.store.getSnapshot();
-    if (snap.state.model === undefined) return; // defensive — submit only opens on a bound reasoning-capable model
-    applyEffortPicker(initialEffortPickerState(snap.state.model, snap.reasoningEffort));
-  };
-  // The open effort overlay owns every key (mirrors routeModelPickerKey). Accept applies the tier via the per-turn
-  // setter (no reseat); a re-pick of the same tier is a gentle no-op with visible store feedback.
-  const routeEffortPickerKey = (char: string, key: ModelPickerKey): void => {
-    const open = effortPickerRef.current;
-    if (open === undefined) return;
-    const step = foldEffortPickerKey(char, key, open);
-    switch (step.kind) {
-      case 'close':
-        applyEffortPicker(undefined);
-        return;
-      case 'accept': {
-        applyEffortPicker(undefined);
-        const label = effortRowLabel(open.model, step.effort).label; // a budget model's `medium` reads "on"
-        if (step.effort === open.current) {
-          props.store.note(`Already at reasoning effort ${label}.`);
-        } else {
-          props.onSetEffort?.(step.effort);
-          props.store.note(`Reasoning effort set to ${label} — applies to your next message.`);
-        }
-        return;
-      }
-      case 'state':
-        applyEffortPicker(step.state);
-        return;
-      default: {
-        const exhaustive: never = step;
-        return exhaustive;
-      }
-    }
-  };
-
-  // ---- The docked sheets: `/permissions` (ADR-0137 §2) and `/agent` (ADR-0140 §3) --------------------------------------------
-  /** Whether a sheet may open now: an idle prompt, with no turn running and no card pending (a card would compete for the keyboard). */
-  const sheetMayOpen = (): boolean => {
-    const snap = props.store.getSnapshot();
-    return !(
-      snap.state.status === 'running' ||
-      snap.review !== undefined ||
-      snap.question !== undefined ||
-      snap.checkpoint !== undefined ||
-      snap.approval !== undefined
-    );
-  };
-  // Open on the data read NOW, in the chat's current mode. The caller (submit) gates this on a wired port and an idle prompt.
-  const openPermissionsSheet = (): void => {
-    const port = props.permissions;
-    if (port === undefined || !sheetMayOpen()) return;
-    // The port promises not to throw, but a defect in it must not take the prompt down with it: the sheet simply does not open.
-    const opened = openPermissionsSheetThroughPort(
-      port,
-      props.store.getSnapshot().mode,
-      performance.now(),
-    );
-    if (opened.sheet === undefined) props.store.note(opened.note);
-    else applyChatSheet(permissionsChatSheet(opened.sheet));
-  };
-  // The bound agent's sheet: the definition the session holds, nothing read, nothing written. A defect in the view's builder must not
-  // take the prompt down with it either: the sheet does not open, and the chat says so.
-  const openAgentSheet = (): void => {
-    const view = props.boundAgent;
-    if (view === undefined || !sheetMayOpen()) return;
-    try {
-      applyChatSheet(agentChatSheet(view()));
-    } catch {
-      props.store.note(AGENT_UNREADABLE);
-    }
-  };
-  // The open sheet owns every key. A permissions withdrawal is carried out through the port (the store is read again there) and the
-  // sheet is reloaded with the answer; the port never throws, but a defect there must not leave the keyboard owned by a frozen sheet. The
-  // agent sheet is read-only: `Esc` and `Ctrl+C` close it and every other key is dropped.
-  const routeChatSheetKey = (char: string, key: ModelPickerKey): void => {
-    const open = chatSheetRef.current;
-    if (open === undefined) return;
-    if (open.kind === 'agent') {
-      if (foldAgentSheetKey(char, key) === 'close') applyChatSheet(undefined);
-      return;
-    }
-    const port = props.permissions;
-    if (port === undefined) {
-      applyChatSheet(undefined);
-      return;
-    }
-    const canArm = sheetCanArm({ columns: windowSize.columns, terminalRows: windowSize.rows });
-    const result = foldPermissionsSheetThroughPort(
-      port,
-      open.sheet,
-      char,
-      key,
-      canArm,
-      performance.now(),
-    );
-    applyChatSheet(result.sheet === undefined ? undefined : permissionsChatSheet(result.sheet));
-    if (result.note !== undefined) props.store.note(result.note);
-  };
-  // A card (or any approval) that arrives while the sheet is open wins: the sheet closes with its question dropped. The sheet opens only
-  // when nothing is pending, so this is a defence for a host that lets one arrive, not a path the product takes.
-  useEffect(() => {
-    if (chatSheetRef.current === undefined) return;
-    const snap = props.store.getSnapshot();
-    if (
-      snap.review !== undefined ||
-      snap.question !== undefined ||
-      snap.checkpoint !== undefined ||
-      snap.approval !== undefined
-    )
-      applyChatSheet(undefined);
-  });
+  // ---- `/models` (ADR-0148 §3, §6; ADR-0059) -------------------------------------------------------------------------------------------
+  // The session's `/models` member with THIS chat's switch bound (the one binding, `bindModelSwitch`): `This chat` with another model asks
+  // for the reseat (`onReseat` records the target and the stop state) and ends the driver, so `runReplLoop` rebuilds on the new model with
+  // the model-switch marker as its first entry. Nothing is switched once input is sealed (the chat is closing). With no `onReseat` the
+  // member is withdrawn, and a typed `/models` is dispatched.
+  const reseatHere =
+    props.onReseat === undefined
+      ? undefined
+      : (target: ReseatTarget): void => {
+          if (!acceptsInput()) return;
+          props.onReseat?.(target);
+          props.onExit(); // the reseat set the stop state; end the loop so runReplLoop swaps in the new-model session
+        };
+  const settingsPort = bindModelSwitch(props.settings, reseatHere);
 
   // Attach ink's `suspendTerminal` to the ADR-0068 §e port while this tree is mounted (2.6.F Step 5d). `useApp()` is
   // the only place it exists, and the slash dispatch that runs `/scrollback` / `/edit` lives outside React — so the
@@ -1310,50 +2137,77 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // off the prototype, so this form is immune to how the context object is shaped.
   const app = useApp();
   const suspendPort = props.suspendPort;
+  // Bumped once a suspension is over: one render then commits an open popup's frame again (see below).
+  const [, setReclaimed] = useState(0);
   useEffect(() => {
     if (suspendPort === undefined) return;
     suspendPort.attach(async (callback) => {
       props.store.invalidateToolReview();
+      popupAcknowledgement?.invalidate();
       try {
         await app.suspendTerminal(callback);
       } finally {
         // Reclaim requires new measured, flushed evidence; pre-suspend reveal never survives.
         props.store.invalidateToolReview();
+        // The renderer redraws its last output on resume but commits nothing, so an open popup's frame would never be measured again and every
+        // key but `Esc` and `Ctrl+C` would stay dropped as unseen: one render commits it anew, and its acknowledgement (flushed after the
+        // terminal is ours again) is new evidence, its dwell counted from it.
+        popupAcknowledgement?.invalidate();
+        setReclaimed((count) => count + 1);
       }
     });
     return () => suspendPort.attach(undefined);
-  }, [app, suspendPort, props.store]);
+  }, [app, suspendPort, props.store, popupAcknowledgement]);
+
+  /**
+   * The chat's one open adapter (ADR-0148 §2): the popup `route` names, on this chat's popup host with this chat's port. The popup's code is
+   * loaded on first use, and a load that fails is a fault of the chat (`onError`), never swallowed.
+   */
+  const openPopupRoute = (host: PopupHost, route: PopupRoute): void => {
+    let opening: Promise<void> | undefined;
+    if (route.kind === 'doctor') {
+      if (props.doctor !== undefined)
+        opening = openDoctor({ host, port: props.doctor, deep: route.deep, origin: 'chat' });
+    } else if (route.kind === 'settings') {
+      if (settingsPort !== undefined)
+        opening = openSettings({
+          host,
+          port: settingsPort,
+          command: route.command,
+          origin: 'chat',
+        });
+    } else if (props.reports !== undefined) {
+      opening = openReport({
+        host,
+        port: props.reports,
+        line: route.line,
+        origin: 'chat',
+        // The facts the open gate read, read again by the release at the moment of its answer: the one predicate over the same facts.
+        turnInFlight: () => turnInFlight(liveTurnFacts()),
+      });
+    }
+    void opening?.catch((cause: unknown) => {
+      props.onError(cause);
+    });
+  };
 
   const submit = (message: string, display?: string): void => {
     if (!acceptsInput()) return;
     if (!activationReady.current && message !== '/cancel' && message !== '/exit') return;
-    // A typed `/models` opens the reseat picker overlay (ADR-0059) instead of sending — interactive only (the port
-    // is wired). Covers a directly-typed `/models` AND a chat-palette selection (both route through `submit`).
-    if (props.modelPicker !== undefined && message.trim() === '/models') {
-      openModelPicker();
-      return;
-    }
-    // A typed (or palette-selected) bare `/effort` opens the interactive tier overlay (ADR-0066 §6) instead of the
-    // informational notice — but ONLY when the setter is wired AND the bound model is reasoning-capable; a
-    // non-reasoning model falls through to the dispatch, whose ctx handler prints the "no controllable tier" notice.
-    // `/effort <tier>` (with an arg) is NOT intercepted (exact match) — it dispatches and sets the tier directly.
-    if (
-      message.trim() === '/effort' &&
-      canControlEffort(props.store.getSnapshot().state.model, props.onSetEffort !== undefined)
-    ) {
-      openEffortPicker();
-      return;
-    }
-    // A typed (or palette-selected) bare `/permissions` opens the sheet (ADR-0137 §2) instead of dispatching, where the port is wired.
-    // `/permissions <anything>` is not intercepted: the dispatch rejects it as a command that takes no argument.
-    if (props.permissions !== undefined && message.trim() === '/permissions') {
-      openPermissionsSheet();
-      return;
-    }
-    // A typed (or palette-selected) bare `/agent` opens the bound agent's sheet (ADR-0140 §3) instead of dispatching, where the view is
-    // wired. `/agent <anything>` is not intercepted: the dispatch rejects it as a command that takes no argument.
-    if (props.boundAgent !== undefined && message.trim() === '/agent') {
-      openAgentSheet();
+    // `/doctor` (and `--deep`, ADR-0148 §8), `/agent`, `/cost` (and `--release`), `/workflows` and `/help` (§10) and the bare settings (`/effort`
+    // on a model with a tier to choose, `/models` where this chat can switch, §3 and §6) open their popup here, BEFORE the submit is marked in flight: the popup host's open gate reads
+    // a submit in flight as a turn, and this line is not one. Any other form (`/doctor now`, `/cost --force`) dispatches and is rejected there,
+    // and a setting with its value (`/effort high`) dispatches and applies it.
+    const route =
+      popups === undefined
+        ? undefined
+        : routePopupLine(message, {
+            doctor: props.doctor !== undefined,
+            reports: props.reports,
+            settings: settingsPort,
+          });
+    if (route !== undefined && popups !== undefined) {
+      openPopupRoute(popups, route);
       return;
     }
     // Mark the submit in flight so input is gated + the spinner runs for the WHOLE operation (streaming AND any
@@ -1387,11 +2241,20 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // in flight, no keyboard-owning overlay/submode, and NO pending approval (read FRESH from the store). This also
   // closes the standalone-chat paste gap — it never enabled DECSET 2004 before; usePaste enables it natively now.
   usePaste((text) => {
+    // A paste goes into a popup's text field or nowhere: never to the composer behind it.
+    if (popupReads()) {
+      popups?.paste(text);
+      return;
+    }
     if (!acceptsInput()) return;
     if (!activationReady.current) return;
-    const pasted = text.replace(/\r\n?/g, '\n');
-    if (pasted.length === 0) return;
+    // Line breaks normalised and control characters dropped, as a typed chunk is (`draftText`, MVP-11 unit 7 round 2: F6).
+    const pasted = draftText(text);
+    if (text.length === 0) return;
     disarmInterrupt();
+    pickEnter.typed(); // a paste is typing: the next `Enter` is the person's
+    props.store.noteForeignInput(); // ... and a `Ctrl+Y` or `Ctrl+G` right after it is not an answer (the guards' foreign-key evidence)
+    if (pasted.length === 0) return; // nothing but controls: a key that edits nothing
     const snap = props.store.getSnapshot();
     // An open `ask_user` card owns a paste (ADR-0132): it goes into the card's own-answer field or is dropped — never the composer.
     if (snap.question !== undefined) {
@@ -1402,19 +2265,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       running: snap.state.status === 'running',
       shellBusy: shellBusyRef.current,
       submitBusy: submitBusyRef.current,
-      paletteOpen: paletteRef.current !== undefined,
-      searchOpen: searchRef.current !== undefined,
-      mentionOpen: mentionRef.current !== undefined,
-      modelPickerOpen: modelPickerRef.current !== undefined,
-      effortPickerOpen: effortPickerRef.current !== undefined,
-      chatSheetOpen: chatSheetRef.current !== undefined,
-      approvalPending: snap.approval !== undefined || snap.review !== undefined,
+      ...pasteFlagsFrom(liveOverlays()),
     });
-    // A paste while the permissions sheet waits on a withdrawal drops the question: it is input the sheet does not answer to, so nothing is
-    // withdrawn. The agent sheet has no question to drop, and a paste changes nothing there.
-    const pastedOver = permissionsSheetOf(chatSheetRef.current);
-    if (pastedOver !== undefined)
-      applyChatSheet(permissionsChatSheet(disarmPermissionsSheet(pastedOver)));
     if (!editable) return;
     applyEditor((cur) => insertAtCursor(cur, pasted));
   });
@@ -1425,9 +2277,9 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
    * drag during a streaming turn reduces against the transcript as it is now, not as it was at the last commit.
    */
   const chatLiveGeom = (): ScrollGeometry =>
-    liveScrollGeometry(
+    transcriptScrollGeometry(
       props.store.getSnapshot().state.transcript,
-      windowSize.columns,
+      chatGrid(windowSize.columns), // the grid `ChatView` draws with: its viewport's columns are these
       scrollGeomRef.current.height,
       props.store.getSnapshot().color,
       props.store.getSnapshot().toolDisplays,
@@ -1476,14 +2328,16 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   const copySelection = (state: SelectionState): void => {
     const clipboard = props.clipboard;
     if (clipboard === undefined) return;
-    const rows = wrapTranscript(
+    // The content a person sees, without the margin (OQ9): the one copy path of both chat hosts.
+    const selected = transcriptSelectionText(
       props.store.getSnapshot().state.transcript,
-      windowSize.columns,
+      chatGrid(windowSize.columns),
+      normalizeSelection(state),
       props.store.getSnapshot().color,
       props.store.getSnapshot().toolDisplays,
-    ).map((line) => line.text);
+    );
     const store = props.store;
-    void attemptClipboardWrite(clipboard, selectionText(rows, normalizeSelection(state)))
+    void attemptClipboardWrite(clipboard, selected)
       .then((outcome) => {
         if (
           !clipboardFeedbackMounted.current ||
@@ -1521,15 +2375,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // of the same chunk just changed. An open card is `card`; the details view closes inside the store and never reaches here.
   const interruptContext = (cardStopped: boolean): InterruptContext => {
     if (cardStopped) return { kind: 'card' };
-    if (
-      paletteRef.current !== undefined ||
-      searchRef.current !== undefined ||
-      mentionRef.current !== undefined ||
-      modelPickerRef.current !== undefined ||
-      effortPickerRef.current !== undefined ||
-      chatSheetRef.current !== undefined
-    )
-      return { kind: 'overlay' };
+    const overlay = interruptContextFrom(liveOverlays());
+    if (overlay !== undefined) return overlay;
     const busy =
       props.store.getSnapshot().state.status === 'running' ||
       shellBusyRef.current ||
@@ -1576,7 +2423,29 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     }
   };
 
-  useInput((char, key) => {
+  /**
+   * One key while a popup is open (ADR-0148 §2): this root is the chat's one reader and routes it to the popup host, as it routes a key to a card.
+   * Job control still wins, and a mouse report is consumed so its bytes never type into the popup.
+   */
+  const routePopupKey = (
+    char: string,
+    key: Parameters<NonNullable<PopupHost['input']>>[1],
+  ): void => {
+    if (char === '\x1a' || (key.ctrl === true && key.meta !== true && char.toLowerCase() === 'z')) {
+      props.store.invalidateToolReview();
+      popupAcknowledgement?.invalidate();
+      props.onSuspend?.();
+      return;
+    }
+    if (props.alternateScreen === true && mouseReaderRef.current.read(char).kind !== 'none') return;
+    popups?.input(char, key);
+  };
+
+  const readChatKey = (char: string, key: Key): void => {
+    if (popupReads()) {
+      routePopupKey(char, key);
+      return;
+    }
     if (!acceptsInput()) return;
     // Raw Ink input represents Ctrl-Z as Ctrl+`z` (and a few test streams retain the literal SUB byte). It must win
     // over mouse parsing, overlays, and approval routing: job control is never prompt text and never consent.
@@ -1599,17 +2468,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       const read = mouseReaderRef.current.read(char);
       if (read.kind !== 'none') {
         const mouse = read.kind === 'event' ? read.event : undefined;
-        const overlayOwnsKeyboard =
-          props.store.getSnapshot().review !== undefined ||
-          props.store.getSnapshot().question !== undefined ||
-          props.store.getSnapshot().checkpoint !== undefined ||
-          paletteRef.current !== undefined ||
-          searchRef.current !== undefined ||
-          mentionRef.current !== undefined ||
-          modelPickerRef.current !== undefined ||
-          effortPickerRef.current !== undefined ||
-          chatSheetRef.current !== undefined;
-        if (mouse !== undefined && !overlayOwnsKeyboard) {
+        if (mouse !== undefined && !pointerBlocked(liveOverlays())) {
           if (mouse.kind === 'wheel') {
             const geom = chatLiveGeom();
             const motion = mouse.direction === 'up' ? 'line-up' : 'line-down';
@@ -1624,6 +2483,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       }
     }
     if (!interrupt) disarmInterrupt();
+    // Any key but `Enter` is the person typing: an `Enter` after it is theirs, never a repeat of the one that chose a file.
+    if (!key.return) pickEnter.typed();
     const reviewAction = props.store.handleReviewInput(char, key);
     if (reviewAction === 'handled') return;
     if (interrupt) {
@@ -1643,26 +2504,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       props.store.getSnapshot().state.status === 'running' ||
       shellBusyRef.current ||
       submitBusyRef.current;
-    // The open `/models` reseat picker owns every key (ADR-0059) — checked FIRST (mutually exclusive with the other
-    // submodes; it only opens at an idle prompt). Read the REF so a coalesced same-chunk key sees a just-applied
-    // open/close/accept; on accept it triggers the reseat + ends the loop (see routeModelPickerKey).
-    if (modelPickerRef.current !== undefined) {
-      routeModelPickerKey(char, key);
-      return;
-    }
-    // The open `/effort` overlay owns every key (ADR-0066 §6) — mutually exclusive with the other submodes (it only
-    // opens at an idle prompt). Read the REF so a coalesced same-chunk key sees a just-applied open/close/accept.
-    if (effortPickerRef.current !== undefined) {
-      routeEffortPickerKey(char, key);
-      return;
-    }
-    // The open docked sheet owns every key. `/permissions` (ADR-0137 §2): `Esc` drops a withdrawal's question and then closes, `Ctrl+C`
-    // closes, neither ever withdraws. `/agent` (ADR-0140 §3): `Esc` and `Ctrl+C` close it, every other key is dropped. Mutually exclusive
-    // with the other submodes (a sheet opens only at an idle prompt).
-    if (chatSheetRef.current !== undefined) {
-      routeChatSheetKey(char, key);
-      return;
-    }
     // The open `@`-mention completion owns every key (2.5.D step 4): Esc/Ctrl-C cancels + restores the literal
     // keystrokes; ↑/↓ select; Enter/Tab/'/' accept (a dir descends, a file injects); backspace trims the filter
     // then deletes the `@`; a printable extends the filter. Read the REF so a coalesced same-chunk key sees a
@@ -1689,6 +2530,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       }
       if (step.kind === 'accept') {
         applyMention(undefined);
+        // The `Enter` that chose: its auto-repeats must not send the message the file lands in.
+        if (key.return) pickEnter.chosen(performance.now());
         acceptMention(step.path);
         return;
       }
@@ -1720,19 +2563,37 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     }
     // The open `/` palette owns every key (Ctrl-C closes it gently). Read the REF so a coalesced same-chunk event
     // sees a just-applied close/select, not the stale render-closure value.
-    const openPalette = paletteRef.current;
-    if (openPalette !== undefined) {
-      const step = foldPaletteKey(char, key, openPalette, CHAT_PALETTE_COMMANDS);
+    const paletteNow = paletteRef.current;
+    if (paletteNow !== undefined) {
+      const step = foldPaletteKey(char, key, paletteNow);
       if (step.kind === 'close') {
         applyPalette(undefined);
         return;
       }
       if (step.kind === 'run') {
         applyPalette(undefined);
-        if (step.command !== undefined) submit(`/${step.command.name}`); // reuse the S3a slash dispatch
+        if (step.command !== undefined) {
+          submit(`/${step.command.name}`); // reuse the S3a slash dispatch
+        } else {
+          // No row matched, or none is highlighted (A2): the person typed a line of their own (`/doctor --deep`, `/trim 20`, `/mode plan`, a
+          // misspelling). It goes down the same dispatch a typed line takes, which validates the tokens and answers an unknown word, instead
+          // of the text being dropped when the palette closes (round 2, U1).
+          const typed = paletteNow.state.query.trim();
+          if (typed.length > 0) submit(`/${typed}`);
+        }
         return;
       }
-      applyPalette(step.state);
+      if (step.kind === 'unavailable') {
+        // `Enter` on a dim row: its reason is said (the chat's own line) and the palette stays open. Never "unknown command", never run.
+        props.store.note(
+          unavailableNotice(
+            paletteNow.list.rows[paletteNow.state.index]?.command.name ?? '',
+            step.reason,
+          ),
+        );
+        return;
+      }
+      applyPalette(step.palette);
       return;
     }
     // A pending approval OWNS the keyboard (never opens the palette): the card has taken every key before this point.
@@ -1742,7 +2603,17 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       !approvalPending &&
       shouldOpenPalette(char, key, isRunning, editorRef.current.text.length)
     ) {
-      applyPalette(INITIAL_PALETTE_STATE);
+      // The list opens ABOVE the prompt, so its first row is the one beside it and it is drawn bottom-up (ADR-0145 §7.1).
+      applyPalette(
+        openPalette(
+          buildPaletteEntries('standalone-chat', {
+            hasSession: true,
+            hasKey: true,
+            turnRunning: isRunning,
+          }),
+          'up',
+        ),
+      );
       return;
     }
     // Ctrl+R opens reverse-incremental history search (idle, not mid-approval) — a keyboard-owning submode.
@@ -1839,6 +2710,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         });
         return;
       case 'submit': {
+        // A repeat of the `Enter` that chose a file sends nothing.
+        if (pickEnter.holds(performance.now())) return;
         // A leading `!` (with a runner wired + a non-empty command) runs the shell escape instead of sending a
         // message; a bare `!` or an absent runner falls through to a normal message send.
         const trimmed = action.line.trim();
@@ -1858,7 +2731,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         if (parsed !== undefined) {
           historyRef.current = recordHistory(historyRef.current, action.line);
           applyEditor(() => emptyEditor());
-          runShell(parsed); // a `!command` → the shell escape (does NOT consume pending attachments)
+          runShell(parsed); // a `!command` → the shell escape (carried outputs stay pending; a file goes with the line)
           return;
         }
         if (trimmed.startsWith('/') || attachmentsRef.current.length === 0) {
@@ -1895,7 +2768,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       case 'none':
         return;
     }
-  });
+  };
+  // The chat's one reader never hears a key's release (`pressesOnly`: a release would type a letter twice and give a card or a line a second
+  // `Ctrl+Y`).
+  useInput(pressesOnly(readChatKey));
 
   // Observe the captured output stream on resize, as the Home does. Ink's
   // useWindowSize supplies defaults when dimensions are unavailable, but also
@@ -1932,14 +2808,35 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   useEffect(() => {
     applySelection(undefined);
   }, [windowSize.columns]);
-  // Alt-screen (Step 4b, ADR-0068 §c): the outer container is bounded to the terminal `rows` so `ChatView`'s
+  // A resize voids the popup's measured frame, and below the floor a step that holds a chord or a secret closes unanswered (ADR-0148 §4): the
+  // slot does both, from `slotProps.size`, BEFORE it commits the frame at the new size (a passive effect here ran after that commit, voided the
+  // new frame's acknowledgement as it was made, and left every popup unanswerable until something re-rendered).
+  // The notification channel is held while a decision is on screen or the hint row is not drawn (ADR-0148 §2). A running turn, a `!` command and
+  // a submit in flight are NOT among them: the prompt block draws a hint row while they run (the running hint, which a notification replaces),
+  // and holding for them made a refusal raised mid-turn (a mode change, a refused popup) silent until the turn ended and stale after it (SE7-1).
+  const notificationsHeld =
+    renderedOverlays.approval ||
+    renderedOverlays.review ||
+    renderedOverlays.question ||
+    renderedOverlays.checkpoint ||
+    renderedOverlays.nativePrompt ||
+    renderedOverlays.replacesBody ||
+    (popupSnapshot.frame !== undefined &&
+      currentStep(popupSnapshot.frame).spec.holds !== undefined) ||
+    promptHidden(renderedOverlays);
+  useEffect(() => {
+    notifications?.hold(notificationsHeld);
+  }, [notifications, notificationsHeld]);
+  // Alt-screen (Step 4b, ADR-0068 §c): the outer container is bounded to the frame's rows (the terminal's less one) so `ChatView`'s
   // flex-grow viewport has a height to fill BELOW any keyboard-owning overlay (palette / search / …), and the
   // transcript renders through the scroll {@link TranscriptViewport} instead of `<Static>`. Absent ⇒ the inline
   // `<Static>` renderer, unbounded height.
   const viewport =
     props.alternateScreen === true
       ? {
-          rows: windowSize.rows,
+          // The frame is one row short of the terminal (ADR-0146 §4: a frame as tall as the terminal makes Ink clear it), whatever the header,
+          // the prompt block and the live turn take of it.
+          rows: chatFrameRows(windowSize.rows),
           cols: windowSize.columns,
           scroll,
           // Document-ordered here, once: the viewport draws it, `copySelection` re-derives it for the clipboard.
@@ -1951,125 +2848,151 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         }
       : undefined;
 
+  const flushPopup = (): Promise<void> => app.waitUntilRenderFlush();
+  const slotProps: PopupSlotProps = {
+    host: popups,
+    acknowledgement: popupAcknowledgement,
+    native:
+      nativeAcknowledgement === undefined
+        ? undefined
+        : { snapshot: nativeSnapshot, acknowledgement: nativeAcknowledgement },
+    placement,
+    size: { cols: windowSize.columns, rows: windowSize.rows },
+    color,
+    flush: flushPopup,
+  };
+  // The body behind the slot is the backdrop of an open popup, drawn dim, exactly when the slot is drawing an overlay box over it (ADR-0148 §4):
+  // the slot's own predicate over the slot's own props. The slot stays OUTSIDE the dimmed subtree, as the last child of the root. The same
+  // predicate takes the cursor out of the composer and the notification off the hint row while a popup is drawn.
+  const drawing = slotDrawing(slotProps, popupSnapshot);
+  const dimmed = dimsBackdrop(drawing, color);
+  // A sheet's wait clock ticks in the alternate screen and is the static `waiting since HH:MM` inline (ADR-0147 §2).
+  const waitClock = waitClockForm(props.alternateScreen);
   return (
     <>
-      {nativeActive && props.modePrompt !== undefined && (
-        <NativePromptHost
-          ui={props.modePrompt.ui}
-          color={color}
-          {...(props.inputEnabled === undefined ? {} : { inputEnabled: props.inputEnabled })}
-          suspendPort={props.suspendPort}
-          ownsSuspendAttachment={false}
-          {...(props.onSuspend === undefined ? {} : { onSuspend: props.onSuspend })}
-          onRendererReady={props.modePrompt.ready}
-          onRendererError={props.onError}
-        />
-      )}
-      <Box
-        display={nativeActive ? 'none' : 'flex'}
-        flexDirection="column"
-        width={layoutColumns(windowSize.columns)}
-        {...(viewport === undefined ? {} : { height: viewport.rows })}
-      >
-        <ChatView
-          hidden={review !== undefined && review.screen !== 'card'}
-          toolDisplays={toolDisplays}
-          markdown={markdown}
-          displaySuspended={displaySuspended}
-          acknowledgement={acknowledgement}
-          state={state}
-          tick={tick}
-          nowMs={Date.now()}
-          color={color}
-          editor={editor}
-          running={running || shellBusy || submitBusy}
-          mode={mode}
-          reasoningEffort={reasoningEffort}
-          reasoningVisible={reasoningVisible}
-          attachments={attachments}
-          busyCommand={busyCommand}
-          // Live terminal width for the reasoning-panel row bound (2.5.H) — resize-tracked via `useWindowSize` above.
-          columns={windowSize.columns}
-          viewport={viewport}
-          interruptArmed={interruptArmed}
-          copied={copied}
-          paletteOpen={
-            palette !== undefined ||
-            search !== undefined ||
-            mention !== undefined ||
-            modelPicker !== undefined ||
-            effortPicker !== undefined ||
-            chatSheet !== undefined
-          }
-        />
-        {/* The docked approval card (ADR-0129) sits below the live region, where the other keyboard-owning
-            overlays do; its full view and call list take the screen instead (ChatView is hidden then). */}
-        <ToolReviewHost
-          store={props.store}
-          size={{ cols: windowSize.columns, rows: windowSize.rows }}
-          hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
-          clipboard={props.reviewClipboard}
-          color={color}
-        />
-        {/* The docked `ask_user` question card (ADR-0132): where the approval card sits, and never both at once. */}
-        <QuestionCardHost
-          store={props.store}
-          size={{ cols: windowSize.columns, rows: windowSize.rows }}
-          hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
-          color={color}
-        />
-        {/* The docked continue checkpoint (ADR-0136 §4): the same place, and never together with another card. */}
-        <CheckpointCardHost
-          store={props.store}
-          size={{ cols: windowSize.columns, rows: windowSize.rows }}
-          hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
-          color={color}
-        />
-        {palette !== undefined && (
-          <PaletteView
-            commands={CHAT_PALETTE_COMMANDS}
-            state={palette}
+      <BackdropDim dimmed={dimmed}>
+        {nativeActive && props.modePrompt !== undefined && (
+          <NativePromptHost
+            ui={props.modePrompt.ui}
+            acknowledgement={nativeAcknowledgement}
             color={color}
-            maxRows={windowSize.rows - 1}
+            {...(props.inputEnabled === undefined ? {} : { inputEnabled: props.inputEnabled })}
+            suspendPort={props.suspendPort}
+            ownsSuspendAttachment={false}
+            {...(props.onSuspend === undefined ? {} : { onSuspend: props.onSuspend })}
+            onRendererReady={props.modePrompt.ready}
+            onRendererError={props.onError}
           />
         )}
-        {search !== undefined && (
-          <ReverseSearchView state={search} entries={historyRef.current.entries} color={color} />
-        )}
-        {mention !== undefined && <MentionView state={mention} color={color} />}
-        {/* The `/models` reseat picker overlay (ADR-0059) — mounted like the palette; nowMs feeds the freshness badge
-          (cosmetic, render-only, so `Date.now()` is fine on this UI path — no engine-purity concern here). */}
-        {modelPicker !== undefined && (
-          <ModelPickerView state={modelPicker} color={color} nowMs={Date.now()} />
-        )}
-        {/* The standalone `/effort` overlay (ADR-0066 §6) — the shared tier list; `Esc` cancels (not a back-out). */}
-        {effortPicker !== undefined && (
-          <EffortTierList
-            tiers={effortPicker.tiers}
-            model={effortPicker.model}
-            selected={effortPicker.selected}
-            current={effortPicker.current}
-            labelSuffix={effortPicker.model}
-            footer="↑/↓ select · Enter apply · Esc cancel"
+        <Box
+          display={occupiesRows(renderedOverlays) ? 'none' : 'flex'}
+          flexDirection="column"
+          width={layoutColumns(windowSize.columns)}
+          {...(viewport === undefined ? {} : { height: viewport.rows })}
+        >
+          <ChatView
+            hidden={review !== undefined && review.screen !== 'card'}
+            toolDisplays={toolDisplays}
+            markdown={markdown}
+            displaySuspended={displaySuspended}
+            acknowledgement={acknowledgement}
+            printedAbove={props.introPrinted}
+            state={state}
+            tick={tick}
+            nowMs={Date.now()}
             color={color}
-          />
-        )}
-        {/* The docked sheet — `/permissions` (ADR-0137 §2) or `/agent` (ADR-0140 §3) — here with the other overlays; the transcript stays above it. */}
-        {chatSheet !== undefined && (
-          <ChatSheetView
-            state={chatSheet}
-            color={color}
+            editor={editor}
+            composerCursor={drawing === undefined}
+            surface="standalone-chat"
+            provider={props.provider}
+            running={chatIsBusy({
+              turnRunning: running,
+              shellBusy,
+              submitBusy,
+              // Not observable here today (the stand-alone chat hides its conversation behind a card), and kept so that both hosts feed the
+              // one predicate the same inputs: the Home's wire is the one that is drawn, and it is pinned.
+              nativePrompt: renderedOverlays.nativePrompt,
+              approvalCard: state.approvalSinceMs !== undefined,
+            })}
+            mode={mode}
+            reasoningEffort={reasoningEffort}
+            reasoningVisible={reasoningVisible}
+            attachments={attachments}
+            busyCommand={busyCommand}
+            // Live terminal width for the reasoning-panel row bound (2.5.H) — resize-tracked via `useWindowSize` above.
             columns={windowSize.columns}
-            rows={windowSize.rows}
+            viewport={viewport}
+            interruptArmed={interruptArmed}
+            copied={copied}
+            paletteOpen={promptHidden(renderedOverlays)}
+            palette={
+              palette === undefined
+                ? undefined
+                : {
+                    list: palette.list,
+                    state: palette.state,
+                    maxRows: chatPaletteRows(windowSize.rows, palette.list),
+                  }
+            }
+            notification={hintRowNotification(notification.current?.text, drawing)}
+            cardDocked={dockedCardOpen(renderedOverlays)}
+            terminalRows={windowSize.rows}
           />
-        )}
-      </Box>
+          {/* The docked approval card (ADR-0129) sits below the live region, where the other keyboard-owning
+            overlays do; its full view and call list take the screen instead (ChatView is hidden then). */}
+          <ToolReviewHost
+            store={props.store}
+            size={{ cols: windowSize.columns, rows: windowSize.rows }}
+            hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
+            clipboard={props.reviewClipboard}
+            color={color}
+            waitClock={waitClock}
+          />
+          {/* The docked `ask_user` question card (ADR-0132): where the approval card sits, and never both at once. */}
+          <QuestionCardHost
+            store={props.store}
+            size={{ cols: windowSize.columns, rows: windowSize.rows }}
+            hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
+            color={color}
+            waitClock={waitClock}
+          />
+          {/* The docked continue checkpoint (ADR-0136 §4): the same place, and never together with another card. */}
+          <CheckpointCardHost
+            store={props.store}
+            size={{ cols: windowSize.columns, rows: windowSize.rows }}
+            hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
+            color={color}
+            waitClock={waitClock}
+          />
+          {/* The history search and the `@` completion list are host-drawn rows below the prompt that show stored names (a history line, a file
+              name): they stand in the content column of the grid like the prompt block above them, never in the margin (unit 9). */}
+          {search !== undefined && (
+            <ChromeColumn columns={windowSize.columns}>
+              <ReverseSearchView
+                state={search}
+                entries={historyRef.current.entries}
+                color={color}
+                columns={chromeGridFor(windowSize.columns).text}
+              />
+            </ChromeColumn>
+          )}
+          {mention !== undefined && (
+            <ChromeColumn columns={windowSize.columns}>
+              <MentionView
+                state={mention}
+                color={color}
+                columns={chromeGridFor(windowSize.columns).text}
+              />
+            </ChromeColumn>
+          )}
+        </Box>
+      </BackdropDim>
+      {/* The one overlay slot (ADR-0148 §2): the last child of the root, and the only absolutely positioned node of the CLI. */}
+      <PopupSlot {...slotProps} />
     </>
   );
 }
 
-/** The TTY ink driver: mount {@link ChatApp}, run the frame loop, and finalize on exit. Returns the drive OUTCOME
- *  ({@link ChatDriveOutcome}) so the re-drive loop can swap in a fresh session on `/clear` (ADR-0062 §7). */
 /**
  * Sequence the `driveInk` exit: on `exited` RESOLVE, run `teardown` FIRST (unmount ink → restore raw mode + cursor)
  * and only THEN resolve the `outcome`. On `exited` REJECT (an unexpected turn-core throw), `teardown` still runs (the
@@ -2087,6 +3010,60 @@ export function finalizeInkExit(
   },
 ): Promise<ChatDriveOutcome> {
   return exited.finally(ops.teardown).then((): ChatDriveOutcome => ops.outcome());
+}
+
+/** The width an inline intro is wrapped to when the terminal's is not known: the supported minimum. */
+const INTRO_COLUMNS_FALLBACK = 80;
+
+/**
+ * The grid of the inline renderer's pre-mount writes (the header and the intro, unit 9): the terminal's, or the supported minimum's when its width is
+ * not known (a width is a number of at least one column; zero, a negative one and a number that is not one are not a width).
+ */
+function preMountGrid(columns: number | undefined): ChatGrid {
+  return chatGrid(
+    columns !== undefined && Number.isFinite(columns) && columns >= 1
+      ? columns
+      : INTRO_COLUMNS_FALLBACK,
+  );
+}
+
+/** The length of the host's model-switch glyph that leads an intro (in either form of the table) with the space after it, or 0 when it does not lead. */
+function modelSwitchLeadLength(intro: string): number {
+  for (const glyph of [GLYPHS.modelSwitch.glyph, GLYPHS.modelSwitch.ascii])
+    if (intro.startsWith(`${glyph} `)) return glyph.length + 1;
+  return 0;
+}
+
+/**
+ * The inline intro as rows in the content column, each of at most the content column's width, broken at spaces (OB7-M2), with the margin on the left
+ * of the first row. It is written straight to the terminal before Ink mounts, so nothing wraps it but the terminal, which cuts a long sentence wherever
+ * the row ends (`…to continue it, star|t Relavium…`); the transcript's own notices are word-wrapped by the transcript layout, and so is this. Explicit
+ * newlines of the intro are kept. The margin is the grid's (unit 9): blank, except on the first row of the model-switch notice, which the inline
+ * renderer marks with the host's role word `note` as it marks the same notice in the transcript (the word is drawn from the closed list and the
+ * glyph that led the sentence leaves it; with no room for the word the glyph stays where it was).
+ */
+function wrapIntro(sentence: string, columns: number | undefined): string {
+  const grid = preMountGrid(columns);
+  // The intro carries stored strings (a session id, the directory a session was started in, a model id) and it is written straight to the terminal,
+  // so it goes through the screen's filter HERE, where it is drawn: the fillers a terminal draws wider than `wrapWords` counts would wrap a row at
+  // the right edge, and the rest of it would start at column 0, in the margin (unit 9, review round 2, S2-5). The banner module keeps its own
+  // scrub (`sanitizeInline` and the blanked glyphs); the filter is the drawing site's.
+  const intro = screenText(sentence);
+  const lead = modelSwitchLeadLength(intro);
+  const word = lead === 0 ? '' : marginCell('modelSwitch', grid, 'word');
+  const marked = word.trim() !== '';
+  // `wrapWords` keeps the whitespace a break fell on: a row does not end in it, and the next row does not begin with it
+  const rows = (marked ? intro.slice(lead) : intro)
+    .split('\n')
+    .flatMap((line) =>
+      wrapWords(line, grid.content).map((row, index) => (index === 0 ? row.trimEnd() : row.trim())),
+    );
+  if (rows.length === 0) return intro;
+  const blank = ' '.repeat(grid.margin);
+  // a blank row is written as nothing (no trailing spaces), and only the first row can carry the word
+  return rows
+    .map((row, index) => (row === '' ? '' : `${marked && index === 0 ? word : blank}${row}`))
+    .join('\n');
 }
 
 /**
@@ -2107,13 +3084,70 @@ export function finalizeInkExit(
 export function emitIntro(
   intro: string | undefined,
   alternateScreen: boolean,
-  ports: { readonly notice: (text: string) => void; readonly writeOut: (text: string) => void },
+  ports: {
+    readonly notice: (text: string, hostLead?: 'yourTurn' | 'modelSwitch') => void;
+    readonly writeOut: (text: string) => void;
+    /** The terminal's width, from which the inline intro's grid is made (it is word-wrapped to the content column; absent or not a width ⇒ {@link INTRO_COLUMNS_FALLBACK}). */
+    readonly columns?: number | undefined;
+  },
 ): void {
   if (intro === undefined) return; // a fresh session has no intro
-  if (alternateScreen) ports.notice(intro);
-  else ports.writeOut(`${intro}\n`);
+  // The intro is the host's own sentence (a resume, a clear, a model switch), and only the model switch leads with the host's `⇄` (ADR-0145 §6):
+  // the rows of a notice are guarded, and a lead is the one glyph they keep at the start of a line, so it is named for the notice that has it and for
+  // no other: the resume banner and the clear notice have no lead and the guard keeps nothing of them.
+  if (!alternateScreen) ports.writeOut(`${wrapIntro(intro, ports.columns)}\n`);
+  // The lead is the model switch's in either form of the table: the intro is built in the plain form (`<->`) without colour, and the transcript's own
+  // notice lead (`noticeLines`) reads both, so a colour-off chat marks the switch as a colour-on one does (the inline path above reads both too).
+  else if (modelSwitchLeadLength(intro) > 0) ports.notice(intro, 'modelSwitch');
+  else ports.notice(intro);
 }
 
+/**
+ * The `io`s a header has been printed to. A stand-alone inline chat is mounted once per conversation (a `/clear` or a reseat mounts the next
+ * one over the same `io`), and the header is the introduction of the PROCESS' chat, so a re-mount does not write it again.
+ */
+const headerPrinted = new WeakSet<object>();
+
+/**
+ * The inline renderer's header ([ADR-0146](../../../../../docs/decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md)
+ * §4): the wordmark in bold and a blank row, written ONCE into the terminal's own scrollback before the live region mounts, because inline has no
+ * fixed top row to draw it in. The full-screen renderer draws it as the first child of the frame instead, so it writes nothing here. `owner` is
+ * what the once belongs to (the command's `io`): a second chat over the same owner (`/clear`, a reseat) writes nothing. It stands at the content
+ * column of the terminal's `columns` (the grid, unit 9: the margin's spaces, then the wordmark), as the full-screen header does; an absent or unusable
+ * width is the supported minimum's.
+ */
+export function emitChatHeader(
+  alternateScreen: boolean,
+  owner: object,
+  writeOut: (text: string) => void,
+  columns?: number,
+): void {
+  if (alternateScreen || headerPrinted.has(owner)) return;
+  headerPrinted.add(owner);
+  writeOut(`${' '.repeat(preMountGrid(columns).margin)}${emphasize(WORDMARK, 'bold')}\n\n`);
+}
+
+/**
+ * `instance` with its `unmount` made to erase the live region first when `redriven()` says another chat follows (OB7-M2). Ink's unmount leaves
+ * the last frame in the terminal's scrollback; for a chat that ends the session that is the record of where it stopped, but a `/clear` or a reseat
+ * mounts the next chat directly under it, and the previous one's prompt block would stay above it as rows that look live and answer nothing. `clear`
+ * is Ink's own erase of what it has drawn (the `<Static>` rows already written are history and stay), and it leaves the final render of the unmount
+ * with nothing to redraw. Erasing is idempotent, so an unmount called twice is safe.
+ */
+export function eraseLiveRegionOnRedrive<
+  Instance extends { readonly clear: () => void; readonly unmount: () => void },
+>(instance: Instance, redriven: () => boolean): Instance {
+  return {
+    ...instance,
+    unmount: () => {
+      if (redriven()) instance.clear();
+      instance.unmount();
+    },
+  };
+}
+
+/** The TTY ink driver: mount {@link ChatApp}, run the frame loop, and finalize on exit. Returns the drive OUTCOME
+ *  ({@link ChatDriveOutcome}) so the re-drive loop can swap in a fresh session on `/clear` (ADR-0062 §7). */
 export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   // Resolved here, BEFORE the intro: where the intro goes depends on the renderer (see `emitIntro`).
   const outputMode = detectOutputMode({
@@ -2138,9 +3172,16 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   // corrupt: inline render + full-screen store double-prints through `<Static>`; full-screen render + inline store
   // silently drops the carry and blanks the viewport (F1 itself).
   assertRenderStoreAgree(alternateScreen, ctx.store.getSnapshot().state.transcriptBound);
+  emitChatHeader(
+    alternateScreen,
+    ctx.io,
+    (text) => ctx.io.writeOut(text),
+    ctx.io.nativeStdout?.columns,
+  );
   emitIntro(ctx.intro, alternateScreen, {
-    notice: (text) => ctx.store.notice(text),
+    notice: (text, hostLead) => ctx.store.notice(text, hostLead),
     writeOut: (text) => ctx.io.writeOut(text),
+    columns: ctx.io.nativeStdout?.columns,
   });
   // Mirror the live stream into the view store the component projects.
   const unsubscribe = ctx.handle.subscribe(
@@ -2309,7 +3350,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
     // Keep setup under the same cleanup ownership as render(), including a throwing startSession hook.
     ctx.workOwner?.assertAdmitting();
     ctx.startSession();
-    const mount = () =>
+    const mountNative = () =>
       render(
         createElement(ChatApp, {
           inputEnabled: () => active && !driverStopped,
@@ -2331,14 +3372,23 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
           // 'abort' handler can reject a pending approval when it is absent (never a dead Esc — see ChatApp).
           onAbort: ctx.onAbort,
           onModeChange: ctx.onModeChange ?? ((): void => undefined),
-          // ADR-0066 §5 effort setter — passed AS-IS (optional); absent ⇒ the `/models` effort sub-step is not offered.
+          // ADR-0066 §5 effort setter — passed AS-IS (optional).
           onSetEffort: ctx.onSetEffort,
-          // `/models` reseat (ADR-0059) — the REPL loop wires both onReseat + the picker port only for an interactive
-          // session; passed AS-IS (optional) so a driver wired without them simply has no `/models` overlay.
+          // `/models` reseat (ADR-0059) — the REPL loop wires it only for an interactive session; passed AS-IS (optional) so a driver
+          // wired without it has no `/models` popup (the session's member is withdrawn: `bindModelSwitch`).
           onReseat: ctx.onReseat,
-          modelPicker: ctx.modelPicker,
-          permissions: ctx.permissions,
-          boundAgent: ctx.boundAgent,
+          reports: ctx.reports,
+          // The bound agent's provider id, first on the status line (ADR-0146 §2): read once per mount, from the same view `/agent` reads.
+          provider: ctx.boundAgent?.().detail.provider,
+          // The inline intro written above the live region before this mount (the first entry then has the blank row between turns above it).
+          introPrinted: !alternateScreen && ctx.intro !== undefined,
+          // The settings popups (`/mode`, `/effort`, `/models`, `/permissions`; ADR-0148 §3, §6), and where their announcements and the typed
+          // settings' go: this chat's notification channel, bound while it is mounted. The plain and `--json` drivers have neither and print
+          // their text.
+          settings: ctx.settings,
+          setAnnouncer: ctx.setAnnouncer,
+          // `/doctor` opens its popup over this chat (ADR-0148 §8); the plain and `--json` drivers have none and print the text report.
+          doctor: ctx.doctor,
           // `@`-mention completion (2.5.D, ADR-0061) — the REPL loop wires it only for an interactive session; passed
           // AS-IS (optional) so an absent reader degrades `@` to a literal char (never a dead key — see ChatApp).
           mentionReader: ctx.mentionReader,
@@ -2370,6 +3420,13 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
           alternateScreen: false,
         },
       );
+    // A chat that ends to be re-driven (`/clear`, a model reseat) is followed by another over the same terminal: inline, its live region (the prompt,
+    // the rule, the status line, the hint) must not be left behind as dead rows above the next one's own (OB7-M2). The full-screen renderer has no
+    // scrollback to leave it in; a chat that ends the session leaves its last frame, as it always did.
+    const mount = (): ReturnType<typeof render> =>
+      alternateScreen
+        ? mountNative()
+        : eraseLiveRegionOnRedrive(mountNative(), () => ctx.stopReason() !== 'exit');
     instance = ownedMount === undefined ? mount() : ownedMount.acquire(mount);
     // Ink owns passive input/render failures. Observe its terminal promise rather than leave the
     // driver alive after an error boundary has unmounted the disclosure surface.

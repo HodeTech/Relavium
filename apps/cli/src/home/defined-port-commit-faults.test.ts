@@ -1,11 +1,15 @@
 /**
  * The Home's export card when the write itself is refused by the file system (LAUNCH-3, a review finding): a raw errno out of
- * `commitExport` (an unwritable directory, a read-only volume, a full disk) is a refusal the person reads on the Defined tab, not a fault
+ * `commitExport` (an unwritable directory, a read-only volume, a full disk) is a refusal the person reads on the `/workflows` popup, not a fault
  * that ends the Home and its background run. The sentences are fixed and quote neither the path nor the error's own message; any
  * other fault is a defect and is still thrown (ADR-0139 decided that an unclassified fault ends the Home).
  *
  * `commitExport` is replaced here (the one fault a test cannot cause portably is a file system that refuses a write); the port, the
  * card and the Home controller are the real ones, and the controller has an invocation work owner, which is what ends a Home.
+ *
+ * MVP-11 unit 6 (6.3): the card is a popup now, so a refused write is said on its persistent Done step (what failed and why), not on the
+ * tab's message row (ADR-0148 §6: no residue); the flow it runs on here answers `Ctrl+Y` and closes whatever step it is shown, and records
+ * what each step said.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -23,7 +27,7 @@ import {
 } from '../render/tui/export-card.js';
 import { createHomeController, type HomeController } from '../render/tui/home-controller.js';
 import type { HomeSnapshot } from './home-store.js';
-import type { TabHostState } from '../render/tui/tab-host.js';
+import type { HomePopupsPort } from '../popups/home-port.js';
 import { createExportPort } from './defined-port.js';
 
 vi.mock('../commands/export.js', async (importOriginal) => ({
@@ -155,21 +159,40 @@ describe('a commit the file system refuses is a refusal with a fixed sentence', 
 // ---------------------------------------------------------------------------------------------------------------------------------
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 const ENTER = { return: true } as const;
 
-/** A card whose person answers `Ctrl+Y`: the real card, the real port, no terminal. */
+/** What each select of the flow said (the Done step is a select): its message, lines and tone. */
+const shownSteps: { message: string; details: readonly string[]; final: string | undefined }[] = [];
+
+/** A card whose person answers `Ctrl+Y` and closes the Done step: the real card, the real port, no terminal. */
 const yes: ExportCardDeps['flow'] = {
   begin: () => new AbortController().signal,
   end: () => Promise.resolve(),
-  select: () => Promise.resolve('close'),
+  cancel: () => undefined,
+  popup: () => undefined,
+  note: () => undefined,
+  busy: () => undefined,
+  pick: () => Promise.resolve('close'),
+  select: (options) => {
+    shownSteps.push({
+      message: options.message,
+      details: options.details ?? [],
+      final: options.final,
+    });
+    return Promise.resolve('close');
+  },
+  confirm: () => Promise.resolve(false),
+  text: () => Promise.resolve(''),
+  password: () => Promise.resolve(''),
   chord: () => Promise.resolve('allow'),
 };
 
@@ -203,8 +226,10 @@ function mountHome() {
         pathOf: (index) => (index === 0 ? 'code-review.relavium.yaml' : undefined),
       }),
     },
-    exportDefined: (slug) => runExportCard({ flow: yes, port }, slug),
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
+    exportDefined: (slug, origin) => runExportCard({ flow: yes, port }, slug, origin),
+    openHomePopup: (request) => {
+      workflowsPort = request.port.workflows;
+    },
     startChat: () => new Promise<never>(() => {}),
     homeStore: { read: () => EMPTY },
     schedule: () => () => {},
@@ -214,38 +239,38 @@ function mountHome() {
   return { controller, failure, entered, onError, onExit };
 }
 
-const messageOf = (c: HomeController): string | undefined => {
-  const screen = c.getSnapshot().screen;
-  const host: TabHostState | undefined = screen?.kind === 'tab-host' ? screen.host : undefined;
-  return host?.defined?.message;
-};
+/** The `/workflows` popup's request, kept: its port's `[x]` is the export's opener (MVP-11 unit 8). */
+let workflowsPort: HomePopupsPort['workflows'];
 
-/** `/workflows`, then `x` on the first row: the card is answered Yes, and the commit runs. */
+/** `/workflows`, then `[x]` on the first row (the popup's port, once it has closed itself): the card is answered Yes, and the commit runs. */
 async function exportFirstRow(controller: HomeController): Promise<void> {
   controller.handlePaste('/workflows');
   controller.handleKey('', ENTER);
   await flush();
-  controller.handleKey('x', {});
+  workflowsPort?.export('code-review', 'detail');
   await flush();
   await flush();
 }
 
 describe('in a Home with a work owner, an errno from the write does not end the Home', () => {
   it.each(FIXED_REASONS)(
-    '%s: the tab says it, and the owner is told nothing',
+    '%s: the popup’s Done step says it, and the owner is told nothing',
     async (code, sentence) => {
+      shownSteps.length = 0;
       const m = mountHome();
       vi.mocked(commitExport).mockImplementation(() => {
         throw errnoError(code);
       });
       await exportFirstRow(m.controller);
       expect(vi.mocked(commitExport)).toHaveBeenCalledTimes(1);
-      expect(messageOf(m.controller)).toBe(`Not exported. ${sentence}`);
+      expect(shownSteps).toEqual([
+        { message: 'Not exported.', details: [sentence], final: 'failed' },
+      ]);
       expect(m.failure, 'the work owner was not told of a fault').not.toHaveBeenCalled();
       expect(m.onError).not.toHaveBeenCalled();
       expect(m.onExit).not.toHaveBeenCalled();
       expect(m.controller.getSnapshot().nativeActionBusy).toBe(false);
-      expect(m.controller.getSnapshot().screen?.kind, 'the tab is still there').toBe('tab-host');
+      expect(m.controller.getSnapshot().screen, 'no screen is left open').toBeUndefined();
       expect(JSON.stringify(m.controller.getSnapshot())).not.toContain('SECRET');
     },
   );

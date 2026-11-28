@@ -9,9 +9,17 @@
  * is a stale pause, a leg held open until cancelled, an ordered teardown) script the handle and keep everything
  * else real.
  */
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 
 import {
   WorkflowEngine,
@@ -44,6 +52,7 @@ import type { CliIo } from '../process/io.js';
 import { captureIo } from '../test-support.js';
 import { WORKFLOW_SOURCE_CHANGED, workflowSourceDigest } from '../run-core/source-digest.js';
 import {
+  PROJECT_DIRECTORY_CHANGED,
   RunHost,
   type HostedLaunch,
   type HostedLegEnd,
@@ -445,7 +454,8 @@ describe('a run belongs to the workspace it was started in', () => {
     const path = writeWorkflow('gated.relavium.yaml', GATED);
     const parked = await started(there.host.start({ workflow: path, rawInputs: { n: '3' } }));
     expect(parked.handedOff).toBe(true);
-    expect(loadRunSnapshot(client.db, parked.runId)?.projectRoot).toBe(other);
+    // A run records the canonical spelling of its directory (MVP-11 unit 7, round 2): a temp directory and its realpath differ on macOS.
+    expect(loadRunSnapshot(client.db, parked.runId)?.projectRoot).toBe(realpathSync.native(other));
 
     const here = rig({}, root);
     const refused = await here.host.resume({
@@ -466,6 +476,197 @@ describe('a run belongs to the workspace it was started in', () => {
     // The run is still parked and answerable from the directory it belongs to.
     const answered = await started(
       there.host.resume({ runId: parked.runId, kind: 'human', decision: approvalDecision() }),
+    );
+    expect(answered.terminal.disposition).toBe('completed');
+  });
+
+  it('records the canonical root of a start made through any spelling, and answers it from another spelling of that directory', async () => {
+    const link = join(mkdtempSync(join(tmpdir(), 'relavium-run-host-link-')), 'here-link');
+    scratch.push(join(link, '..'));
+    symlinkSync(root, link, 'junction');
+    const slashed = rig({}, `${root}${sep}`);
+    const path = writeWorkflow('gated.relavium.yaml', GATED);
+    const parked = await started(slashed.host.start({ workflow: path, rawInputs: { n: '3' } }));
+    expect(loadRunSnapshot(client.db, parked.runId)?.projectRoot).toBe(realpathSync.native(root));
+
+    const viaLink = rig({}, link);
+    const answered = await started(
+      viaLink.host.resume({ runId: parked.runId, kind: 'human', decision: approvalDecision() }),
+    );
+    expect(answered.terminal.disposition).toBe('completed');
+  });
+
+  it('refuses a run whose stored root is relative as unrecorded, for every host, the one spelled `.` included', async () => {
+    const r = rig();
+    const path = writeWorkflow('gated.relavium.yaml', GATED);
+    const parked = await started(r.host.start({ workflow: path, rawInputs: { n: '3' } }));
+    // A root written as typed before roots were canonical: `relavium --cwd . run` in some directory.
+    client.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?').run('.', parked.runId);
+    for (const host of [rig({}, '.'), rig({ projectRoot: '.' }, '.'), rig({}, root)]) {
+      const refused = await host.host.resume({
+        runId: parked.runId,
+        kind: 'human',
+        decision: approvalDecision(),
+      });
+      expect(refused).toEqual({
+        kind: 'refused',
+        reason: 'other_project',
+        message:
+          'This run was recorded without a project root, so the Home does not answer it. Answer it from the shell; `relavium status` shows how.',
+      });
+      expect(host.builds, 'no engine was built').not.toHaveBeenCalled();
+      expect(host.f.registry.activeOwners).toBe(0);
+    }
+    expect(runStatus(parked.runId), 'still parked').toBe('paused');
+  });
+
+  /**
+   * The Home opened through a link (`--cwd <base>/link`, the link at project A), and the link repointed at project B while it is open (round 2
+   * sitting #2, F3: the security sitting's `swap.mjs`). The legs work in the cwd as it was spelled, so without the check a start would run B's
+   * workflow in B and an answer would load B's configuration for A's run.
+   */
+  function swappableHome(): {
+    readonly link: string;
+    readonly a: string;
+    readonly b: string;
+    readonly point: (at: string) => void;
+  } {
+    const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'relavium-run-host-swap-')));
+    scratch.push(base);
+    const a = join(base, 'A');
+    const b = join(base, 'B');
+    mkdirSync(a);
+    mkdirSync(b);
+    const link = join(base, 'link');
+    symlinkSync(a, link, 'junction');
+    writeFileSync(join(a, 'w.relavium.yaml'), GATED);
+    writeFileSync(join(b, 'w.relavium.yaml'), HAPPY.replace('id: host-happy', 'id: host-b'));
+    return {
+      link,
+      a,
+      b,
+      point: (at) => {
+        rmSync(link);
+        symlinkSync(at, link, 'junction');
+      },
+    };
+  }
+
+  it('refuses a start once the working directory resolves elsewhere, builds nothing and records no run, and starts again once it is back', async () => {
+    const swap = swappableHome();
+    const r = rig({ projectRoot: swap.a }, swap.link);
+    swap.point(swap.b);
+    const refusedStart = await r.host.start({ workflow: 'w.relavium.yaml', rawInputs: { n: '3' } });
+    expect(refusedStart).toEqual({
+      kind: 'refused',
+      reason: 'directory_changed',
+      message: PROJECT_DIRECTORY_CHANGED,
+    });
+    expect(r.builds, 'no engine was built').not.toHaveBeenCalled();
+    expect(r.registered, 'no owner was registered').toHaveLength(0);
+    expect(runCount(), 'no run of B was created').toBe(0);
+    expect(r.host.snapshot()).toMatchObject({ launching: false, active: undefined });
+
+    swap.point(swap.a);
+    const parked = await started(
+      r.host.start({ workflow: 'w.relavium.yaml', rawInputs: { n: '3' } }),
+    );
+    expect(parked.handedOff, 'A`s gated workflow, started in A').toBe(true);
+    expect(loadRunSnapshot(client.db, parked.runId)?.projectRoot).toBe(swap.a);
+  });
+
+  /**
+   * The link repointed AFTER the check `start()` makes and before the preparation resolves (round 2 sitting #3, finding 5): the preparation
+   * awaits (the secret port, the MCP consent card and connect) and only then opens the history under the cwd's root and builds the engine, so a
+   * swap in that gap would record the run under the other directory or start it there. The hooks are the two ports the preparation calls after
+   * the check: the engine build (after the history was opened) and the secret port (before it).
+   */
+  it('refuses a start whose working directory was repointed while it prepared (the engine build): nothing starts, no run is recorded', async () => {
+    const swap = swappableHome();
+    const builds = vi.fn();
+    const r = rig(
+      {
+        projectRoot: swap.a,
+        buildEngine: (options?: BuildEngineOptions) => {
+          builds();
+          swap.point(swap.b); // after the history was opened under A, before the engine starts
+          return buildEngine(options);
+        },
+      },
+      swap.link,
+    );
+    const launch = await r.host.start({ workflow: 'w.relavium.yaml', rawInputs: { n: '3' } });
+    expect(launch).toEqual({
+      kind: 'refused',
+      reason: 'directory_changed',
+      message: PROJECT_DIRECTORY_CHANGED,
+    });
+    expect(builds, 'the preparation ran up to the engine').toHaveBeenCalledOnce();
+    expect(runCount(), 'no run was started or recorded').toBe(0);
+    expect(r.f.registry.activeOwners, 'the leg`s owner retired').toBe(0);
+    expect(r.host.snapshot()).toMatchObject({ launching: false, active: undefined });
+    expect(
+      r.f.registry.observations.infrastructureCode(),
+      'a refusal, never a fault of the Home`s process',
+    ).toBeUndefined();
+  });
+
+  it('refuses a start recorded under the other directory even when the link points back before the engine starts', async () => {
+    const swap = swappableHome();
+    writeFileSync(join(swap.a, 'w.relavium.yaml'), SECRET_RUN);
+    writeFileSync(join(swap.b, 'w.relavium.yaml'), SECRET_RUN);
+    const r = rig(
+      {
+        projectRoot: swap.a,
+        buildEngine: (options?: BuildEngineOptions) => {
+          swap.point(swap.a); // back at A before the engine starts: only the recorded root still names B
+          return buildEngine(options);
+        },
+      },
+      swap.link,
+    );
+    const launch = await r.host.start({
+      workflow: 'w.relavium.yaml',
+      rawInputs: { n: '3' },
+      secrets: () => {
+        swap.point(swap.b); // while the leg awaits its secret port, before the history is opened
+        return Promise.resolve({ token: 'opaque-swap-secret' });
+      },
+    });
+    expect(launch).toEqual({
+      kind: 'refused',
+      reason: 'directory_changed',
+      message: PROJECT_DIRECTORY_CHANGED,
+    });
+    expect(runCount(), 'no run was started or recorded').toBe(0);
+    expect(r.f.registry.activeOwners).toBe(0);
+  });
+
+  it('refuses to answer a gate, or continue a run, once the working directory resolves elsewhere: the run stays parked', async () => {
+    const swap = swappableHome();
+    const r = rig({ projectRoot: swap.a }, swap.link);
+    const parked = await started(
+      r.host.start({ workflow: 'w.relavium.yaml', rawInputs: { n: '3' } }),
+    );
+    expect(runStatus(parked.runId)).toBe('paused');
+    swap.point(swap.b);
+    for (const request of [
+      { runId: parked.runId, kind: 'human' as const, decision: approvalDecision() },
+      { runId: parked.runId, kind: 'media' as const },
+    ]) {
+      expect(await r.host.resume(request)).toEqual({
+        kind: 'refused',
+        reason: 'directory_changed',
+        message: PROJECT_DIRECTORY_CHANGED,
+      });
+    }
+    expect(r.builds, 'only the start built an engine').toHaveBeenCalledTimes(1);
+    expect(r.registered, 'only the start registered an owner').toHaveLength(1);
+    expect(runStatus(parked.runId), 'still parked').toBe('paused');
+
+    swap.point(swap.a);
+    const answered = await started(
+      r.host.resume({ runId: parked.runId, kind: 'human', decision: approvalDecision() }),
     );
     expect(answered.terminal.disposition).toBe('completed');
   });
@@ -859,7 +1060,11 @@ describe('nothing reaches the Home`s terminal', () => {
   it('writes a taken-over leg`s explanation to the ring, not to a stream', async () => {
     const s = scriptedRig({ terminal: 'paused', durability: 'uncertain' });
     await started(s.host.start({ workflow: s.path, rawInputs: { n: '3' } }));
-    expect(s.host.notices.snapshot().join('\n')).toContain('was taken over by another process');
+    const notice = s.host.notices.snapshot().join('\n');
+    expect(notice).toContain('was taken over by another process');
+    // Inside the TUI the run is read in the Home's own browser, never with a shell command (MVP-11 Step 2 review round 2, N2).
+    expect(notice).toContain('read the run in /workflows, then [h] for what actually happened');
+    expect(notice).not.toMatch(/\brelavium\s+[a-z]/u);
     expect(s.homeIo.err()).toBe('');
   });
 });

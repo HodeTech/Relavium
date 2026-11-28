@@ -5,7 +5,9 @@ import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
+import type { NoticeSurface } from '../render/notice-surface.js';
 import { writeRecordLines } from '../render/records.js';
+import { formatPrice } from '../render/notation.js';
 import { stripTerminalControls } from '../render/tui/chat-projection.js';
 import {
   PRICING_FIELDS,
@@ -16,7 +18,6 @@ import {
   pairingSentence,
   priceToMicrocents,
   pricingField,
-  usdTextOfMicrocents,
   type PriceArgs,
   type PriceColumn,
   type PricingFieldId,
@@ -97,7 +98,7 @@ export interface CommitPricingDeps {
 
 /**
  * One price a SET states: the field and the integer micro-cents that will be stored. The USD as it was typed is not kept: every line
- * that names a price says the stored integer ({@link usdTextOfMicrocents}), so no sentence can say a price the database does not hold.
+ * that names a price says the stored integer ({@link formatPrice}), so no sentence can say a price the database does not hold.
  */
 export interface PlannedPrice {
   readonly id: PricingFieldId;
@@ -399,19 +400,26 @@ function pricingJsonRecord(plan: SetPricingPlan): Record<string, unknown> {
 export function pricingPriceNote(plan: SetPricingPlan): string {
   return plan.prices
     .map(
-      (price) =>
-        `${price.id} $${usdTextOfMicrocents(price.microcents)}${pricingField(price.id).suffix}`,
+      (price) => `${price.id} ${formatPrice(price.microcents, pricingField(price.id).priceUnit)}`,
     )
     .join(', ');
 }
 
 /**
- * The sentence that says a SET was recorded. The shell prints it with the divergence note after it; the Home shows it alone. The
+ * The sentence that says a SET was recorded. The shell prints it with the divergence note after it; the Home shows it alone, with
+ * `surface: 'tui'` so that it names no shell command. The
  * model id is user-typed (or discovered), so any terminal-control byte is stripped before the echo — parity with `renderModelList`.
  * The provider is a validated (kebab) ProviderId, and the prices are numbers — both already safe.
  */
-export function pricingSetSentence(plan: SetPricingPlan): string {
-  return `Set user pricing for ${stripTerminalControls(plan.model)} (${plan.provider}): ${pricingPriceNote(plan)}. It applies to your next run/chat and survives \`relavium models refresh\`.`;
+export function pricingSetSentence(
+  plan: SetPricingPlan,
+  surface: NoticeSurface = 'shell',
+  /** What the sentence calls the provider: the id in the shell, the Home's display name (`OpenAI`) in the card. */
+  providerName: string = plan.provider,
+): string {
+  // The Home's card names no shell command (ADR-0146 §6, MVP-11 OD-20): the refresh it means is the one of its own `/models` picker.
+  const refresh = surface === 'tui' ? 'a model refresh' : '`relavium models refresh`';
+  return `Set user pricing for ${stripTerminalControls(plan.model)} (${providerName}): ${pricingPriceNote(plan)}. It applies to your next run/chat and survives ${refresh}.`;
 }
 
 /**
@@ -427,22 +435,27 @@ export function catalogDivergence(plan: SetPricingPlan): { readonly shipped: str
   return { shipped: catalogTokenRates(shipped) };
 }
 
-/** `input $5/Mtok, output $30/Mtok`: what the catalog charges. */
+/** `input $5 per M, output $30 per M`: what the catalog charges. */
 export function catalogTokenRates(shipped: ModelPricing): string {
-  return `input $${usdTextOfMicrocents(shipped.inputPerMtokMicrocents)}/Mtok, output $${usdTextOfMicrocents(shipped.outputPerMtokMicrocents)}/Mtok`;
+  return `input ${formatPrice(shipped.inputPerMtokMicrocents)}, output ${formatPrice(shipped.outputPerMtokMicrocents)}`;
 }
 
 /** The sentence for a CLEAR, as a flat if/else so no nested ternary decides the message. */
-export function clearedPricingSentence(plan: ClearPricingPlan, cleared: boolean): string {
+export function clearedPricingSentence(
+  plan: ClearPricingPlan,
+  cleared: boolean,
+  /** What the sentence calls the provider: the id in the shell, the Home's display name in the card. */
+  providerName: string = plan.provider,
+): string {
   const safeModel = stripTerminalControls(plan.model);
   if (!cleared) {
-    return `${safeModel} (${plan.provider}) has no user price to clear — nothing changed.`;
+    return `${safeModel} (${providerName}) has no user price to clear — nothing changed.`;
   }
   const shipped = plan.shipped;
   if (shipped === undefined) {
-    return `Cleared the user price for ${safeModel} (${plan.provider}). The catalog does not price this model, so its cost cap will not apply until you price it again.`;
+    return `Cleared the user price for ${safeModel} (${providerName}). The catalog does not price this model, so its cost cap will not apply until you price it again.`;
   }
-  return `Cleared the user price for ${safeModel} (${plan.provider}). It falls back to the catalog: ${catalogTokenRates(shipped)}.`;
+  return `Cleared the user price for ${safeModel} (${providerName}). It falls back to the catalog: ${catalogTokenRates(shipped)}.`;
 }
 
 /**

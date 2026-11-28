@@ -142,7 +142,7 @@ describe('shared explicit mode settings', () => {
     f.answers.push('auto');
     f.confirmations.push(true);
     await runModeSettings({ ...f.options, currentMode: () => 'ask', onCurrentMode });
-    expect(f.flow.confirm).toHaveBeenCalledWith(expect.stringContaining('without approval'), false);
+    expect(f.flow.confirm).toHaveBeenCalledWith(expect.stringContaining('without asking'), false);
     expect(onCurrentMode).toHaveBeenCalledExactlyOnceWith('auto');
     expect(f.publish).not.toHaveBeenCalled();
     expect(() =>
@@ -233,7 +233,7 @@ describe('shared explicit mode settings', () => {
       });
       expect(f.runtime.resolve(f.cwd).startingMode.mode).toBe('auto');
       expect(f.flow.confirm).toHaveBeenCalledWith(
-        expect.stringContaining('Protected-path and permission denials still apply'),
+        expect.stringContaining('scope and protected-path rules still apply'),
         false,
       );
       expect(f.notice).toHaveBeenCalledWith(

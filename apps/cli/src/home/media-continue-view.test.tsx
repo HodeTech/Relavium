@@ -44,17 +44,17 @@ describe('the question at 80×24', () => {
   it('draws the whole sentence and both answers, and no row is wider than the terminal', async () => {
     const channel = createNativePromptChannel();
     const controller = createHomeController({
-      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
       startChat: () => {
         throw new Error('unexpected chat');
       },
       homeStore: {
         read: () => ({
-          attention: { gates: [], failedRuns: [] },
+          failedRuns: [],
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],
-          unreadableRunIds: [],
+          unreadableRuns: [],
+          totals: { attention: 0, sessions: 0, runs: 0 },
           isEmpty: true,
         }),
       },

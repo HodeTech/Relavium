@@ -7,10 +7,16 @@ import {
   type EditorState,
   type ChatKey,
 } from './chat-input.js';
+import { exitKey, legend } from './legend.js';
 import type { NativePromptOption } from './native-prompt-channel.js';
 
 export const NATIVE_PICKER_PAGE_SIZE = 6;
 export const NATIVE_PICKER_QUERY_LIMIT = 256;
+/** What the card says when the page could not be read: the cause is never shown, and `Enter` reads it again. */
+export const PICKER_READ_FAILED = legend(
+  [{ text: 'Session history could not be read' }, { keys: 'Enter', verb: 'retry' }],
+  exitKey.close(),
+);
 export interface NativePickerPage {
   readonly options: readonly NativePromptOption[];
   readonly next?: () => Promise<NativePickerResult>;
@@ -98,7 +104,7 @@ export function createNativePicker(
       if (!active() || identity !== generation) return;
       current = undefined;
       loading = false;
-      error = 'Session history could not be read. Enter retries; Esc returns.';
+      error = PICKER_READ_FAILED;
       publish();
     };
     const source = Promise.resolve().then(() =>
@@ -150,7 +156,10 @@ export function createNativePicker(
     // eslint-disable-next-line no-control-regex -- Reject control-bearing search input as a whole before publication.
     if (next.text.length > NATIVE_PICKER_QUERY_LIMIT || /[\x00-\x1f\x7f]/u.test(next.text)) {
       invalid = true;
-      error = 'Filter must be one line of at most 256 characters. Edit it or Esc returns.';
+      error = legend(
+        [{ text: 'Filter must be one line of at most 256 characters' }, { text: 'Edit it' }],
+        exitKey.close(),
+      );
       generation++;
       current = undefined;
       loading = false;

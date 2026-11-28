@@ -300,8 +300,8 @@ header (1), question (≤ 2), options (≤ 4), the type-your-own row (1), the hi
 bounds above make each part fit: a code point is never wider in columns than it is in bytes, and every model-authored
 line is **hard-wrapped by display width** (not word-wrapped), so a line takes `⌈width / 78⌉` rows and an over-long word is
 broken, not cut. A terminal smaller than 80×24 gets the approval card's "too small" state; only the stop keys work.
-The rule row reads **`Question from the agent · not an approval`** (fixed host text, cyan where colour is on — never the
-approval card's yellow `Approval needed`). **A call with one question has no tabs.** A call with several shows them as **tabs** — one dot
+The rule row is the sheet's heavy rule and reads **`Question from the agent · not an approval`** (fixed host text, cyan where colour is on — never the
+approval card's amber `Approval needed` — with the wait clock on its right, `waiting 0:41`; [chat-session.md](../cli/chat-session.md#the-sheet-frame-and-the-wait-clock-mvp-11-unit-8-2026-11-27) owns the frame). **A call with one question has no tabs.** A call with several shows them as **tabs** — one dot
 per question (`●` answered, `○` not yet, the tab on screen in brackets) and a final **Review** tab — in the progress row, and the person moves
 between them freely. Every row of
 model-authored text (the question, the highlighted option's description) is drawn **behind the host's gutter `│ `** — the glyph is

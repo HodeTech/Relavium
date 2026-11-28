@@ -12,6 +12,7 @@ import { createConsentGate, type ConsentPrompter } from '../engine/mcp-consent-g
 import type { StdioConsentGate } from '../engine/mcp-servers.js';
 import { sweepHostMediaBestEffort } from '../engine/media-gc.js';
 import { terminalOutboxPath, type OpenedHistory } from '../history/open.js';
+import { isProjectRootHere, projectRootOf, recordedProjectRoot } from '../history/project-root.js';
 import { CliError, isCliError, toUserFacing } from '../process/errors.js';
 import { safetyRank } from '../process/exit-observations.js';
 import type { CliInvocation } from '../process/invocation.js';
@@ -21,8 +22,9 @@ import type { RunRenderer } from '../render/renderer.js';
 import { HOSTED_RUN_EXIT_SETTLE_MS } from '../render/tui/tui-constants.js';
 import type { RunJobControl } from '../render/run-job-control.js';
 import { sanitizeInline, sanitizeUntrustedInline } from '../render/sanitize.js';
+import { noticeSurfaceOf } from '../render/surface.js';
 import type { McpSecretResolver } from '../secrets/mcp-secret.js';
-import { finishLeg, type LegKind } from '../run-core/finish-leg.js';
+import { finishLeg, READ_RUN_IN_HOME, type LegKind } from '../run-core/finish-leg.js';
 import {
   prepareRun,
   type PrepareRunDeps,
@@ -127,6 +129,8 @@ export type HostedRefusal =
   | 'closing'
   /** The run belongs to another directory, or was recorded with none ([ADR-0139] §7). */
   | 'other_project'
+  /** The working directory no longer resolves to the directory the Home was opened in (a link in its spelling was repointed). */
+  | 'directory_changed'
   /** The leg was stopped before it started. */
   | 'stopped'
   /** This host has no invocation to register a leg's owner with. */
@@ -225,6 +229,12 @@ export interface RunHostOptions {
    * `setTimeout` (the bound must hold even when nothing else keeps the process alive); a test injects its own clock so nothing sleeps.
    */
   readonly schedule?: ((callback: () => void, delayMs: number) => () => void) | undefined;
+  /**
+   * The directory whose runs this host answers: its canonical root, the text a run records (`projectRootOf`). The Home passes the very
+   * value it lists runs by; absent, it is `projectRootOf(global.cwd)`. A resume of a run recorded under any other root, or under none, is
+   * refused before any work. The legs themselves still work in `global.cwd` as it was spelled.
+   */
+  readonly projectRoot?: string | undefined;
 }
 
 /** The services both cores read, with an absent one left out (the shell's own `exactOptionalPropertyTypes` shape). */
@@ -320,8 +330,23 @@ export const HOSTED_START_STOPPED = 'The run was stopped before it started.';
  */
 export const HOSTED_RESUME_CANCELLED = 'Cancelled. The run is as it was.';
 
+/**
+ * What a start, an answer or a continue says when the Home's working directory no longer resolves to the directory the Home was opened in
+ * (round 2 sitting #2, F3): a link in its spelling was repointed, so the leg would read another project's workflow and configuration. Fixed
+ * text: it names neither directory.
+ */
+export const PROJECT_DIRECTORY_CHANGED = 'The project directory changed. Reopen the Home.';
+
 function refused(reason: HostedRefusal, message: string): HostedLaunch {
   return { kind: 'refused', reason, message };
+}
+
+/** What a start leg throws when the working directory stopped resolving here during its preparation: answered as `directory_changed`. */
+class ProjectDirectoryChangedError extends Error {
+  constructor() {
+    super(PROJECT_DIRECTORY_CHANGED);
+    this.name = 'ProjectDirectoryChangedError';
+  }
 }
 
 /**
@@ -425,7 +450,8 @@ function unexpectedTerminal(runId: string): HostedRunTerminal {
     disposition: 'failed',
     safety: undefined,
     headline: `Run ${id} ended unexpectedly.`,
-    remedy: `Read ${relaviumRunCommand('logs', runId)}.`,
+    remedy: `Read ${READ_RUN_IN_HOME}.`,
+    shellRemedy: `Read ${relaviumRunCommand('logs', runId)}.`,
   });
 }
 
@@ -458,6 +484,9 @@ export class RunHost {
   readonly #env: CliIo['env'];
   readonly #global: GlobalOptions;
   readonly #db: Db;
+  /** The working directory as spelled: what a leg works in and loads its configuration from. */
+  readonly #cwd: string;
+  /** The directory whose runs this host answers, canonical ({@link RunHostOptions.projectRoot}). */
   readonly #projectRoot: string;
   readonly #homeDir: string;
   readonly #consent: ConsentPrompter | undefined;
@@ -482,7 +511,8 @@ export class RunHost {
     this.#env = options.io.env;
     this.#global = options.global;
     this.#db = options.db;
-    this.#projectRoot = options.global.cwd;
+    this.#cwd = options.global.cwd;
+    this.#projectRoot = options.projectRoot ?? projectRootOf(options.global.cwd);
     this.#homeDir = options.homeDir;
     this.#consent = options.consent;
     this.notices = options.notices ?? new RunNotices();
@@ -529,7 +559,7 @@ export class RunHost {
    */
   start(request: HostedStartRequest): Promise<HostedLaunch> {
     if (this.#launching?.kind === 'start') return this.#launching.promise;
-    const turnedAway = this.#admission();
+    const turnedAway = this.#admission() ?? this.#directoryChanged();
     if (turnedAway !== undefined) return turnedAway;
     return this.#launch('start', (context) => this.#acquireStart(request, context), request.signal);
   }
@@ -544,6 +574,8 @@ export class RunHost {
     if (turnedAway !== undefined) return turnedAway;
     const otherProject = this.#otherProjectRefusal(request.runId);
     if (otherProject !== undefined) return Promise.resolve(otherProject);
+    const moved = this.#directoryChanged();
+    if (moved !== undefined) return moved;
     return this.#launch(
       'resume',
       (context) => this.#acquireResume(request, context),
@@ -592,7 +624,7 @@ export class RunHost {
           kind: 'safety',
           runId: safety.runId,
           line: sanitizeInline(
-            `${safety.terminal.headline} ${safety.terminal.remedy ?? ''}`.trim(),
+            `${safety.terminal.headline} ${safety.terminal.shellRemedy ?? safety.terminal.remedy ?? ''}`.trim(),
           ),
         }),
       );
@@ -679,6 +711,18 @@ export class RunHost {
     return undefined;
   }
 
+  /**
+   * The refusal for a request made after the working directory stopped resolving to the directory this host answers (round 2 sitting #2,
+   * F3): the legs work in {@link #cwd} as it was spelled, so with a link in that spelling repointed a start would read another project's
+   * workflow and record its run there, and an answer would load another project's configuration. Asked of the live spelling just before
+   * a leg is registered, as a chat re-validates its pins before each use; `undefined` while it still resolves here. A start asks it again
+   * once its preparation is done, before the engine starts (`#acquireStart`).
+   */
+  #directoryChanged(): Promise<HostedLaunch> | undefined {
+    if (projectRootOf(this.#cwd) === this.#projectRoot) return undefined;
+    return Promise.resolve(refused('directory_changed', PROJECT_DIRECTORY_CHANGED));
+  }
+
   /** The refusal for a run recorded for another directory (or for none), before any work. */
   #otherProjectRefusal(runId: string): HostedLaunch | undefined {
     let recorded: string | null | undefined;
@@ -688,9 +732,10 @@ export class RunHost {
       return refused('rejected', this.#faultMessage(cause));
     }
     // A run that does not exist is the resume core's refusal to word; one recorded elsewhere is ours.
-    if (recorded === undefined || recorded === this.#projectRoot) return undefined;
+    if (recorded === undefined || isProjectRootHere(recorded, this.#projectRoot)) return undefined;
     // A run with no recorded root is not "another directory's": there is no directory to open the Home in, and the words must not say there is.
-    if (recorded === null)
+    // A relative root (`.`, written before roots were canonical) names no directory either: it is unrecorded, never this Home's.
+    if (recordedProjectRoot(recorded) === undefined)
       return refused(
         'other_project',
         'This run was recorded without a project root, so the Home does not answer it. Answer it from the shell; `relavium status` shows how.',
@@ -750,8 +795,11 @@ export class RunHost {
       acquired = await acquire({ lifetime, resources, io, commit: untie });
     } catch (cause) {
       const stopped = lifetime.isStoppedFailure(cause);
-      if (!stopped) lifetime.failure(cause);
+      // The directory that moved during the preparation is the host's own refusal, never a fault of the leg (nothing failed).
+      const moved = cause instanceof ProjectDirectoryChangedError;
+      if (!stopped && !moved) lifetime.failure(cause);
       await this.#release(leg, resources);
+      if (moved) return refused('directory_changed', PROJECT_DIRECTORY_CHANGED);
       if (!stopped) return refused('rejected', this.#faultMessage(cause));
       return refused('stopped', kind === 'resume' ? HOSTED_RESUME_CANCELLED : HOSTED_START_STOPPED);
     } finally {
@@ -788,7 +836,7 @@ export class RunHost {
    * from `~` and never by its absolute path (RUNCORE-3): a notice is drawn into a transcript that a screen share carries away.
    */
   #faultMessage(cause: unknown): string {
-    const pathFree = faultForTranscript(cause, { cwd: this.#projectRoot, homeDir: this.#homeDir });
+    const pathFree = faultForTranscript(cause, { cwd: this.#cwd, homeDir: this.#homeDir });
     return sanitizeUntrustedInline(toUserFacing(pathFree).message);
   }
 
@@ -898,6 +946,7 @@ export class RunHost {
     try {
       await finishLeg({
         leg: leg.kind,
+        noticeSurface: noticeSurfaceOf('home'), // the line a taken-over leg writes becomes a notice in the Home
         runId: acquired.runId,
         lifetime: leg.lifetime,
         io,
@@ -1038,6 +1087,9 @@ export class RunHost {
 
   async #acquireStart(request: HostedStartRequest, context: LegContext): Promise<Acquisition> {
     const { lifetime, resources, io } = context;
+    // The root the run core records the run under: `projectRootOf` of this leg's cwd as it resolved when the history was opened, after the
+    // leg's awaits (the secret port, the MCP consent card and connect).
+    let recordedRoot: string | undefined;
     const prepared = await prepareRun(
       {
         workflow: request.workflow,
@@ -1051,12 +1103,16 @@ export class RunHost {
       },
       {
         io,
-        global: { cwd: this.#projectRoot, configPath: this.#global.configPath },
+        // Every line a leg writes becomes a notice inside the TUI: its remedies name the Home's actions, never a shell command.
+        noticeSurface: noticeSurfaceOf('home'),
+        global: { cwd: this.#cwd, configPath: this.#global.configPath },
         // The same home a resume loads from, never the OS's: the host is always handed one.
         home: this.#homeDir,
         ...this.#services,
-        openRunStore: (workflow, homeDir, projectRoot) =>
-          this.#historyOverHome(workflow, homeDir, projectRoot),
+        openRunStore: (workflow, homeDir, projectRoot) => {
+          recordedRoot = projectRoot;
+          return this.#historyOverHome(workflow, homeDir, projectRoot);
+        },
       },
       {
         secretInputs: (def) => refuseBlankSecrets(request.secrets, declaredSecretNames(def)),
@@ -1066,6 +1122,14 @@ export class RunHost {
       lifetime,
       resources,
     );
+    // Asked again once the preparation is done, with no await before the engine starts (round 2 sitting #3, finding 5): the check in
+    // `start()` ran before the leg's awaits, and a link in this spelling repointed while they waited would record the run under the other
+    // directory or start it there. The root the run was recorded under and the live one must both still be the Home's.
+    if (
+      (recordedRoot !== undefined && recordedRoot !== this.#projectRoot) ||
+      projectRootOf(this.#cwd) !== this.#projectRoot
+    )
+      throw new ProjectDirectoryChangedError();
     const handle = prepared.start();
     return {
       engine: prepared.engine,
@@ -1083,7 +1147,7 @@ export class RunHost {
   ): Promise<Acquisition> {
     const { lifetime, resources, io } = context;
     const host = loadResolvedConfig({
-      cwd: this.#projectRoot,
+      cwd: this.#cwd,
       configPath: this.#global.configPath,
       home: this.#homeDir,
     });
@@ -1102,7 +1166,12 @@ export class RunHost {
             kind: request.kind,
             decision: request.decision,
           },
-      { io, global: { cwd: this.#projectRoot }, ...this.#services },
+      {
+        io,
+        noticeSurface: noticeSurfaceOf('home'),
+        global: { cwd: this.#cwd },
+        ...this.#services,
+      },
       { config: host.config, homeDir: host.homeDir },
       {
         openDb: () => ({ db: this.#db, close: () => undefined }),

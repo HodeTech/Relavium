@@ -79,7 +79,7 @@ describe('installed Home asynchronous publication during native suspension', () 
       kind === 'mention'
         ? 'arriving-home-candidate.ts'
         : kind === 'picker'
-          ? "couldn't refresh anthropic"
+          ? "couldn't refresh Anthropic"
           : '! shell command failed unexpectedly';
     const refusal = new CliError('invalid_invocation', 'PRIVATE_CLASSIFIED_HOME_REFUSAL');
     const running = driveHome({
@@ -167,13 +167,20 @@ describe('installed Home asynchronous publication during native suspension', () 
         await vi.waitFor(() => expect(list).toHaveBeenCalledOnce());
         expect(shellRunner).not.toHaveBeenCalled();
       } else if (kind === 'picker') {
+        const popups = props.popups;
         controller.handlePaste('/models');
         controller.handleKey('', { return: true });
+        // The `/models` popup opens over the chat, and its catalog refresh is its work, in flight.
         await vi.waitFor(() => {
           expect(listModels).toHaveBeenCalledOnce();
-          expect(controller.getSnapshot().modelPicker?.loading).toBe(true);
+          expect(popups?.getSnapshot().frame?.spec.id).toBe('models');
         });
-        expect(controller.getSnapshot().modelPicker?.banner).toBeUndefined();
+        const listed = popups?.getSnapshot().frame?.steps[0]?.content;
+        expect(
+          listed?.kind === 'loading' ||
+            (listed?.kind === 'list' && listed.heading?.text.includes('refreshing…') === true),
+          'the refresh is said to be in flight',
+        ).toBe(true);
         expect(shellRunner).not.toHaveBeenCalled();
         expect(list).not.toHaveBeenCalled();
       } else {

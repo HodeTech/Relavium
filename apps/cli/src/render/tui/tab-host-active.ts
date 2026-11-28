@@ -1,7 +1,9 @@
 import { STALLED_REASON, type ActiveRow } from '../../history/active-model.js';
 import type { ActiveRead } from '../../history/active-source.js';
+import { RUN_STATUS_ROLE } from '../../history/history-model.js';
 import type { ChatKey } from './chat-input.js';
-import type { LegendItem } from './legend.js';
+import { glyph, statusCell } from './glyphs.js';
+import { keyToken, type LegendItem, type LegendKey } from './legend.js';
 import {
   clampSpans,
   clipLine,
@@ -9,6 +11,8 @@ import {
   windowBody,
   type SheetLine,
   type SheetSpan,
+  moreAboveText,
+  moreBelowText,
 } from './sheet-frame.js';
 
 /**
@@ -18,7 +22,7 @@ import {
  * this module says what a key does and which lines to draw.
  *
  * - **Four groups, in this order: running, paused, stalled, held.** A group is a word on every row as well as an order, so the list reads
- *   without colour: `◐ running`, `○ pending`, `⏸ paused`, `⚠ stalled`, `◇ held`. The leg this Home runs is in `running` and says so; a
+ *   without colour: `◐ running`, `○ pending`, `‖ paused`, `⚠ stalled`, `◇ held`. The leg this Home runs is in `running` and says so; a
  *   paused run says what it waits for (a gate here, a media job, another project, or `gate state not read`, which a damaged log gets and
  *   never "media job").
  * - **Three kinds of row act.** `Enter` on the leg this Home hosts asks the host to reopen its view; `Enter` on a run paused at a gate in THIS
@@ -30,6 +34,8 @@ import {
  *   its id: a run that moves up or down the list keeps the cursor. A run that LEFT the list does not hand the cursor to whichever row now
  *   stands at its number: the focus is cleared and the tab says so ({@link ACTIVE_FOCUS_LEFT}), no row is marked, and `Enter` does nothing
  *   until `↑` or `↓` picks a row, because an `Enter` aimed at a run that is gone must never open the card of its neighbour.
+ * - **This directory by default** (MVP-11 unit 8, OD-24 D4): a run started in another directory is not listed (a paused one used to say `another
+ *   project`); `[a] all` lists them too, read-only, and `[a] here` narrows the list again. The scope is the tab's own state and what it remembers.
  * - **Bounded.** At most 200 rows a status (the source's limit) and a marker line for what lies past them: `… N more running not listed`.
  * - **The freshness is stated.** The list is as of each node boundary: streamed output is never stored, and the last row says so until a
  *   message or a warning takes its place.
@@ -44,9 +50,6 @@ const GROUP_ORDER: Readonly<Record<ActiveGroup, number>> = {
   stalled: 2,
   held: 3,
 };
-
-const STALLED_GLYPH = '⚠';
-export const HELD_GLYPH = '◇';
 
 /** The group a row is listed under. A held terminal outranks the rest; the hosted leg is always `running`. */
 export function activeGroupOf(row: ActiveRow): ActiveGroup {
@@ -69,8 +72,13 @@ export function activeDisplayOrder(rows: readonly ActiveRow[]): readonly ActiveR
   return [...rows].sort((a, b) => GROUP_ORDER[activeGroupOf(a)] - GROUP_ORDER[activeGroupOf(b)]);
 }
 
+/** Which runs the tab lists: those started in this directory (the default), or every project's, the others read-only. */
+export type ActiveScope = 'project' | 'all';
+
 /** The Active tab as it stands. */
 export interface ActiveTabState {
+  /** Which runs {@link rows} lists. */
+  readonly scope: ActiveScope;
   /** `loading`: nothing was read yet. `ready`: `rows` is a read. `unreadable`: the first read failed, or nothing feeds the tab. */
   readonly phase: 'loading' | 'ready' | 'unreadable';
   /** The newest read, for what lies beyond the rows and for the outbox warning. */
@@ -98,16 +106,30 @@ export type ActiveStep =
 export const ACTIVE_KEYS = {
   select: { keys: '↑/↓', verb: 'select' },
   open: { keys: 'Enter', verb: 'open' },
-} as const satisfies Readonly<Record<string, LegendItem>>;
+  /** Shown while the scope is this directory; the toggle back says `here`. */
+  widen: { keys: 'a', verb: 'all' },
+  narrow: { keys: 'a', verb: 'here' },
+} as const satisfies Readonly<Record<string, LegendKey>>;
 
 export const ACTIVE_LOADING = 'Reading the active runs…';
 export const ACTIVE_UNREADABLE = 'The active runs could not be read.';
-export const ACTIVE_EMPTY = 'No run is active. Start one from the Defined tab with r.';
-export const ACTIVE_FRESHNESS = 'Shown as of each node boundary: streamed output is not stored.';
+/**
+ * What the tab says when this directory has no active run: where a run is started, and where the other directories' are. The Runs screen has no
+ * prompt, so `/run` is not typed here: a run is started from the Home.
+ */
+export const ACTIVE_EMPTY = `No run is active here. Start one from the Home; ${keyToken('a')} lists every project’s.`;
+/** The same when every project is listed. */
+export const ACTIVE_EMPTY_ALL = 'No run is active in any project.';
+/** What the hint under the list says of what is listed, by scope; the list is as of each node boundary. */
+export const ACTIVE_SCOPE_WORDS: Readonly<Record<ActiveScope, string>> = {
+  project: 'this project',
+  all: 'all projects',
+};
+export const ACTIVE_FRESHNESS = 'as of each node boundary; streamed output is not stored.';
 export const ACTIVE_HELD_UNREAD = 'Outbox unreadable: a run whose end is held may show as running.';
 export const ACTIVE_STALE_READ = 'The runs could not be read again: this is the last list read.';
-export const ACTIVE_FOCUS_LEFT = 'The run you had selected left the list. ↑/↓ select another.';
-export const ACTIVE_SELECT_FIRST = 'No run is selected. ↑/↓ select one.';
+export const ACTIVE_FOCUS_LEFT = `The run you had selected left the list. ${keyToken('↑/↓')} select another.`;
+export const ACTIVE_SELECT_FIRST = `No run is selected. ${keyToken('↑/↓')} select one.`;
 
 const clamp = (value: number, last: number): number => Math.max(0, Math.min(value, last));
 
@@ -124,8 +146,10 @@ export function openActiveTab(
   last: ActiveRead | undefined,
   cursor: number,
   focus?: string,
+  scope: ActiveScope = 'project',
 ): ActiveTabState {
   const empty: ActiveTabState = {
+    scope,
     phase: 'loading',
     read: undefined,
     rows: [],
@@ -137,7 +161,21 @@ export function openActiveTab(
 
 /** The tab for a Home that has nothing to read it from. */
 export function unreadableActiveTab(): ActiveTabState {
-  return { phase: 'unreadable', read: undefined, rows: [], cursor: 0, focus: undefined };
+  return {
+    scope: 'project',
+    phase: 'unreadable',
+    read: undefined,
+    rows: [],
+    cursor: 0,
+    focus: undefined,
+  };
+}
+
+/** The rows a read lists in `scope`, in display order: this directory's runs, or every project's. */
+function scopedRows(read: ActiveRead, scope: ActiveScope): readonly ActiveRow[] {
+  return activeDisplayOrder(
+    scope === 'all' ? read.rows : read.rows.filter((row) => row.elsewhere !== true),
+  );
 }
 
 /**
@@ -148,7 +186,7 @@ export function unreadableActiveTab(): ActiveTabState {
  * stays.
  */
 export function applyActiveRead(state: ActiveTabState, read: ActiveRead): ActiveTabState {
-  const rows = activeDisplayOrder(read.rows);
+  const rows = scopedRows(read, state.scope);
   const found = state.focus === undefined ? -1 : rows.findIndex((row) => row.runId === state.focus);
   const unlisted = rows.length > 0 && found < 0;
   // The focus was set and its run is gone now, or an earlier read already cleared it and nothing was selected since.
@@ -162,6 +200,7 @@ export function applyActiveRead(state: ActiveTabState, read: ActiveRead): Active
   const kept = state.message === ACTIVE_STALE_READ ? undefined : state.message;
   const message = newlyLeft ? ACTIVE_FOCUS_LEFT : kept;
   return {
+    scope: state.scope,
     phase: 'ready',
     read,
     rows,
@@ -189,16 +228,16 @@ export function withActiveMessage(state: ActiveTabState, message: string): Activ
 function explain(row: ActiveRow): string {
   switch (row.class) {
     case 'hosted':
-      return 'This Home runs it. Enter reopens its view.';
+      return `This Home runs it. ${keyToken('Enter')} reopens its view.`;
     case 'other-paused-here':
-      return 'Waiting at a gate in this project. Enter opens the gate card.';
+      return `Waiting at a gate in this project. ${keyToken('Enter')} opens the gate card.`;
     case 'other-running':
       return row.stalled
         ? `No live owner: ${STALLED_REASON}. Read-only.`
         : 'Running in another process: read-only. There is no cross-process cancel.';
     case 'other-paused-media':
       return row.actionable
-        ? 'Waiting for a media job. Enter asks whether to continue it here.'
+        ? `Waiting for a media job. ${keyToken('Enter')} asks whether to continue it here.`
         : 'Waiting for a media job: there is nothing to decide here.';
     case 'paused-gate-unknown':
       return 'Its gate state could not be read. relavium status shows what it waits for.';
@@ -236,13 +275,28 @@ function enterRow(cleared: ActiveTabState, row: ActiveRow): ActiveStep {
   return { kind: 'state', state: { ...cleared, message: readOnlyMessage(row) } };
 }
 
+/**
+ * `a`: the other scope, read from the read the tab holds (nothing is read again; the poll's next read lists in the scope in force). The cursor stays
+ * on the run it was on when the new list holds it, else on the first row with nothing selected, as any list that changed under the cursor does.
+ */
+function toggleScope(cleared: ActiveTabState): ActiveStep {
+  const scope: ActiveScope = cleared.scope === 'project' ? 'all' : 'project';
+  const switched: ActiveTabState = { ...cleared, scope };
+  return {
+    kind: 'state',
+    state: cleared.read === undefined ? switched : applyActiveRead(switched, cleared.read),
+  };
+}
+
 /** Fold one key (already past the tab host's own tab keys and `Esc`) into the tab. */
-export function foldActiveKey(state: ActiveTabState, key: ChatKey): ActiveStep {
+export function foldActiveKey(state: ActiveTabState, input: string, key: ChatKey): ActiveStep {
   const cleared: ActiveTabState =
     state.message === undefined ? state : { ...state, message: undefined };
   const stay: ActiveStep = { kind: 'state', state: cleared };
   // A chord (`Ctrl+X`, a meta key) is never one of these keys.
   if (key.ctrl === true || key.meta === true) return stay;
+  // A bare letter is the same key with Caps Lock on.
+  if (state.phase === 'ready' && input.toLowerCase() === 'a') return toggleScope(cleared);
   if (key.upArrow === true || key.downArrow === true) return moveCursor(state, cleared, key);
   if (key.return !== true) return stay;
   if (state.focus === undefined && state.rows.length > 0)
@@ -253,14 +307,16 @@ export function foldActiveKey(state: ActiveTabState, key: ChatKey): ActiveStep {
 
 // ---- What is drawn --------------------------------------------------------------------------------------------------------
 
-const POINTER = '› ';
+/** The selection marker and its space, in the form in force ({@link glyph}); an unselected row keeps the same two columns. */
+const pointer = (): string => `${glyph('selection')} `;
 const INDENT = '  ';
 const WORD_WIDTH = 9;
 
-function glyphOf(row: ActiveRow, group: ActiveGroup): string {
-  if (group === 'stalled') return STALLED_GLYPH;
-  if (group === 'held') return HELD_GLYPH;
-  return row.glyph;
+/** The glyph of a row, in the column the list gives a status: a stalled run is a warning and a held terminal is the held diamond. */
+function rowGlyph(row: ActiveRow, group: ActiveGroup): string {
+  if (group === 'stalled') return statusCell('warning');
+  if (group === 'held') return statusCell('held');
+  return statusCell(RUN_STATUS_ROLE[row.status]);
 }
 
 /** The word of a row: the status for a run that is running or pending, else its group. A glyph never stands alone. */
@@ -277,7 +333,7 @@ function qualifierOf(row: ActiveRow): string {
 function rowLine(row: ActiveRow, selected: boolean, width: number): SheetLine {
   const group = activeGroupOf(row);
   const word = wordOf(row, group).padEnd(WORD_WIDTH);
-  const lead = `${selected ? POINTER : INDENT}${glyphOf(row, group)} `;
+  const lead = `${selected ? pointer() : INDENT}${rowGlyph(row, group)} `;
   const left = `${lead}${word}${row.shortId}  ${row.label}`;
   const tail = qualifierOf(row);
   const text = flushRow(left, tail, width);
@@ -309,7 +365,10 @@ function footerLine(state: ActiveTabState, width: number): SheetLine {
   if (state.message !== undefined) return { kind: 'notice', text: clipLine(state.message, width) };
   if (state.read?.heldUnread === true)
     return { kind: 'notice', text: clipLine(ACTIVE_HELD_UNREAD, width) };
-  return { kind: 'hint', text: clipLine(ACTIVE_FRESHNESS, width) };
+  return {
+    kind: 'hint',
+    text: clipLine(`${ACTIVE_SCOPE_WORDS[state.scope]} · ${ACTIVE_FRESHNESS}`, width),
+  };
 }
 
 /**
@@ -327,7 +386,10 @@ export function activeBody(
   const footer = footerLine(state, width);
   const beyond = moreLines(state.read, width);
   if (state.rows.length === 0) {
-    const empty: SheetLine = { kind: 'text', text: clipLine(ACTIVE_EMPTY, width) };
+    const empty: SheetLine = {
+      kind: 'text',
+      text: clipLine(state.scope === 'all' ? ACTIVE_EMPTY_ALL : ACTIVE_EMPTY, width),
+    };
     return [empty, ...beyond, footer].slice(0, room);
   }
   const height = Math.max(3, room - 2 - beyond.length);
@@ -337,12 +399,11 @@ export function activeBody(
     .map((row, at) =>
       rowLine(row, start + at === state.cursor && state.focus !== undefined, width),
     );
-  if (start > 0 && list.length > 0)
-    list[0] = { kind: 'marker', text: `▲ ${String(start + 1)} more` };
+  if (start > 0 && list.length > 0) list[0] = { kind: 'marker', text: moreAboveText(start + 1) };
   if (end < state.rows.length && list.length > 0)
     list[list.length - 1] = {
       kind: 'marker',
-      text: `▼ ${String(state.rows.length - end + 1)} more`,
+      text: moreBelowText(state.rows.length - end + 1),
     };
   const selected = state.focus === undefined ? undefined : state.rows[state.cursor];
   const detail: SheetLine =
@@ -352,12 +413,13 @@ export function activeBody(
   return [...list, ...beyond, detail, footer];
 }
 
-/** The legend's items for the tab: the tab host's own, then the keys that act on a row (only when there is a row to act on). */
+/** The legend's items for the tab: the tab host's own, then the keys that act on a row (only when there is a row to act on). The key that leaves is the host's. */
 export function activeLegendItems(
   state: ActiveTabState,
   tabItems: readonly LegendItem[],
-  closeItem: LegendItem,
 ): readonly LegendItem[] {
-  if (state.phase !== 'ready' || state.rows.length === 0) return [...tabItems, closeItem];
-  return [...tabItems, ACTIVE_KEYS.select, ACTIVE_KEYS.open, closeItem];
+  if (state.phase !== 'ready') return tabItems;
+  const scope = state.scope === 'project' ? ACTIVE_KEYS.widen : ACTIVE_KEYS.narrow;
+  if (state.rows.length === 0) return [...tabItems, scope];
+  return [...tabItems, ACTIVE_KEYS.select, ACTIVE_KEYS.open, scope];
 }

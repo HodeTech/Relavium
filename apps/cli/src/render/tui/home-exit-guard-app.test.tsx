@@ -13,18 +13,20 @@ import type { HomeSnapshot } from '../../home/home-store.js';
 import type { RunHostSnapshot } from '../../home/run-host.js';
 import { RootApp } from './home-app.js';
 import { createHomeController, type HomeChatSession } from './home-controller.js';
-import { settleFrames, waitFor } from './harness-util.js';
-import { EXIT_GUARD_GLYPH } from './home-projection.js';
+import { settleFrames, waitFor, withoutStyles } from './harness-util.js';
+import { glyphOf } from './glyphs.js';
+import { APPROVAL_LOCKOUT_MS } from './tool-review-model.js';
 import { HOSTED_RUN_EXIT_BOUND_MS } from './tui-constants.js';
 
 afterEach(cleanup);
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const RUNNING: RunHostSnapshot = {
@@ -39,16 +41,18 @@ const CTRL_N = '\x0e';
 const CTRL_Y = '\x19';
 
 function mount(options: { size?: { cols: number; rows: number } } = {}) {
+  // The guard's clock: it moves only when `pass` says so (the card's lockout runs from its appearance since unit 8).
+  let t = 0;
   const cancel = vi.fn((): boolean => true);
   const close = vi.fn(() => Promise.resolve());
   const onExit = vi.fn();
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => new Promise<HomeChatSession>(() => {}),
     homeStore: { read: () => EMPTY },
     hostedRuns: { snapshot: () => RUNNING, cancel, close },
     // The leg never settles and the grace never fires: this file proves the wiring, not the wait.
     schedule: () => () => {},
+    now: () => t,
     onExit,
     onError: vi.fn(),
   });
@@ -62,44 +66,52 @@ function mount(options: { size?: { cols: number; rows: number } } = {}) {
       subscribeResize={() => () => {}}
     />,
   );
-  return { controller, harness, cancel, close, onExit };
+  /** The card has been on screen for its whole lockout with no key: a `Ctrl+Y` now is a deliberate one. */
+  const pass = (): void => {
+    t += APPROVAL_LOCKOUT_MS;
+  };
+  return { controller, harness, cancel, close, onExit, pass };
 }
 
 describe('the exit-guard card through RootApp', () => {
-  it('Ctrl+D on the empty landing opens the card, drawn over the Home with the run row, and the prompt is not offered', async () => {
+  it('Ctrl+D on the empty landing opens the card in the place of the prompt block (the run row with it: the card names the run), and the prompt is not offered', async () => {
     const { controller, harness, onExit } = mount();
     await settleFrames();
     harness.stdin.write(CTRL_D);
     await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
-    await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+Y stop the run and leave'));
+    await waitFor(() => (harness.lastFrame() ?? '').includes('[Ctrl+Y] stop the run and leave'));
     const frame = harness.lastFrame() ?? '';
     expect(frame).toContain('A workflow run is executing: run-0001.');
-    expect(frame).toContain('▶ run-0001');
-    expect(frame).not.toContain('Ctrl+C twice to exit');
+    expect(
+      frame,
+      'the row stands under the status line, in the block the card replaces',
+    ).not.toContain('~ run-0001');
+    expect(frame).not.toContain('[Ctrl+C] exit (twice)');
     expect(onExit).not.toHaveBeenCalled();
   });
 
   it('the title row has a glyph and the words, so the card reads without colour as the other cards do', async () => {
-    const { controller, harness } = mount();
+    const { controller, harness, pass } = mount();
     await settleFrames();
     harness.stdin.write(CTRL_D);
     await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
-    await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+Y stop the run and leave'));
-    const lines = (harness.lastFrame() ?? '').split('\n');
+    await waitFor(() => (harness.lastFrame() ?? '').includes('[Ctrl+Y] stop the run and leave'));
+    const lines = withoutStyles(harness.lastFrame() ?? '').split('\n');
     const title = lines.find((line) => line.includes('A workflow run is executing'));
     expect(title?.trim(), 'a glyph, then the words, on one row').toBe(
-      `${EXIT_GUARD_GLYPH.warning} A workflow run is executing: run-0001.`,
+      `${glyphOf('warning', true)} A workflow run is executing: run-0001.`,
     );
     await settleFrames(); // the card's exact frame is measured and flushed: only then does Ctrl+Y count
+    pass(); // and read for the lockout that runs from its appearance
     harness.stdin.write(CTRL_Y);
     await waitFor(() => (harness.lastFrame() ?? '').includes('Stopping the run…'));
     expect(
-      (harness.lastFrame() ?? '')
+      withoutStyles(harness.lastFrame() ?? '')
         .split('\n')
         .find((line) => line.includes('Stopping the run…'))
         ?.trim(),
       'the waiting card has its glyph too',
-    ).toBe(`${EXIT_GUARD_GLYPH.stopping} Stopping the run…`);
+    ).toBe(`${glyphOf('stopping', true)} Stopping the run…`);
   });
 
   it('Ctrl+N closes it and the Home is back: the prompt hint returns', async () => {
@@ -109,23 +121,24 @@ describe('the exit-guard card through RootApp', () => {
     await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
     harness.stdin.write(CTRL_N);
     await waitFor(() => controller.getSnapshot().exitGuard === undefined);
-    await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+C twice to exit'));
-    expect(harness.lastFrame()).not.toContain('Ctrl+Y stop the run');
+    await waitFor(() => (harness.lastFrame() ?? '').includes('[Ctrl+C] exit (twice)'));
+    expect(harness.lastFrame()).not.toContain('[Ctrl+Y] stop the run');
     expect(cancel).not.toHaveBeenCalled();
   });
 
   it('Ctrl+Y cancels the run and the card says it is stopping', async () => {
-    const { controller, harness, cancel, onExit } = mount();
+    const { controller, harness, cancel, onExit, pass } = mount();
     await settleFrames();
     harness.stdin.write(CTRL_D);
     await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
-    await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+Y stop the run and leave'));
+    await waitFor(() => (harness.lastFrame() ?? '').includes('[Ctrl+Y] stop the run and leave'));
     await settleFrames(); // the card's exact frame is measured and flushed: only then does Ctrl+Y count
+    pass(); // and read for the lockout that runs from its appearance
     harness.stdin.write(CTRL_Y);
     await waitFor(() => (harness.lastFrame() ?? '').includes('Stopping the run…'));
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(harness.lastFrame()).toContain(
-      `within about ${String(HOSTED_RUN_EXIT_BOUND_MS / 1000)} s`, // the grace and then the host's settle bound
+      `within about ${String(HOSTED_RUN_EXIT_BOUND_MS / 1000)}s`, // the grace and then the host's settle bound
     );
     expect(onExit, 'the leg has not settled and the grace has not run out').not.toHaveBeenCalled();
   });
@@ -138,20 +151,21 @@ describe('the exit-guard card through RootApp', () => {
     await waitFor(() => controller.getSnapshot().mode === 'loading');
     harness.stdin.write(CTRL_C);
     await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
-    await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+Y stop the run and leave'));
-    expect(harness.lastFrame()).not.toContain('Starting chat… · Ctrl+C to exit');
+    await waitFor(() => (harness.lastFrame() ?? '').includes('[Ctrl+Y] stop the run and leave'));
+    expect(harness.lastFrame()).not.toContain('Starting chat… · [Ctrl+C] exit');
   });
 
   it('Ctrl+Y counts in the loading echo too, once that frame is on screen: the echo is measured like the landing', async () => {
-    const { controller, harness, cancel } = mount();
+    const { controller, harness, cancel, pass } = mount();
     await settleFrames();
     controller.handleKey('h', {});
     controller.handleKey('', { return: true });
     await waitFor(() => controller.getSnapshot().mode === 'loading');
     harness.stdin.write(CTRL_C);
     await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
-    await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+Y stop the run and leave'));
+    await waitFor(() => (harness.lastFrame() ?? '').includes('[Ctrl+Y] stop the run and leave'));
     await settleFrames(); // the echo's exact frame is measured and flushed: only then does Ctrl+Y count
+    pass(); // and read for the lockout that runs from its appearance
     harness.stdin.write(CTRL_Y);
     await waitFor(() => (harness.lastFrame() ?? '').includes('Stopping the run…'));
     expect(cancel).toHaveBeenCalledTimes(1);
@@ -169,7 +183,7 @@ describe('the exit-guard card through RootApp', () => {
     );
     harness.stdin.write(CTRL_C);
     await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
-    await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+Y stop the run and leave'));
+    await waitFor(() => (harness.lastFrame() ?? '').includes('[Ctrl+Y] stop the run and leave'));
     const frame = harness.lastFrame() ?? '';
     expect(frame, 'the card and the line that explains why Ctrl+Y answers nothing').toContain(
       'Terminal too small (60×20) — resize to at least 80×24.',
@@ -203,7 +217,7 @@ describe('the exit-guard card through RootApp', () => {
     ).not.toHaveBeenCalled();
     harness.stdin.write(CTRL_D);
     await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
-    await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+Y stop the run and leave'));
+    await waitFor(() => (harness.lastFrame() ?? '').includes('[Ctrl+Y] stop the run and leave'));
     expect(harness.lastFrame()).toContain('Terminal too small (60×20)');
     // A cancel that cannot be undone needs the card on screen as the person is meant to read it: at 80×24 or more, never in the degrade.
     harness.stdin.write(CTRL_Y);

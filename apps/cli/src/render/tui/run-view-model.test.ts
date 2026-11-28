@@ -369,7 +369,7 @@ describe('reduceRunEvent', () => {
     }
     const s = reduceAll(events);
     expect(s.toolLines).toHaveLength(MAX_TOOL_LINES); // bounded to the trailing window
-    expect(s.toolLines.at(-1)).toBe(`→ tool-${MAX_TOOL_LINES + 2}`);
+    expect(s.toolLines.at(-1)).toBe(`▸ tool-${MAX_TOOL_LINES + 2}`);
   });
 
   it('renders a tool_result line with a success marker and a clipped summary', () => {
@@ -385,7 +385,7 @@ describe('reduceRunEvent', () => {
         outputSummary: 'ok',
       },
     ]);
-    expect(s.toolLines).toEqual(['✓ read_file: ok']);
+    expect(s.toolLines).toEqual(['✓ completed read_file: ok']);
   });
 
   it('detects a sequenceNumber gap and warns (no drop in-process, so a gap signals a defect)', () => {
@@ -626,7 +626,7 @@ describe('reduceRunEvent — previously-uncovered events + edge cases', () => {
     ]);
     expect(
       paused.warnings.some(
-        (w) => w.includes('budget gate budget-1') && w.includes('legacy gate: no frozen allowance'),
+        (w) => w.includes('budget gate budget-1') && w.includes('legacy gate: no budget allowance'),
       ),
     ).toBe(true);
   });
@@ -759,7 +759,7 @@ describe('reduceRunEvent — previously-uncovered events + edge cases', () => {
         outputSummary: '',
       },
     ]);
-    expect(s.toolLines).toEqual(['✓ noop']);
+    expect(s.toolLines).toEqual(['✓ completed noop']);
   });
 
   it('carries cumulativeCostMicrocents from a node:completed snapshot', () => {

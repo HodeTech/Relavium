@@ -47,11 +47,12 @@ async function eventually(predicate: () => boolean, what = 'the condition'): Pro
 }
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const IDLE: RunHostSnapshot = { launching: false, active: undefined, last: undefined };
@@ -107,7 +108,6 @@ function mount(options: Options = {}) {
     guard: OFF,
   };
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => new Promise(() => {}),
     homeStore: { read: () => EMPTY },
     hostedRuns: {
@@ -158,32 +158,37 @@ async function focusRow(m: Mounted, cue: string): Promise<void> {
 }
 
 describe('the row of a media park', () => {
-  it('says it waits for media, and its focused key says it asks: not "no gate to decide", not "Enter says why"', async () => {
+  it('says it waits for media, and its focused key says it asks: not "no gate", not "Enter say why"', async () => {
     const m = mount();
     await settleFrames();
-    expect(m.frame()).toContain('‖ run-0001  ·  waiting for media  ·  ↓ selects');
-    expect(m.frame()).not.toContain('no gate to decide');
+    // The row is the work page's (MVP-11 unit 7): down onto it, then past it onto the docked prompt. The row names no key of its own; the hint
+    // row names the focused row's `Enter`.
     m.harness.stdin.write(DOWN);
-    await eventually(() =>
-      m.frame().includes('> ‖ run-0001  ·  waiting for media  ·  Enter asks to continue'),
-    );
-    expect(m.frame()).toContain('Enter continue it');
-    expect(m.frame()).not.toContain('Enter says why');
-    expect(m.frame()).not.toContain('Enter open the gate');
-  });
+    await eventually(() => m.controller.getSnapshot().stripFocus !== undefined);
+    m.harness.stdin.write(DOWN);
+    await eventually(() => m.controller.getSnapshot().stripFocus === undefined && m.frame().includes('|| waiting for media · run-0001'));
+    expect(m.frame()).not.toContain('no gate');
+    expect(m.frame()).not.toContain('Enter ask to continue');
+    m.harness.stdin.write('\x1b[A');
+    await eventually(() => m.frame().includes('> || waiting for media · run-0001'));
+    expect(m.frame()).toContain('Enter ask to continue');
+    expect(m.frame()).not.toContain('Enter say why');
+    expect(m.frame()).not.toContain('Enter open');
+  }); // prettier-ignore
 
   it('fits 80 columns: the hint bar is not cut short of the way out', async () => {
     const m = mount({ size: { cols: 80, rows: 24 } });
     await settleFrames();
     m.harness.stdin.write(DOWN);
-    await eventually(() => m.frame().includes('Enter asks to continue'));
+    await eventually(() => m.frame().includes('Enter ask to continue'));
     const bar =
       m
         .frame()
         .split('\n')
-        .find((line) => line.includes('Enter continue it')) ?? '';
-    expect(bar).toBe(
-      '↑/↓ select · Enter continue it · Esc return to prompt · Ctrl+C twice to exit',
+        .find((line) => line.includes('Enter ask to continue')) ?? '';
+    // the work page's hint, at its margin (MVP-11 unit 7), in the words the row's cue had
+    expect(bar.trimStart()).toBe(
+      '↑/↓ select · Enter ask to continue · type to chat · Esc start page',
     );
     expect(bar.length).toBeLessThanOrEqual(80);
   });
@@ -199,7 +204,7 @@ describe('`Enter` on the focused row asks, and only a Yes starts a leg', () => {
         }),
     );
     const m = mount({ continueMedia: ask });
-    await focusRow(m, 'Enter asks to continue');
+    await focusRow(m, 'Enter ask to continue');
     m.harness.stdin.write(ENTER);
     await eventually(() => ask.mock.calls.length > 0, 'the question');
     expect(ask).toHaveBeenCalledWith(RUN);
@@ -217,7 +222,7 @@ describe('`Enter` on the focused row asks, and only a Yes starts a leg', () => {
   it('a No (or Esc) changes nothing and says nothing: the run stays parked and the row stays focused', async () => {
     const ask = vi.fn<MediaQuestion>(() => Promise.resolve<string | undefined>(undefined));
     const m = mount({ continueMedia: ask });
-    await focusRow(m, 'Enter asks to continue');
+    await focusRow(m, 'Enter ask to continue');
     m.harness.stdin.write(ENTER);
     await eventually(
       () => ask.mock.calls.length > 0 && !m.controller.getSnapshot().nativeActionBusy,
@@ -238,7 +243,7 @@ describe('`Enter` on the focused row asks, and only a Yes starts a leg', () => {
       );
     });
     const m = mount({ continueMedia: ask, host: () => (started ? RUNNING : IDLE) });
-    await focusRow(m, 'Enter asks to continue');
+    await focusRow(m, 'Enter ask to continue');
     m.harness.stdin.write(ENTER);
     await eventually(() => m.controller.getSnapshot().screen?.kind === 'run-view', 'the run view');
     expect(m.controller.getSnapshot().screen).toMatchObject({
@@ -254,7 +259,7 @@ describe('`Enter` on the focused row asks, and only a Yes starts a leg', () => {
   it('a refusal (another leg already executes) is the landing`s notice and opens no view', async () => {
     const busy = 'A run is already executing: other-run.';
     const m = mount({ continueMedia: () => Promise.resolve(busy) });
-    await focusRow(m, 'Enter asks to continue');
+    await focusRow(m, 'Enter ask to continue');
     m.harness.stdin.write(ENTER);
     await eventually(() => m.controller.getSnapshot().notice === busy, 'the refusal');
     expect(m.controller.getSnapshot().screen).toBeUndefined();
@@ -264,7 +269,7 @@ describe('`Enter` on the focused row asks, and only a Yes starts a leg', () => {
     let executing = false;
     const ask = vi.fn<MediaQuestion>(() => Promise.resolve<string | undefined>(undefined));
     const m = mount({ continueMedia: ask, host: () => (executing ? RUNNING : IDLE) });
-    await focusRow(m, 'Enter asks to continue');
+    await focusRow(m, 'Enter ask to continue');
     // The leg that parked has not finished stopping when the person presses `Enter`: the row was read a moment ago.
     executing = true;
     m.harness.stdin.write(ENTER);
@@ -274,7 +279,7 @@ describe('`Enter` on the focused row asks, and only a Yes starts a leg', () => {
 
   it('with no question wired the run says so, and it is not the dead end', async () => {
     const m = mount();
-    await focusRow(m, 'Enter asks to continue');
+    await focusRow(m, 'Enter ask to continue');
     m.harness.stdin.write(ENTER);
     await eventually(() => m.controller.getSnapshot().notice !== undefined);
     const notice = m.controller.getSnapshot().notice ?? '';
@@ -305,7 +310,7 @@ describe('from the run view of a leg that ended parked on media jobs', () => {
     const m = mount({ continueMedia: ask, host: () => PARKED });
     await settleFrames();
     expect(m.controller.openScreen('run-view', { runId: RUN })).toBe(true);
-    await eventually(() => m.frame().includes('Enter opens the gate'));
+    await eventually(() => m.frame().includes('Enter open the gate'));
     m.harness.stdin.write(ENTER);
     await eventually(() => ask.mock.calls.length > 0, 'the question');
     expect(ask).toHaveBeenCalledWith(RUN);
@@ -321,7 +326,7 @@ describe('from the run view of a leg that ended parked on media jobs', () => {
     });
     await settleFrames();
     expect(m.controller.openScreen('run-view', { runId: RUN })).toBe(true);
-    await eventually(() => m.frame().includes('Enter opens the gate'));
+    await eventually(() => m.frame().includes('Enter open the gate'));
     m.harness.stdin.write(ENTER);
     await eventually(() => m.frame().includes('A run is already executing: other-run.'));
     expect(m.controller.getSnapshot().screen?.kind).toBe('run-view');
@@ -332,7 +337,7 @@ describe('what stays as it was', () => {
   it('a run with a gate opens its gate card, even when a job is in flight beside it, and asks nothing', async () => {
     const ask = vi.fn<MediaQuestion>(() => Promise.resolve<string | undefined>(undefined));
     const m = mount({ row: GATE_ROW, run: GATE_RUN, continueMedia: ask });
-    await focusRow(m, 'Enter opens');
+    await focusRow(m, 'Enter open');
     m.harness.stdin.write(ENTER);
     await eventually(() => m.controller.getSnapshot().screen?.kind === 'gate-card', 'the card');
     expect(ask).not.toHaveBeenCalled();
@@ -345,7 +350,7 @@ describe('what stays as it was', () => {
       run: { ...MEDIA_RUN, pendingMediaJobNodeIds: [] },
       continueMedia: ask,
     });
-    await focusRow(m, 'Enter says why');
+    await focusRow(m, 'Enter say why');
     m.harness.stdin.write(ENTER);
     await eventually(() => m.controller.getSnapshot().notice !== undefined);
     expect(m.controller.getSnapshot().notice).toContain('No gate to decide here');
@@ -355,7 +360,7 @@ describe('what stays as it was', () => {
   it('a media row whose log was damaged since it was read is the dead end`s sentence, never a question', async () => {
     const ask = vi.fn<MediaQuestion>(() => Promise.resolve<string | undefined>(undefined));
     const m = mount({ run: { ...MEDIA_RUN, degraded: true }, continueMedia: ask });
-    await focusRow(m, 'Enter asks to continue');
+    await focusRow(m, 'Enter ask to continue');
     m.harness.stdin.write(ENTER);
     await eventually(() => m.controller.getSnapshot().notice !== undefined);
     expect(m.controller.getSnapshot().notice).toContain('No gate to decide here');

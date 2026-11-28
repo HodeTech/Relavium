@@ -6,6 +6,7 @@ import {
 } from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
+import { formatUsdExact } from '../render/notation.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import { DECIDED_BY_CLI, rejectionDecision } from './decision.js';
 
@@ -50,10 +51,14 @@ export function budgetAllowanceLabel(allowance: BudgetAllowanceState | undefined
   return budgetPromptLabel(budgetPromptContext(allowance));
 }
 
-/** The authoritative scalar label; excluded candidate notices never supply an approval amount. */
+/**
+ * The authoritative scalar label; excluded candidate notices never supply an approval amount. The amount is the exact USD of the
+ * recorded integer ({@link formatUsdExact}: display rounding must never understate what is being authorised); the integer itself
+ * stays in the machine fields and in the `--approve-amount` commands of {@link budgetResumeHints}.
+ */
 export function budgetPromptLabel(context: BudgetPromptContext): string {
-  if (context.kind === 'legacy') return 'legacy gate: no frozen allowance';
-  if (context.kind === 'amount') return `${context.microcents} microcents`;
+  if (context.kind === 'legacy') return 'legacy gate: no budget allowance';
+  if (context.kind === 'amount') return `allowance ${formatUsdExact(context.microcents)}`;
   return context.reason === 'unpriced'
     ? 'reject only: no priced allowance'
     : 'reject only: allowance cannot be represented safely';
@@ -124,7 +129,7 @@ export function assertBudgetDecision(
   if (allowance?.kind !== 'frozen') {
     throw new CliError(
       'invalid_invocation',
-      'this legacy budget gate has no frozen amount to approve; --abort rejects it. ' +
+      'this legacy budget gate has no budget allowance to approve; --abort rejects it. ' +
         'An interactive legacy continuation grants no allowance and remains governed by the current cap.',
     );
   }
@@ -132,13 +137,12 @@ export function assertBudgetDecision(
   if (result.kind !== 'quoted' || result.quote.amount.kind !== 'representable') {
     throw new CliError('invalid_invocation', `${label}; use --abort to reject the budget gate`);
   }
-  if (
-    decision.decision !== 'approved' ||
-    decision.approvedAmountMicrocents !== result.quote.amount.microcents
-  ) {
+  const frozen = result.quote.amount.microcents;
+  if (decision.decision !== 'approved' || decision.approvedAmountMicrocents !== frozen) {
+    // The sentence states the exact USD; the flag takes the integer (decimal micro-cents), so the corrected flag is named whole.
     throw new CliError(
       'invalid_invocation',
-      `the frozen allowance is ${label}; --approve-amount must equal that amount`,
+      `the budget allowance is ${formatUsdExact(frozen)}; --approve-amount must equal it exactly (--approve-amount ${frozen})`,
     );
   }
 }

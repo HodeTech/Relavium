@@ -79,15 +79,15 @@ function fixture(
     teardown: async () => {},
   };
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => Promise.resolve(session),
     homeStore: {
       read: () => ({
-        attention: { gates: [], failedRuns: [] },
+        failedRuns: [],
         recentSessions: [],
         recentRuns: [],
         recentAgents: [],
-        unreadableRunIds: [],
+        unreadableRuns: [],
+        totals: { attention: 0, sessions: 0, runs: 0 },
         isEmpty: true,
       }),
     },
@@ -175,6 +175,10 @@ function fixture(
   };
 }
 
+/** The armed hint of the host's idle prompt (ADR-0146 §4): the stand-alone chat ends the session; the chat the Home hosts goes back to the Home. */
+const armedHint = (host: 'chat' | 'home'): string =>
+  host === 'home' ? '[Ctrl+C] back to Home (again)' : '[Ctrl+C] end the session (again)';
+
 describe.each(['chat', 'home'] as const)('the docked checkpoint card %s (ADR-0136 §4)', (host) => {
   // `Ctrl+Y` counts only after the exact frame was flushed AND stayed on screen for the dwell: wait just past it.
   const settle = (): Promise<void> =>
@@ -191,8 +195,8 @@ describe.each(['chat', 'home'] as const)('the docked checkpoint card %s (ADR-013
     const frame = f.lastFrameWith('Continue for 32 more?') ?? '';
     expect(frame).toContain('EARLIER-CONVERSATION-LINE');
     expect(frame).toContain('This turn has used 32 tool rounds in');
-    expect(frame).toContain('[Ctrl+Y] Continue   [Ctrl+N] Stop here');
-    expect(frame).toContain('Esc or Ctrl+C stops the turn');
+    expect(frame).toContain('[Ctrl+Y] Continue · [Ctrl+N] Stop here');
+    expect(frame).toContain('Esc / [Ctrl+C] stops here');
     expect(frame).not.toMatch(/Approval needed|Question from the agent/u);
     f.store.sealToolPreviews();
   });
@@ -273,7 +277,7 @@ describe.each(['chat', 'home'] as const)('the docked checkpoint card %s (ADR-013
     expect(await answer).toBe('stop');
     expect(f.aborts.count, 'Esc answers; it does not abort').toBe(0);
     await pause();
-    expect(f.text()).not.toContain('Press Ctrl+C again');
+    expect(f.text()).not.toContain(armedHint(host));
     f.input.push(CTRL_C); // a first press again
     await pause();
     expect(f.submitted, 'Esc armed nothing, so this Ctrl+C ended nothing').toEqual([]);
@@ -290,7 +294,7 @@ describe.each(['chat', 'home'] as const)('the docked checkpoint card %s (ADR-013
     expect(f.aborts.count, 'nothing was aborted: the answer is what ends the turn').toBe(0);
     // The engine ends the turn itself on a "stop" (turn_limit); the idle prompt then shows the armed hint.
     f.store.apply(TURN_ENDED);
-    await vi.waitFor(() => expect(f.text()).toContain('Press Ctrl+C again'));
+    await vi.waitFor(() => expect(f.text()).toContain(armedHint(host)));
     expect(f.submitted).toEqual([]);
     f.input.push(CTRL_C);
     await vi.waitFor(() => expect(f.submitted).toContain('/cancel'));
@@ -305,7 +309,9 @@ describe.each(['chat', 'home'] as const)('the docked checkpoint card %s (ADR-013
     void answer.then((value) => {
       settled = value;
     });
-    await vi.waitFor(() => expect(f.text()).toContain('terminal too small'));
+    // the one sentence every card says below its floor, naming the size it needs (never `Checkpoint: terminal too small — resize …`)
+    await vi.waitFor(() => expect(f.text()).toContain('Terminal too small: enlarge to 80×24'));
+    expect(f.text()).toContain('stops here');
     await settle();
     f.input.push(CTRL_Y);
     await pause();

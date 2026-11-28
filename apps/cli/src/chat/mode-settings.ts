@@ -9,6 +9,7 @@ import {
 import { CliError } from '../process/errors.js';
 import type { NativePromptFlow } from '../render/tui/native-prompt-channel.js';
 import { CHAT_MODES, MODE_DESCRIPTION } from './chat-mode.js';
+import { MODE_EFFECT } from './mode-effects.js';
 import {
   startingModePreference,
   startingModeConfigObserver,
@@ -37,8 +38,8 @@ function selectedMode(value: string | symbol): ChatMode | undefined {
   return CHAT_MODES.find((mode) => mode === value);
 }
 
-const AUTO_RISK =
-  'Auto permits ordinary governed actions without approval, including file writes. Protected-path and permission denials still apply.';
+/** What both `auto` confirmations state before their question: the effect of `auto`, from the one source (`mode-effects.ts`). */
+const AUTO_RISK = MODE_EFFECT.auto.full;
 
 async function endModeSettings(flow: NativePromptFlow): Promise<void> {
   try {
@@ -200,4 +201,109 @@ function modeSettingsFailure(
     return 'Startup default was not saved. Startup auto remains revoked for this invocation.';
   if (signal?.aborted === true) return 'Mode settings cancelled. Startup default unchanged.';
   return 'Mode settings could not be completed. Startup default unchanged.';
+}
+
+/** What {@link runStartupDefaultSave} is given: the options of {@link runModeSettings} without a live chat's current mode and its setter. */
+export type StartupDefaultSaveOptions = Omit<ModeSettingsOptions, 'currentMode' | 'onCurrentMode'>;
+
+/** What the answered selection returns for a mode the startup branch does not offer: no mode, so the branch ends having saved nothing. */
+const NOT_OFFERED = Symbol('mode not offered');
+
+/**
+ * Save `mode`, chosen elsewhere, as the global startup default: the startup branch of {@link runModeSettings} and nothing else (the chat's
+ * `/mode` popup's `[s]` and the bare Home's `Enter` on another mode hand off here, through `popups/mode-confirm.ts`, ADR-0148 §3 and §6). It RUNS that branch rather than repeating it: the flow it is given
+ * answers the branch's one selection with `mode` without drawing it (a selection alone saves nothing, and the person chose the mode in the
+ * popup), and every other step is today's, on the same prompt: the effective-startup note, the confirmation that defaults to No (`auto`
+ * states its effect first), the revocation a confirmed narrowing makes, the config-rewrite disclosure and the visibly admitted publication,
+ * the stale-`auto` admission and the result's words. No current mode and no setter are passed, so the session's own mode never changes here.
+ * Returns what {@link runModeSettings} returns.
+ */
+export function runStartupDefaultSave(
+  options: StartupDefaultSaveOptions,
+  mode: ChatMode,
+): Promise<void> {
+  const { flow } = options;
+  return runModeSettings({
+    runtime: options.runtime,
+    cwd: options.cwd,
+    interactive: options.interactive,
+    notice: options.notice,
+    assertAdmitting: options.assertAdmitting,
+    publish: options.publish,
+    ...(options.prepare === undefined ? {} : { prepare: options.prepare }),
+    flow: {
+      ...flow,
+      // The one selection of the startup branch, answered with the mode the person chose; a mode the branch does not offer saves nothing.
+      select: (request) =>
+        Promise.resolve(
+          request.options.some((option) => option.value === mode) ? mode : NOT_OFFERED,
+        ),
+    },
+  });
+}
+
+// ── The `/mode` popup's hand-off: the result, not the words (ADR-0148 §3, §6) ───────────────────────────────────────────────
+
+/**
+ * What saving the global startup default from the `/mode` popup (a chat's `[s]`, the Home's `Enter`) came to, as {@link runStartupDefaultSave} said it, read back
+ * as a result so that the popup can say it on the host's channel in a few words (the residue rule, ADR-0148 §6: nothing of a setting goes into
+ * the transcript). The bare Home's `/mode` popup (`popups/mode-home.ts`) reads the same result for its Done step, with the flow's own sentence.
+ *
+ * - `saved`: the config was published. `durability` is the writer's (`unknown` when the flow failed after publishing and did not say it);
+ *   `overriddenBy` names the project or workspace setting that selects another mode where this chat started (new chats here keep that one);
+ *   `autoAfterRestart`: `auto` was saved but is not admitted for this run, so new chats start in it after a restart (the stale-`auto` refusal);
+ *   `unfinished`: the file is written and what follows the publication could not be finished.
+ * - `unchanged`: the person declined the confirmation (it defaults to No), the mode is not one the branch offers, or the flow was cancelled.
+ * - `refused`: nothing was saved; `autoRevoked` when a confirmed narrowing had already revoked startup `auto` for this run.
+ */
+export type StartupDefaultSaveResult =
+  | {
+      readonly kind: 'saved';
+      readonly durability: 'confirmed' | 'unconfirmed' | 'unknown';
+      readonly overriddenBy?: 'project' | 'workspace' | undefined;
+      readonly autoAfterRestart: boolean;
+      readonly unfinished: boolean;
+    }
+  | { readonly kind: 'unchanged' }
+  | { readonly kind: 'refused'; readonly autoRevoked: boolean };
+
+/** The words of {@link runModeSettings}' startup branch that say a result: what {@link startupDefaultResultOf} reads (it says them itself, above). */
+const SAID = {
+  saved: 'Global startup default saved: ',
+  published: 'Startup default was published',
+  unconfirmed: ' Published, but durability could not be confirmed.',
+  notReadmitted: ' Startup auto was not re-admitted for this invocation.',
+  revoked: ' Startup auto remains revoked for this invocation.',
+  cancelled: 'Mode settings cancelled. Startup default unchanged.',
+} as const;
+
+/** The setting the success sentence names as selecting another mode where the chat started (` project override selects plan; …`). */
+const OVERRIDE = /^Global startup default saved: [a-z-]+\. (project|workspace) override selects /u;
+
+/**
+ * The result {@link runStartupDefaultSave}'s one sentence says, or `unchanged` when it said none (a declined confirmation ends the branch with
+ * no word). Read from the branch's own fixed words, so a sentence it adds or rewords is pinned by `popups/mode-confirm.test.ts`, which drives
+ * every path of the real flow; an unknown sentence is read as nothing saved, never as saved.
+ */
+export function startupDefaultResultOf(said: string | undefined): StartupDefaultSaveResult {
+  if (said === undefined || said === SAID.cancelled) return { kind: 'unchanged' };
+  const overriddenBy = OVERRIDE.exec(said)?.[1];
+  if (said.startsWith(SAID.saved))
+    return {
+      kind: 'saved',
+      durability: said.includes(SAID.unconfirmed) ? 'unconfirmed' : 'confirmed',
+      ...(overriddenBy === 'project' || overriddenBy === 'workspace' ? { overriddenBy } : {}),
+      autoAfterRestart: said.endsWith(SAID.notReadmitted),
+      unfinished: false,
+    };
+  if (said.startsWith(SAID.published)) {
+    const autoAfterRestart = said.endsWith(SAID.notReadmitted);
+    return {
+      kind: 'saved',
+      durability: 'unknown',
+      autoAfterRestart,
+      unfinished: !autoAfterRestart,
+    };
+  }
+  return { kind: 'refused', autoRevoked: said.endsWith(SAID.revoked) };
 }

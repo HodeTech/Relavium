@@ -2660,7 +2660,8 @@ export class MarkdownStream {
     );
     let tab = 0;
     const expanded = source.replace(/\t/g, () => ' '.repeat(spaces[tab++] ?? 8));
-    const lines = layoutMarkdown([literal(expanded)], columns);
+    // Prose: its wrapped rows start at their text, as the finished reply's plain rows do (the chat's hanging wrap, MVP-11 unit 9).
+    const lines = layoutMarkdown([{ ...literal(expanded), prose: true }], columns);
     this.layoutElided = lines.length > maxRows;
     return lines.slice(-Math.floor(maxRows));
   }

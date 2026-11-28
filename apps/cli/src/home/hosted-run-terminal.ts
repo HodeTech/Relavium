@@ -5,7 +5,7 @@ import { outcomeToExitCode, type RunOutcome } from '../commands/drive.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { WorkflowSafetyExit } from '../process/exit-observations.js';
 import { displayRunId, relaviumRunCommand } from '../render/run-command-text.js';
-import type { LegKind } from '../run-core/finish-leg.js';
+import { READ_RUN_IN_HOME, type LegKind } from '../run-core/finish-leg.js';
 
 /**
  * How a hosted leg ended, as the Home shows it
@@ -56,12 +56,44 @@ export interface HostedRunTerminal {
   readonly safety: WorkflowSafetyExit | undefined;
   /** One line, from a fixed vocabulary plus the sanitized run id. */
   readonly headline: string;
-  /** The remedy line (what to do, and what not to), when the disposition has one. */
+  /**
+   * The remedy line the Home's card shows (what to do, and what not to), when the disposition has one. It names an action of the Home
+   * (`/workflows`) and no shell command, as every remedy inside the TUI does ([ADR-0146](../../../../docs/decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md)
+   * §6, MVP-11 OD-20).
+   */
   readonly remedy: string | undefined;
+  /**
+   * The same remedy for the one line the shell receives AFTER the Home has closed ({@link RunHost.exitFacts}): the screen is gone, so
+   * `/workflows` is not there to open and the shell command is the action. Absent where the remedy is the same words in both places
+   * (then {@link remedy} is what the shell line carries).
+   */
+  readonly shellRemedy?: string | undefined;
 }
 
 // The one rule lives in `render/run-command-text.ts`, shared with the shell's epilogue and the final summary; the cards import it from here.
 export { displayRunId, relaviumRunCommand };
+
+/**
+ * A remedy that says where the run is read, in the two forms it is shown in: the card names the Home's `/workflows`, and the line
+ * printed after the Home closes names the shell command ({@link HostedRunTerminal.shellRemedy}). `build` gets the words for "the run".
+ */
+function readingRemedies(
+  runId: string,
+  build: (readRun: string) => string,
+): { readonly remedy: string; readonly shellRemedy: string } {
+  return {
+    remedy: build(READ_RUN_IN_HOME),
+    shellRemedy: build(relaviumRunCommand('logs', runId)),
+  };
+}
+
+/** A remedy that is the same in both forms (it names no run reader). */
+function sameRemedy(text: string): { readonly remedy: string; readonly shellRemedy: string } {
+  return { remedy: text, shellRemedy: text };
+}
+
+/** No remedy at all. */
+const NO_REMEDY = Object.freeze({ remedy: undefined, shellRemedy: undefined });
 
 /**
  * Turn a departed leg's facts into the text and the Home-side disposition of its card.
@@ -81,7 +113,6 @@ export function describeHostedRunTerminal(input: HostedRunTerminalInput): Hosted
     input.departure,
     input.leg === 'resume',
   );
-  const logs = relaviumRunCommand('logs', input.runId);
   const effectRemedy = 'Do not retry; inspect the target and resolve the effect record.';
   switch (exit) {
     case EXIT_CODES.moneyDurabilityUncertain: {
@@ -92,7 +123,11 @@ export function describeHostedRunTerminal(input: HostedRunTerminalInput): Hosted
         'uncertain',
         8,
         `Run ${id}: required money receipts could not be confirmed.`,
-        `Do not repeat paid work; check provider billing and ${logs}.${remedy}`,
+        readingRemedies(
+          input.runId,
+          (readRun) =>
+            `Do not repeat paid work; check provider billing and read ${readRun}.${remedy}`,
+        ),
       );
     }
     case EXIT_CODES.effectNeedsAttention:
@@ -100,14 +135,18 @@ export function describeHostedRunTerminal(input: HostedRunTerminalInput): Hosted
         'uncertain',
         7,
         `Run ${id}: an external effect needs attention.`,
-        `${effectRemedy} Read ${logs}.`,
+        readingRemedies(input.runId, (readRun) => `${effectRemedy} Read ${readRun}.`),
       );
     case EXIT_CODES.durabilityUncertain:
+      // The one remedy that stays a shell command inside the Home: a run whose end is held in the outbox is reported by `relavium status` and
+      // by nothing in the Home (its own tab says the same), so there is no in-TUI action to name.
       return card(
         'uncertain',
         5,
         `Run ${id} finished, but its record may not have been written.`,
-        `The result is held and retried the next time relavium starts; read ${relaviumRunCommand('status', input.runId)} for the durable outcome.`,
+        sameRemedy(
+          `The result is held and retried the next time relavium starts; read ${relaviumRunCommand('status', input.runId)} for the durable outcome.`,
+        ),
       );
     case EXIT_CODES.runOwnedElsewhere:
       return takenOverTerminal(input.runId);
@@ -116,33 +155,43 @@ export function describeHostedRunTerminal(input: HostedRunTerminalInput): Hosted
         'paused',
         undefined,
         `Run ${id} is paused and waiting for an answer.`,
-        'Open the run to continue it.',
+        sameRemedy('Open the run to continue it.'),
       );
     case EXIT_CODES.success:
       // A success with no outcome is only reachable for a resume leg that closed with no event: the run had
       // already been settled by another process.
       return input.outcome === undefined
-        ? card('settled', undefined, `Run ${id} was already settled; nothing to resume.`, undefined)
-        : card('completed', undefined, `Run ${id} completed.`, undefined);
+        ? card('settled', undefined, `Run ${id} was already settled; nothing to resume.`, NO_REMEDY)
+        : card('completed', undefined, `Run ${id} completed.`, NO_REMEDY);
     case EXIT_CODES.workflowFailed:
       if (input.outcome === 'cancelled')
         return card(
           'cancelled',
           undefined,
           `Run ${id} was cancelled; a cancelled run cannot be resumed.`,
-          undefined,
+          NO_REMEDY,
         );
       if (input.outcome === undefined)
         return card(
           'failed',
           undefined,
           `Run ${id} ended without recording an outcome.`,
-          `Read ${logs} for what actually happened.`,
+          readingRemedies(input.runId, (readRun) => `Read ${readRun} for what actually happened.`),
         );
-      return card('failed', undefined, `Run ${id} failed.`, `Read ${logs} for the cause.`);
+      return card(
+        'failed',
+        undefined,
+        `Run ${id} failed.`,
+        readingRemedies(input.runId, (readRun) => `Read ${readRun} for the cause.`),
+      );
     default:
       // `outcomeToExitCode` returns none of 2, 4 or 9; a new code must be named above, not shown as a failure.
-      return card('failed', undefined, `Run ${id} ended unexpectedly.`, `Read ${logs}.`);
+      return card(
+        'failed',
+        undefined,
+        `Run ${id} ended unexpectedly.`,
+        readingRemedies(input.runId, (readRun) => `Read ${readRun}.`),
+      );
   }
 }
 
@@ -156,7 +205,7 @@ export function takenOverTerminal(runId: string): HostedRunTerminal {
     'taken_over',
     6,
     `Run ${id} was taken over by another process; this one stopped without recording an outcome.`,
-    `Read ${relaviumRunCommand('logs', runId)} for what actually happened.`,
+    readingRemedies(runId, (readRun) => `Read ${readRun} for what actually happened.`),
   );
 }
 
@@ -164,7 +213,7 @@ function card(
   disposition: HostedRunDisposition,
   safety: WorkflowSafetyExit | undefined,
   headline: string,
-  remedy: string | undefined,
+  remedies: Pick<HostedRunTerminal, 'remedy' | 'shellRemedy'>,
 ): HostedRunTerminal {
-  return Object.freeze({ disposition, safety, headline, remedy });
+  return Object.freeze({ disposition, safety, headline, ...remedies });
 }

@@ -266,7 +266,8 @@ describe('immutable inline text aggregation', () => {
       expect(work.measuredUnits).toBe(measured);
       expect(factory.cacheStats.recentConcat).toBeLessThanOrEqual(512);
     }
-  });
+    // About 1.5 s here and over 5 s on a CI runner (the default timeout there).
+  }, 60_000);
   it('reuses a long immutable prefix when a suffix changes repeatedly', () => {
     for (const n of [25, 50, 100]) {
       let source = 'x'.repeat(4_000 + n * 40);

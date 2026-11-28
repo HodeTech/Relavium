@@ -290,11 +290,16 @@ describe('mergeModelCatalog (ADR-0064 §6)', () => {
     //
     // models.dev publishes a `status` FLAG, and a flag cannot say "this stops working in eleven days". The date lives
     // in a Relavium-owned overlay — one date per model, from a published announcement, and not a second price table.
-    const before = mergeModelCatalog({ now: BEFORE_DEEPSEEK_DEPRECATION });
+    //
+    // `deepseek-chat` left the shipped snapshot in the 2026-11-25 sync, so no snapshot row carries an overlay date
+    // any more; the id now reaches the merge the way a still-served retired id reaches a live user — through the
+    // provider's own id-only list. The overlay is keyed by id, so the same `deprecationFor` path is exercised.
+    const stillListed = liveMap([['deepseek', [{ id: 'deepseek-chat' }]]]);
+    const before = mergeModelCatalog({ live: stillListed, now: BEFORE_DEEPSEEK_DEPRECATION });
     expect(byId(before, 'deepseek-chat')?.deprecated).toBe(false);
     expect(byId(before, 'deepseek-chat')?.deprecatedAt).toBe('2026-07-24T15:59:00Z'); // announced, not yet past
 
-    const after = mergeModelCatalog({ now: AFTER_DEEPSEEK_DEPRECATION });
+    const after = mergeModelCatalog({ live: stillListed, now: AFTER_DEEPSEEK_DEPRECATION });
     expect(byId(after, 'deepseek-chat')?.deprecated).toBe(true);
     expect(byId(after, 'deepseek-v4-flash')?.deprecated).toBe(false); // its replacement stays clear
   });

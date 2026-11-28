@@ -1,4 +1,5 @@
-import { Box, Text, useApp, useStdout, type DOMElement } from 'ink';
+import { Box, useApp, useStdout, type DOMElement } from 'ink';
+import { Text } from './text.js';
 import {
   useEffect,
   useLayoutEffect,
@@ -12,16 +13,28 @@ import type { ChatStoreController } from './chat-store.js';
 import {
   createMeasuredFrameAcknowledgement,
   reviewTerminalFits,
+  TERMINAL_TOO_SMALL_TEXT,
 } from './measured-frame-acknowledgement.js';
+import { sanitizeInline } from '../sanitize.js';
+import { EmphText } from './emphasis-view.js';
+import { SELECTED_ROW, type EmphasisSet } from './emphasis.js';
+import { withGlyphForm } from './glyphs.js';
 import { colorProps, dimProps } from './projection.js';
-import { projectQuestionCard, type QuestionRowTone } from './question-card.js';
+import { legend, legendRows } from './legend.js';
+import { displayWidth } from './viewport.js';
+import {
+  QUESTION_STOP,
+  projectQuestionCard,
+  questionRule,
+  type QuestionRowTone,
+} from './question-card.js';
+import { useWaitClock, type WaitClockForm } from './wait-clock.js';
 
+/** The colour of a row by its tone (none with colour off); the weight of a row is {@link toneEmphasis}, which colour does not switch. */
 function toneProps(tone: QuestionRowTone, color: boolean): Record<string, unknown> {
   switch (tone) {
-    case 'header':
-      return { bold: true };
     case 'highlight':
-      return color ? { color: 'cyan', bold: true } : { bold: true };
+      return colorProps(color, 'cyan');
     case 'chosen':
       return colorProps(color, 'green');
     case 'description':
@@ -33,6 +46,12 @@ function toneProps(tone: QuestionRowTone, color: boolean): Record<string, unknow
     default:
       return {};
   }
+}
+
+/** The header is bold and the highlighted option is the selected row, with colour on and off alike. */
+function toneEmphasis(tone: QuestionRowTone): EmphasisSet | undefined {
+  if (tone === 'header') return 'bold';
+  return tone === 'highlight' ? SELECTED_ROW : undefined;
 }
 
 /**
@@ -48,10 +67,17 @@ export function QuestionCardHost(
     hasCustody: () => boolean;
     /** Whether colour output is on. */
     color?: boolean | undefined;
+    /** How the sheet's wait clock is drawn (ADR-0147 §2): `ticking` in the alternate screen, static inline (the default: no timer). */
+    waitClock?: WaitClockForm | undefined;
   }>,
 ): ReactElement | null {
   const snapshot = useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
   const card = snapshot.question;
+  // The wait clock: this host's display value, in no snapshot and read by no guard (ADR-0147 §2).
+  const clock = useWaitClock(
+    card === undefined ? undefined : snapshot.state.approvalSinceMs,
+    props.waitClock ?? 'static',
+  );
   const app = useApp();
   const { stdout } = useStdout();
   const ref = useRef<DOMElement | null>(null);
@@ -71,6 +97,10 @@ export function QuestionCardHost(
         !stdout.destroyed &&
         !stdout.writableEnded &&
         !stdout.errored,
+      // The settle before a choosing key counts from the moment the exact frame is known to be flushed, not from when it was minted.
+      onAcknowledge: (frame) => {
+        if (frame !== undefined) latest.current.store.acknowledgeQuestionFrame(frame);
+      },
     }),
   );
   useEffect(() => {
@@ -102,23 +132,45 @@ export function QuestionCardHost(
   if (card === undefined) return null;
   if (!reviewTerminalFits(props.size))
     return (
-      <Text>Terminal too small — resize to at least 80×24. Esc or Ctrl+C stops the turn.</Text>
+      <Text>
+        {legendRows(
+          [{ text: TERMINAL_TOO_SMALL_TEXT }],
+          QUESTION_STOP,
+          props.size.cols,
+          displayWidth,
+        ).join('\n')}
+      </Text>
     );
   if (blocked === shown)
-    return <Text>Question unavailable — enlarge the terminal. Esc or Ctrl+C stops the turn.</Text>;
+    return (
+      <Text>
+        {legend([{ text: 'Question unavailable — enlarge the terminal' }], QUESTION_STOP)}
+      </Text>
+    );
   const color = props.color === true;
-  const view = projectQuestionCard(card, props.size.cols, {
-    guideNote: snapshot.mode === 'accept-edits' || snapshot.mode === 'auto',
-  });
+  // The card's marks are the glyph table's; an absent `color` is the Unicode form (a view mounted without the prop draws as it always did).
+  const view = withGlyphForm(props.color === false, () =>
+    projectQuestionCard(card, props.size.cols, {
+      guideNote: snapshot.mode === 'accept-edits' || snapshot.mode === 'auto',
+    }),
+  );
   return (
     <Box ref={ref} flexDirection="column" flexShrink={0}>
       <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
-        {view.rule}
+        {withGlyphForm(props.color === false, () => questionRule(props.size.cols, clock))}
       </Text>
       {view.body.map((row, index) => (
-        <Text key={index} {...toneProps(row.tone, color)} wrap="truncate-end">
-          {row.text.length === 0 ? ' ' : row.text}
-        </Text>
+        <EmphText
+          key={index}
+          {...toneProps(row.tone, color)}
+          emphasis={toneEmphasis(row.tone)}
+          wrap="truncate-end"
+        >
+          {/* the model's header and option labels are drawn inside a style pair: the core refuses a control character in them, and this is the floor under that.
+              The screen's filter ran on every model and person text before the card laid it out (`question-card.ts`: the labels and headers escape
+              what it would drop), so the row is drawn as it was measured (MVP-11 unit 9, review rounds 2 and 3) */}
+          {sanitizeInline(row.text) || ' '}
+        </EmphText>
       ))}
       {view.keys.map((row, index) => (
         <Text key={`keys-${String(index)}`} {...dimProps(color)} wrap="truncate-end">

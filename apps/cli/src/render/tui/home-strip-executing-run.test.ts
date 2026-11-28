@@ -36,11 +36,12 @@ const P2: ParkedRunRow = { runId: 'parked-2', kind: 'approval', gates: 2 };
 const P3: ParkedRunRow = { runId: 'parked-3', kind: 'budget', gates: 1 };
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: false,
 };
 
@@ -58,7 +59,6 @@ function rig(initialParked: readonly ParkedRunRow[]) {
   const timers = new Map<number, { at: number; run: () => void }>();
   const list = vi.fn((): readonly ParkedRunRow[] => parked);
   const deps: HomeControllerDeps = {
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => new Promise(() => {}),
     homeStore: { read: () => EMPTY },
     hostedRuns: { snapshot: () => host, cancel: () => true, close: () => Promise.resolve() },
@@ -129,7 +129,7 @@ describe('the run a leg is executing is not a parked run of the strip', () => {
     const r = rig([P1, P2]);
     expect(parkedIds(r.controller), 'both are parked before any leg').toEqual([P1.runId, P2.runId]);
 
-    expect(r.controller.openScreen('help')).toBe(true);
+    expect(r.controller.openScreen('tab-host', { tab: 'history' })).toBe(true);
     // A leg answers P1 while the screen is in front: the log still lists it as parked, and the host says it is executing.
     r.host(executing(P1.runId));
     const readsBefore = r.list.mock.calls.length;
@@ -178,13 +178,13 @@ describe('the run a leg is executing is not a parked run of the strip', () => {
 
   it('with no leg executing, the run is parked again when the landing comes back', () => {
     const r = rig([P1, P2]);
-    r.controller.openScreen('help');
+    r.controller.openScreen('tab-host', { tab: 'history' });
     r.host(executing(P1.runId));
     r.controller.closeScreen();
     expect(parkedIds(r.controller)).toEqual([P2.runId]);
 
     // The leg ended and the run is parked at its next gate: the log says so, and nothing hides it any more.
-    r.controller.openScreen('help');
+    r.controller.openScreen('tab-host', { tab: 'history' });
     r.host(IDLE);
     r.controller.closeScreen();
     expect(parkedIds(r.controller)).toEqual([P1.runId, P2.runId]);

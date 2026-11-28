@@ -13,6 +13,7 @@ import {
 } from '../../history/node-run-fixture.js';
 import { createRunDetailLoader } from '../../history/run-detail-source.js';
 import type { HomeRunRow, HomeSnapshot } from '../../home/home-store.js';
+import { withoutStyles } from './harness-util.js';
 import { RootApp } from './home-app.js';
 import {
   createHomeController,
@@ -44,11 +45,12 @@ const failedRun: HomeRunRow = {
   totalCostMicrocents: 0,
 };
 const SNAPSHOT: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [failedRun] },
+  failedRuns: [failedRun],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 1, sessions: 0, runs: 0 },
   isEmpty: false,
 };
 
@@ -75,6 +77,7 @@ function mount() {
     }),
     loadDetail: createRunDetailLoader({
       reader,
+      projectRoot: '/work/project',
       listHeld: () => Promise.resolve([]),
       loadSnapshot,
     }),
@@ -82,7 +85,6 @@ function mount() {
   };
   const onError = vi.fn();
   const real = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => new Promise<never>(() => {}),
     homeStore: { read: () => SNAPSHOT },
     history,
@@ -120,9 +122,11 @@ function mount() {
     onError,
     detailOf,
     landingFrameAcknowledged,
-    frame: () => harness.lastFrame() ?? '',
+    frame: () => withoutStyles(harness.lastFrame() ?? ''),
     selectedLine: () =>
-      (harness.lastFrame() ?? '').split('\n').find((line) => line.startsWith('› ')) ?? '',
+      withoutStyles(harness.lastFrame() ?? '')
+        .split('\n')
+        .find((line) => line.startsWith('> ')) ?? '',
   };
 }
 
@@ -139,11 +143,12 @@ const until = (predicate: () => boolean, timeout = 4000): Promise<void> =>
 describe('Enter on a screen opened from a focused failed run', () => {
   it('reaches the screen: the run detail opens a node page, though the strip focus stayed through it', async () => {
     const m = mount();
-    await until(() => m.frame().includes('ship-it'));
+    // the landing names the failed run (MVP-11 unit 7: `↓ ship-it failed 1h ago`); its row is the work page's
+    await until(() => m.frame().includes('ship-it failed'));
 
     // `↓` onto the failed run: the row is drawn with its marker before `Enter` is sent, so this one is a row the person has seen.
     m.harness.stdin.write(DOWN);
-    await until(() => m.frame().includes('> ✗ ship-it'));
+    await until(() => m.frame().includes('> x  ship-it'));
     await until(m.landingFrameAcknowledged);
     expect(m.controller.getSnapshot().stripFocus?.id).toBe(FIXTURE_RUN_IDS.failed);
 
@@ -178,11 +183,11 @@ describe('Enter on a screen opened from a focused failed run', () => {
 
   it('still holds back a coalesced ↓ + Enter on the landing: a row the person has not seen is not opened', async () => {
     const m = mount();
-    await until(() => m.frame().includes('ship-it'));
+    await until(() => m.frame().includes('ship-it failed'));
     // One chunk: the focus moves onto the row and `Enter` arrives with it, before that frame can be on screen.
     m.harness.stdin.write(`${DOWN}\r`);
     await until(() => m.controller.getSnapshot().stripFocus?.id === FIXTURE_RUN_IDS.failed);
-    await until(() => m.frame().includes('> ✗ ship-it'));
+    await until(() => m.frame().includes('> x  ship-it'));
     expect(m.controller.getSnapshot().screen, 'the unseen row was not opened').toBeUndefined();
   });
 });

@@ -2,10 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   formatCostShort,
-  formatCostUsd,
-  formatDuration,
-  formatElapsed,
   formatProducedMedia,
+  formatReportedCost,
   formatTokens,
   SPINNER_FRAMES,
   spinnerFrame,
@@ -13,12 +11,20 @@ import {
   statusGlyph,
 } from './format.js';
 
-describe('formatCostUsd', () => {
-  it('treats the value as integer micro-cents (1e-8 USD)', () => {
-    expect(formatCostUsd(0)).toBe('$0.0000');
-    expect(formatCostUsd(5_000_000)).toBe('$0.0500'); // workflow-yaml-spec.md: 5_000_000 ≈ $0.05
-    expect(formatCostUsd(100_000_000)).toBe('$1.0000'); // 1e8 micro-cents = $1
-    expect(formatCostUsd(123_456_789)).toBe('$1.2346'); // rounds to 4 dp
+// The USD notation, the durations and the ages are `render/notation.ts`'s, with their own tests (`notation.test.ts`); what stays here is
+// the coverage qualification this module adds to an amount.
+describe('formatReportedCost — the amount is the one USD notation', () => {
+  it('shows integer micro-cents (1e-8 USD) as four fractional digits', () => {
+    expect(
+      formatReportedCost(5_000_000, { unverified: false, pendingInvocations: 0, unknownCalls: 0 }),
+    ).toBe('$0.0500');
+    expect(
+      formatReportedCost(123_456_789, {
+        unverified: false,
+        pendingInvocations: 0,
+        unknownCalls: 0,
+      }),
+    ).toBe('$1.2346');
   });
 });
 
@@ -42,30 +48,6 @@ describe('formatCostShort — coverage-qualified Home amounts', () => {
   it('does not present invalid amounts as free', () => {
     for (const value of [-5, Number.NaN, Number.POSITIVE_INFINITY])
       expect(formatCostShort(value, complete)).toBe('unavailable');
-  });
-});
-
-describe('formatDuration', () => {
-  it('formats sub-second, second, and minute scales', () => {
-    expect(formatDuration(0)).toBe('0ms');
-    expect(formatDuration(420)).toBe('420ms');
-    expect(formatDuration(3200)).toBe('3.2s');
-    expect(formatDuration(64_000)).toBe('1m04s');
-  });
-
-  it('carries a rounded-up 60s into the next minute (never "1m60s")', () => {
-    expect(formatDuration(119_600)).toBe('2m00s'); // 119.6s → 120 whole seconds → 2m00s
-  });
-
-  it('carries the seconds→minute boundary (never "60.0s")', () => {
-    expect(formatDuration(59_900)).toBe('59.9s'); // below the boundary — one-decimal seconds
-    expect(formatDuration(59_950)).toBe('1m00s'); // 59.95s would read "60.0s" → carry to 1m00s
-    expect(formatDuration(59_999)).toBe('1m00s');
-    expect(formatDuration(60_000)).toBe('1m00s');
-  });
-
-  it('clamps a negative duration (clock skew) to zero', () => {
-    expect(formatDuration(-5)).toBe('0ms');
   });
 });
 
@@ -105,28 +87,5 @@ describe('formatProducedMedia', () => {
     expect(formatProducedMedia({ mimeType: 'image/png', handle })).toBe(`◆ image/png ${handle}`);
     // Pure mimeType passthrough — a non-image modality is rendered verbatim (no per-modality special-casing).
     expect(formatProducedMedia({ mimeType: 'audio/mpeg', handle })).toBe(`◆ audio/mpeg ${handle}`);
-  });
-});
-
-describe('formatElapsed (2.5.H live-turn timer)', () => {
-  it('shows whole seconds under a minute (floored, so it does not jitter per frame)', () => {
-    expect(formatElapsed(0)).toBe('0s');
-    expect(formatElapsed(3200)).toBe('3s'); // floors, not rounds — a live counter never reads ahead
-    expect(formatElapsed(59_000)).toBe('59s');
-  });
-
-  it('rolls into m/ss at a minute with a zero-padded seconds field', () => {
-    expect(formatElapsed(60_000)).toBe('1m00s');
-    expect(formatElapsed(63_000)).toBe('1m03s');
-    expect(formatElapsed(600_000)).toBe('10m00s');
-  });
-
-  it('clamps a negative elapsed (clock skew) to 0s', () => {
-    expect(formatElapsed(-5000)).toBe('0s');
-  });
-
-  it('guards a non-finite input to 0s (never "NaNmNaNs")', () => {
-    expect(formatElapsed(Number.NaN)).toBe('0s');
-    expect(formatElapsed(Number.POSITIVE_INFINITY)).toBe('0s');
   });
 });

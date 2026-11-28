@@ -1,5 +1,13 @@
 import { createClient, createProviderStore, runMigrations, type DbClient } from '@relavium/db';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -31,6 +39,19 @@ const INERT_JOB = {
   suspendSelf: () => undefined,
 };
 const credential = ['synthetic', 'credential', 'no-suffix-display'].join('-');
+
+/**
+ * The consent card opens on `Not now` (ADR-0146 §6, the interim before Step 6's input guards), so a test that means `Use it` moves there:
+ * one Down arrow wraps from the last row to the first, and the key after it is read only once the card has drawn the row it moved to.
+ */
+async function chooseUseIt(f: {
+  readonly stdin: { push(chunk: string): boolean };
+  text(): string;
+}): Promise<void> {
+  expect(f.text()).toContain('> Not now');
+  f.stdin.push('\x1b[B');
+  await until(() => f.text().includes('> Use it'));
+}
 
 async function until(check: () => boolean): Promise<void> {
   await vi.waitFor(() => expect(check()).toBe(true), { interval: 10, timeout: 3000 });
@@ -139,7 +160,45 @@ describe('standalone native provider setup lifecycle', () => {
     },
   );
 
-  it('publishes named-source consent and starter default only after a visible rewrite notice, quarantining Enter suffix', async () => {
+  it('publishes named-source consent and starter default; the starter default rewrites only the config the setup just created, so no rewrite notice is drawn or left as the chat’s line (W7 item 5), quarantining Enter suffix', async () => {
+    const f = fixture({ OPENAI_API_KEY: credential });
+    let notices = 0;
+    f.stdout.onFrame = (frame) => {
+      if (frame.includes('Saving preferences')) notices += 1;
+    };
+    const running = f.run();
+    await until(() => f.text().includes('Allow this source?'));
+    await chooseUseIt(f);
+    f.stdin.push('\rtrailing-secret');
+    expect(await running).toBe(0);
+    const loaded = loadResolvedConfig({
+      cwd: root,
+      home: root,
+      configPath: f.loaded.globalConfigPath,
+    });
+    expect(loaded.globalConfig?.preferences?.standard_env_key_consent).toEqual({
+      openai: 'OPENAI_API_KEY',
+    });
+    expect(loaded.config.chat.defaultProvider).toBe('openai');
+    expect(notices, 'no rewrite notice for a config the setup created').toBe(0);
+    expect(f.err()).not.toContain('Saving preferences rewrites');
+    expect(f.text() + f.err()).not.toContain('trailing-secret');
+  });
+
+  it('says the starter default was saved ONCE in the notice it leaves behind (the consent notice carries it; the default write must not repeat it)', async () => {
+    const f = fixture({ OPENAI_API_KEY: credential });
+    const running = f.run();
+    await until(() => f.text().includes('Allow this source?'));
+    await chooseUseIt(f);
+    f.stdin.push('\r');
+    expect(await running).toBe(0);
+    const notice = f.err();
+    expect(notice, 'the setup says what it saved').toContain('Starter default saved.');
+    expect(notice.split('Starter default saved').length - 1, notice).toBe(1);
+  });
+
+  it('publishes named-source consent and starter default onto a config that existed only after a visible rewrite notice, quarantining Enter suffix', async () => {
+    writeFileSync(join(root, 'selected.toml'), '# hand-made\n[preferences]\ntheme = "dark"\n');
     const f = fixture({ OPENAI_API_KEY: credential });
     let noticeBeforeDefault = false;
     f.stdout.onFrame = (frame) => {
@@ -151,6 +210,7 @@ describe('standalone native provider setup lifecycle', () => {
     const running = f.run();
     await until(() => f.text().includes('Allow this source?'));
     expect(() => f.resolver.keyFor('openai')).toThrow('has not been allowed');
+    await chooseUseIt(f);
     f.stdin.push('\rtrailing-secret');
     expect(await running).toBe(0);
     expect(f.resolver.keyFor('openai')).toBe(credential);
@@ -171,6 +231,26 @@ describe('standalone native provider setup lifecycle', () => {
     expect(f.keychain.set).not.toHaveBeenCalled();
   });
 
+  it('a bare Enter on the environment-key consent grants nothing: the card opens on Not now, and the config is never written', async () => {
+    const f = fixture({ OPENAI_API_KEY: credential });
+    const before = existsSync(f.loaded.globalConfigPath)
+      ? readFileSync(f.loaded.globalConfigPath, 'utf8')
+      : undefined;
+    const running = f.run();
+    await until(() => f.text().includes('Allow this source?'));
+    expect(f.text()).toContain('> Not now');
+    f.stdin.push('\r');
+    expect(await running).toBe(0);
+    expect(f.outcome()?.status).toBe('deferred');
+    expect(() => f.resolver.keyFor('openai')).toThrow('has not been allowed');
+    expect(
+      existsSync(f.loaded.globalConfigPath)
+        ? readFileSync(f.loaded.globalConfigPath, 'utf8')
+        : undefined,
+    ).toBe(before);
+    expect(f.keychain.set).not.toHaveBeenCalled();
+  });
+
   it('requires independent explicit invocation choices for source consent and model defaults after symlink refusal', async () => {
     const target = join(root, 'target.toml');
     writeFileSync(target, '# Keep this file\n');
@@ -178,16 +258,18 @@ describe('standalone native provider setup lifecycle', () => {
     const f = fixture({ OPENAI_API_KEY: credential });
     const running = f.run();
     await until(() => f.text().includes('Allow this source?'));
+    await chooseUseIt(f); // the consent opens on `Not now`; this test means `Use it`
     f.stdin.push('\r');
-    await until(() => f.text().includes('Use for this invocation only'));
+    // Two recovery cards in a row, each naming what it uses: the source first (the variable), then the model (round 2, B6).
+    await until(() => f.text().includes('Use OPENAI_API_KEY for this invocation only'));
+    expect(f.text()).not.toContain('Use for this invocation only');
     expect(() => f.resolver.keyFor('openai')).toThrow('has not been allowed');
     const afterSource = f.stdout.frames.length;
     f.stdin.push('\r');
     await until(() =>
-      f.stdout.frames
-        .slice(afterSource)
-        .join('')
-        .includes('Use this model for this invocation only'),
+      /Use (?!OPENAI_API_KEY)\S+ for this invocation only/u.test(
+        f.stdout.frames.slice(afterSource).join(''),
+      ),
     );
     // Authorizing the named source did not implicitly choose an ephemeral model default.
     expect(f.resolver.keyFor('openai')).toBe(credential);
@@ -197,6 +279,10 @@ describe('standalone native provider setup lifecycle', () => {
     expect(f.outcome()?.ephemeralDefault?.provider).toBe('openai');
     expect(readFileSync(target, 'utf8')).toBe('# Keep this file\n');
     expect(f.err()).toContain('not saved');
+    // the notice says what each answer did ONCE: the source's, then the model's (once, not twice with a second wording of it)
+    expect(f.err()).toBe(
+      'Source allowed for this invocation only. Starter model selected for this invocation only; the default was not saved.\n',
+    );
     expect(f.exit).not.toHaveBeenCalled();
   });
 

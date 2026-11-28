@@ -22,7 +22,7 @@ import { createChordHistory } from './chord-guard.js';
 import type { ParkedRunRow } from './home-attention.js';
 import { createHomeController, type HomeController } from './home-controller.js';
 import { createNativePromptChannel } from './native-prompt-channel.js';
-import type { ApprovalGuard } from './tool-review-model.js';
+import { APPROVAL_LOCKOUT_MS, type ApprovalGuard } from './tool-review-model.js';
 
 const RUN = 'run-0001';
 /** Only the lockout (the product's own 2 s) is on. */
@@ -56,11 +56,12 @@ const CHANNEL_CTRL: Key = {
 };
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const IDLE: RunHostSnapshot = { launching: false, active: undefined, last: undefined };
@@ -106,7 +107,6 @@ function wiring() {
   });
   const cancel = vi.fn((): boolean => true);
   const controller: HomeController = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => new Promise(() => {}),
     homeStore: { read: () => EMPTY },
     hostedRuns: { snapshot: () => host, cancel, close: () => Promise.resolve() },
@@ -158,8 +158,10 @@ function wiring() {
 describe('a gate answered with Ctrl+Y locks the card that follows, at the product`s wiring', () => {
   it('refuses a held Ctrl+Y on the consent card, and accepts one after the key was let go for the whole window', async () => {
     const w = wiring();
-    w.at(0);
+    // The card opened two seconds before the person answers it at 0: its own lockout runs from its appearance (MVP-11 unit 7, round 1).
+    w.at(-APPROVAL_LOCKOUT_MS);
     w.openCard();
+    w.at(0);
     w.controller.handleKey('y', CTRL_Y);
     expect(w.resume, 'the gate was answered by that key').toHaveBeenCalledOnce();
 
@@ -189,8 +191,10 @@ describe('a gate answered with Ctrl+Y locks the card that follows, at the produc
 
   it('refuses a held Ctrl+Y on the exit guard the same way, and the run is not cancelled', () => {
     const w = wiring();
-    w.at(0);
+    // The card opened two seconds before the person answers it at 0: its own lockout runs from its appearance (MVP-11 unit 7, round 1).
+    w.at(-APPROVAL_LOCKOUT_MS);
     w.openCard();
+    w.at(0);
     w.controller.handleKey('y', CTRL_Y);
     expect(w.resume).toHaveBeenCalledOnce();
     // The answer started a leg; the card is closed again, as a person returns to the landing, and the interrupt key asks twice.

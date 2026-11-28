@@ -4,14 +4,13 @@ import { describe, expect, it } from 'vitest';
 
 import {
   HISTORY_STATUS_CYCLE,
-  IN_THE_FUTURE,
   RUN_STATUS_GLYPH,
-  ageText,
   buildHistoryRows,
   filterByStatus,
   nextCursor,
   nextStatusFilter,
 } from './history-model.js';
+import { IN_THE_FUTURE } from '../render/notation.js';
 import {
   MAX_IDENTIFIER_CHARS,
   MAX_PROJECT_ROOT_CHARS,
@@ -21,7 +20,6 @@ import {
 const NOW = Date.parse('2026-11-22T12:00:00.000Z');
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
-const DAY = 24 * HOUR;
 const isoAgo = (deltaMs: number): string => new Date(NOW - deltaMs).toISOString();
 
 const OPEN_FIELDS = {
@@ -49,38 +47,22 @@ function openRun(id: string, overrides: Partial<RunSummaryRecord> = {}): RunSumm
 const rowsOf = (runs: readonly RunSummaryRecord[], pinned: readonly string[] = []) =>
   buildHistoryRows({ runs, nowMs: NOW, pinnedRunIds: new Set(pinned) });
 
-describe('ageText', () => {
-  it('says `now` under a minute, including a clock that is up to one minute ahead', () => {
-    expect(ageText(isoAgo(0), NOW)).toBe('now');
-    expect(ageText(isoAgo(59_999), NOW)).toBe('now');
-    expect(ageText(isoAgo(-30_000), NOW)).toBe('now');
-    // Exactly one minute ahead is still skew: the boundary is strict, `in the future` starts one millisecond past it.
-    expect(ageText(isoAgo(-MINUTE), NOW)).toBe('now');
+describe("the age of a row (render/notation.ts owns the units; this is the row's use of them)", () => {
+  const ageOf = (createdAt: string): string | undefined =>
+    rowsOf([run('0123456789abcdef', { createdAt })])[0]?.ageText;
+
+  it('says `just now` under a minute, including a clock that is up to one minute ahead', () => {
+    expect(ageOf(isoAgo(0))).toBe('just now');
+    expect(ageOf(isoAgo(-MINUTE))).toBe('just now');
   });
 
-  it('says `in the future` for a timestamp more than one minute ahead, never `now`', () => {
-    expect(ageText(isoAgo(-MINUTE - 1), NOW)).toBe('in the future');
-    expect(ageText(isoAgo(-HOUR), NOW)).toBe('in the future');
-    expect(ageText(isoAgo(-10 * DAY), NOW)).toBe('in the future');
-    // The words are the exported constant, so a view and a test cannot drift from them.
+  it('says `in the future` for a timestamp more than one minute ahead, never `just now`', () => {
+    expect(ageOf(isoAgo(-MINUTE - 1))).toBe(IN_THE_FUTURE);
     expect(IN_THE_FUTURE).toBe('in the future');
   });
 
-  it('starts each unit exactly at its boundary and rounds down', () => {
-    expect(ageText(isoAgo(MINUTE), NOW)).toBe('1m ago');
-    expect(ageText(isoAgo(5 * MINUTE + 59_999), NOW)).toBe('5m ago');
-    expect(ageText(isoAgo(HOUR - 1), NOW)).toBe('59m ago');
-    expect(ageText(isoAgo(HOUR), NOW)).toBe('1h ago');
-    expect(ageText(isoAgo(3 * HOUR + 30 * MINUTE), NOW)).toBe('3h ago');
-    expect(ageText(isoAgo(DAY - 1), NOW)).toBe('23h ago');
-    expect(ageText(isoAgo(DAY), NOW)).toBe('1d ago');
-    expect(ageText(isoAgo(2 * DAY + 5 * HOUR), NOW)).toBe('2d ago');
-    expect(ageText(isoAgo(400 * DAY), NOW)).toBe('400d ago');
-  });
-
   it('is empty for a timestamp it cannot read, never `NaN`', () => {
-    expect(ageText('not a time', NOW)).toBe('');
-    expect(ageText('', NOW)).toBe('');
+    expect(ageOf('not a time')).toBe('');
   });
 });
 
@@ -98,7 +80,7 @@ describe('buildHistoryRows', () => {
     expect(rows.map((row) => [row.word, row.glyph])).toEqual([
       ['pending', '○'],
       ['running', '◐'],
-      ['paused', '⏸'],
+      ['paused', '‖'],
       ['completed', '✓'],
       ['failed', '✗'],
       ['cancelled', '⊘'],

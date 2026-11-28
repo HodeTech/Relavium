@@ -284,7 +284,7 @@ describe('legacy provider headers remain dormant through actual host factories a
   for (const provider of DEFAULT_PROVIDERS) {
     for (const operation of OPERATIONS) {
       it(`default ${provider} ${operation}: legacy headers stay absent on exactly one official HTTP 400 request`, async () => {
-        const model = KNOWN_PROVIDERS[provider].testModel;
+        const model = KNOWN_PROVIDERS[provider].starterModel;
         const { client, store } = seedLegacyProvider(provider, KNOWN_PROVIDERS[provider].baseUrl);
         try {
           assertTrustedLegacy(client, store, provider);

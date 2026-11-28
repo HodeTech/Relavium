@@ -25,6 +25,7 @@ import {
   ConfigWriteRefusedError,
   prepareChatModeHintShown,
   prepareDefaultChatMode,
+  prepareFirstRunSetupSkipped,
   prepareGlobalPreferences,
   prepareKeychainUnavailableAcknowledged,
   prepareStandardEnvKeyConsent,
@@ -65,6 +66,11 @@ const writers: readonly Writer[] = [
   {
     name: 'hint acknowledgement',
     prepare: (home, target, observer) => prepareChatModeHintShown(home, target, observer),
+  },
+  {
+    // The SIXTH writer (MVP-11 unit 6, ADR-0146 §6): the remembered skip of the first-run setup observes its actual source like every other.
+    name: 'first-run skip',
+    prepare: (home, target, observer) => prepareFirstRunSetupSkipped(home, target, observer),
   },
 ];
 const states = ['auto', 'ask', 'absent', 'invalid'] as const;

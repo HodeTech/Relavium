@@ -5,6 +5,8 @@
  * and applies the side effect (set the buffer / submit / cancel); this function decides only WHAT to do.
  */
 
+import { exitKey, legend } from './legend.js';
+
 /** The minimal `ink` `Key` fields the reducer reads (a structural subset, so a test needs no ink import). */
 export interface ChatKey {
   readonly ctrl?: boolean;
@@ -133,16 +135,45 @@ export function reduceEditorMotion(char: string, key: ChatKey): EditorEditAction
   // consistent with the palette / reverse-search / mention submodes, which already fold both the same way.
   if (key.backspace === true || key.delete === true) return { kind: 'backspace' };
   if (char.length > 0 && char !== '\n' && key.ctrl !== true && key.meta !== true) {
-    // Normalize any carriage return WITHIN the inserted text (a multi-char paste can carry CRLF / a bare CR):
-    // CRLF/CR → LF, so a pasted line break becomes a real newline in the buffer + sent to the model, never a
-    // stray '\r' that the display strips but the transcript keeps. A single typed char is unaffected (no CR).
-    return { kind: 'append', char: char.replace(/\r\n?/g, '\n') };
+    // The text that enters the draft: its line breaks normalised (CRLF/CR → LF, so a pasted line break becomes a real newline in the buffer
+    // + sent to the model, never a stray '\r' that the display strips but the transcript keeps; a single typed char is unaffected) and its
+    // control characters dropped ({@link draftText}). A chunk of nothing but controls edits nothing.
+    const text = draftText(char);
+    return text.length === 0 ? undefined : { kind: 'append', char: text };
   }
   return undefined;
 }
 
+/**
+ * The C0 controls, DEL and the C1 controls: U+0000 to U+0008, U+000B to U+001F (every C0 control but TAB, U+0009, and LF, U+000A), U+007F and
+ * U+0080 to U+009F. Built from their code points, never an escape in the source.
+ */
+export const DRAFT_CONTROL_RANGES: readonly (readonly [from: number, to: number])[] = [
+  [0x00, 0x08],
+  [0x0b, 0x1f],
+  [0x7f, 0x9f],
+];
+
+const DRAFT_CONTROLS = new RegExp(
+  `[${DRAFT_CONTROL_RANGES.map(([from, to]) => `${String.fromCodePoint(from)}-${String.fromCodePoint(to)}`).join('')}]`,
+  'gu',
+);
+
+/**
+ * `text` as the draft takes it, typed or pasted (MVP-11 unit 7, round 2: F6): the carriage returns inside it become line feeds (CRLF and a
+ * bare CR each one LF: a `\r` inside a chunk is a line break, never an `Enter`, which only a key event of its own is), and every C0 control but
+ * TAB and LF, DEL and every C1 control ({@link DRAFT_CONTROL_RANGES}) is dropped. A coalesced write such as `↓`, `Enter`, `Ctrl+N` reaches the editor as one
+ * chunk with a control character in it, and a paste may carry an escape sequence or a C1 control: neither goes into a message, where a later
+ * sink (a transcript row, a title, a log) would meet it. A bidirectional or an invisible character is NOT dropped here: it is text a person
+ * may paste, and every drawn sink has its own pass for it.
+ */
+export function draftText(text: string): string {
+  return text.replace(/\r\n?/gu, '\n').replace(DRAFT_CONTROLS, '');
+}
+
 /** The flags the bracketed-paste gate reads, surface-agnostically — the Home's `state`/store and the ChatApp's
- *  ref-shadows both project into these, so the two surfaces' paste gates can never drift. */
+ *  ref-shadows both project into these, so the two surfaces' paste gates can never drift. The overlay fields are NOT written out by a
+ *  host: they come from its `OverlayFlags` record through `pasteFlagsFrom` (`overlay-flags.ts`), the one place that lists them. */
 export interface PasteEditableFlags {
   readonly running: boolean; // a chat turn is streaming
   readonly shellBusy: boolean; // a `!`-shell command in flight
@@ -150,9 +181,6 @@ export interface PasteEditableFlags {
   readonly paletteOpen: boolean; // the `/` command palette
   readonly searchOpen: boolean; // Ctrl+R reverse-search
   readonly mentionOpen: boolean; // `@`-mention completion
-  readonly modelPickerOpen: boolean; // `/models`
-  readonly effortPickerOpen: boolean; // `/effort`
-  readonly chatSheetOpen: boolean; // a docked sheet: `/permissions` (ADR-0137) or `/agent` (ADR-0140)
   readonly approvalPending: boolean; // a per-tool approval awaits — a paste must NEVER answer it (ADR-0057)
 }
 
@@ -171,9 +199,6 @@ export function pasteIsEditable(f: PasteEditableFlags): boolean {
     !f.paletteOpen &&
     !f.searchOpen &&
     !f.mentionOpen &&
-    !f.modelPickerOpen &&
-    !f.effortPickerOpen &&
-    !f.chatSheetOpen &&
     !f.approvalPending
   );
 }
@@ -183,8 +208,10 @@ export function pasteIsEditable(f: PasteEditableFlags): boolean {
  * a turn starts, so the running turn keeps the previous mode's approval hook: a footer that switched at once would
  * show `ask` while that turn's later writes were still approved without a card.
  */
-export const MODE_CHANGE_RUNNING_NOTICE =
-  'Mode changes apply between turns \u2014 Esc stops the running turn.';
+export const MODE_CHANGE_RUNNING_NOTICE = legend(
+  [{ text: 'Mode changes apply between turns' }],
+  exitKey.decide('stops the running turn'),
+);
 
 /**
  * Reduce one keystroke of the chat prompt to an action.

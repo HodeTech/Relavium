@@ -1,11 +1,11 @@
-import { displayWidth, sliceDisplayColumns, wrapWords } from './viewport.js';
+import { glyph } from './glyphs.js';
+import { displayWidth, fitColumns, inkUndercounts, wrapText, wrapWords } from './viewport.js';
 
 /**
  * The small, pure frame a sheet is drawn on ([ADR-0137](../../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)
  * §5): the roles of its lines, the width a line may use, how a line is cut to it, how a label and a value share one row, and the window of a
- * long list that keeps the cursor on a real line. Nothing here knows what a sheet is about; `permissions-sheet.ts` is the first screen built
- * on it, and `legend.ts` is its other half. The older overlays (`/models`, `/effort`, the palette, the session picker) keep their own
- * footers and windows until the common-language increment moves them.
+ * long list that keeps the cursor on a real line. Nothing here knows what a sheet is about; the popup frames (`popups/frame-model.ts`) and the tab host's
+ * lines are built on it, and `legend.ts` is its other half.
  */
 
 /** The role of one drawn line, so a view colours by role and never by guessing from the text. */
@@ -34,6 +34,11 @@ export interface SheetSpan {
   readonly from: number;
   readonly to: number;
   readonly role: SheetRole;
+  /**
+   * The stretch is the selected item of a line that holds several (the current tab of the strip): it carries the selection marker, so it is
+   * also drawn as the selected row is, bold and inverse (ADR-0145 §5). A line that is one item as a whole says so by its kind (`selected`).
+   */
+  readonly selected?: true;
 }
 
 export interface SheetLine {
@@ -50,6 +55,21 @@ export function clampSpans(spans: readonly SheetSpan[], length: number): readonl
     .map((span) => (span.to <= length ? span : { ...span, to: length }));
 }
 
+/** The marker row that stands for `count` hidden rows above a window: `▲ 3 more`. One word and one glyph for every list of every surface. */
+export function moreAboveText(count: number): string {
+  return `${glyph('moreAbove')} ${String(count)} more`;
+}
+
+/** The marker row that stands for `count` hidden rows below a window: `▼ 3 more`. */
+export function moreBelowText(count: number): string {
+  return `${glyph('moreBelow')} ${String(count)} more`;
+}
+
+/** A rule of `width` columns drawn with the thin rule of the glyph table. */
+export function thinRuleText(width: number): string {
+  return glyph('thinRule').repeat(Math.max(0, width));
+}
+
 export interface SheetGeometry {
   readonly columns: number;
   readonly terminalRows: number;
@@ -64,15 +84,51 @@ export function usableColumns(columns: number): number {
 }
 
 /**
- * `text` cut to at most `width` display columns, the cut shown by `…`; whole when it fits. A wide character (CJK, an emoji sequence) that
- * straddles the cut is left out, never counted over the width.
+ * `text` cut to at most `width` display columns, the cut shown by `…`; whole when it fits. Only whole clusters that fit are kept ({@link fitColumns}):
+ * a wide character or a chain of conjoined letters that straddles the cut is left out, never counted over the width (review round 5, R5-S-6).
  */
 export function clipLine(text: string, width: number): string {
   if (displayWidth(text) <= width) return text;
-  if (width <= 1) return sliceDisplayColumns(text, 0, Math.max(0, width));
-  let cut = sliceDisplayColumns(text, 0, width - 1);
-  if (displayWidth(cut) > width - 1) cut = sliceDisplayColumns(text, 0, width - 2);
-  return `${cut}…`;
+  if (width <= 1) return fitColumns(text, width);
+  return `${fitColumns(text, width - 1)}…`;
+}
+
+/**
+ * The rows of a cell INK fits itself (a `wrap` or a `truncate-end` cell) for `text` in `width` columns (MVP-11 unit 9, review round 5), each at
+ * most `width` wide by the layout's measure, so ink never has to fit them. A cut is always the layout's ({@link clipLine}): ink decides to cut by
+ * `string-width` and then slices by another count, which keeps a cluster of a character and its halfwidth sound marks whole and draws the row
+ * past the edge (measured on the real binary: a reason to deny 89 columns wide in a row of 78). A wrap is ink's where ink counts the text as a
+ * terminal draws it (it breaks a word by each character's own width), else the layout's own rows: ink counts a cluster that is not a join a
+ * terminal performs narrower than the terminal draws it ({@link inkUndercounts}).
+ */
+export function inkRows(text: string, width: number, mode: 'wrap' | 'truncate'): readonly string[] {
+  const columns = Math.max(1, Math.floor(width));
+  if (mode === 'truncate') return [clipLine(text, columns)];
+  return inkUndercounts(text) ? wrapText(text, columns) : [text];
+}
+
+/**
+ * One row drawn in styled `pieces` (a lead, a bold query, a dim match), cut to `width` as {@link clipLine} cuts the row: the pieces that fit whole,
+ * the piece that straddles the cut cut by {@link fitColumns} with the `…` after it, and an empty string for every piece after the cut, so each
+ * keeps its style. The pieces meet at host text (a space, a `/`), so no cluster joins across them.
+ */
+export function clipPieces(pieces: readonly string[], width: number): readonly string[] {
+  if (displayWidth(pieces.join('')) <= width) return pieces;
+  let room = Math.max(0, width - 1);
+  let cut = false;
+  return pieces.map((piece) => {
+    if (cut) return '';
+    const cells = displayWidth(piece);
+    if (cells <= room) {
+      room -= cells;
+      return piece;
+    }
+    cut = true;
+    // the row's own budget decides what is too wide to show at all; the room left decides what fits
+    return width <= 1
+      ? fitColumns(piece, width)
+      : `${fitColumns(piece, room, 'start', width - 1)}…`;
+  });
 }
 
 /** `text` wrapped to `width` into at most `max` lines, a cut shown by `…` on the last; never an empty list. */
@@ -91,8 +147,9 @@ export function wrappedLines(text: string, width: number, max: number): readonly
  */
 export function titleRule(title: string, width: number): SheetLine {
   const shown = clipLine(title, Math.max(1, width - 5));
-  const lead = `─ ${shown} `;
-  const text = `${lead}${'─'.repeat(Math.max(2, width - displayWidth(lead)))}`;
+  const rule = glyph('thinRule');
+  const lead = `${rule} ${shown} `;
+  const text = `${lead}${rule.repeat(Math.max(2, width - displayWidth(lead)))}`;
   return {
     kind: 'rule',
     text,
@@ -101,6 +158,106 @@ export function titleRule(title: string, width: number): SheetLine {
       { from: 2, to: 2 + shown.length, role: 'strong' },
       { from: 2 + shown.length, to: text.length, role: 'dim' },
     ],
+  };
+}
+
+/**
+ * The widest text the wait clock can be ([ADR-0147](../../../../../docs/decisions/0147-a-system-started-question-is-a-sheet-with-a-frame-and-a-wait-clock.md)
+ * §2): the inline form of a wait that began on an earlier day, `waiting since Nov 25 14:05`, is the longest of both forms (the ticking form is at
+ * most `waiting 23h 59m`, the inline one of the same day `waiting since 14:05`, of another year `waiting since Nov 25 2026`), so the room a rule
+ * keeps for its clock is this many columns whichever form it shows and whatever the time is. The label is clipped against it, so a tick never
+ * changes what the rule's label shows.
+ */
+export const WAIT_CLOCK_COLUMNS = 26;
+
+/** The months as the inline clock names them: fixed English words, the product's language, never the locale's. */
+const MONTHS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+] as const;
+
+/** `n` as two digits. */
+function twoDigits(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+/**
+ * The alternate screen's wait clock for `elapsedMs` of waiting (ADR-0147 §2), quantised to the unit it shows: seconds for the first minute
+ * (`waiting 0:41`), then minutes only (`waiting 2m`), then hours and minutes (`waiting 1h 07m`), then days and hours, and `waiting 99d+`
+ * beyond. A negative or non-finite elapsed time (a display clock stepped back) is `waiting 0:00`. Display only: no guard reads it.
+ */
+export function waitClockText(elapsedMs: number): string {
+  const seconds = Number.isFinite(elapsedMs) && elapsedMs > 0 ? Math.floor(elapsedMs / 1000) : 0;
+  if (seconds < 60) return `waiting 0:${twoDigits(seconds)}`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `waiting ${String(minutes)}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `waiting ${String(hours)}h ${twoDigits(minutes % 60)}m`;
+  const days = Math.floor(hours / 24);
+  return days < 100 ? `waiting ${String(days)}d ${twoDigits(hours % 24)}h` : 'waiting 99d+';
+}
+
+/**
+ * The inline renderer's wait clock (ADR-0147 §2): a static `waiting since HH:MM` in local time, because a live region rewritten every second is
+ * hostile to assistive tools and costly over SSH. A wait that began on an earlier day than `nowMs` says the day too (`waiting since Nov 25
+ * 14:05`), and one of an earlier year the day and the year (`waiting since Nov 25 2026`), so a gate parked yesterday never reads as today. An
+ * origin that is not a time draws `waiting`.
+ */
+export function waitSinceText(sinceMs: number, nowMs: number = Date.now()): string {
+  const at = new Date(sinceMs);
+  if (!Number.isFinite(at.getTime())) return 'waiting';
+  const time = `${twoDigits(at.getHours())}:${twoDigits(at.getMinutes())}`;
+  const now = new Date(nowMs);
+  // A display clock stepped back below the origin (or one that is not a time) is no later day: the time alone.
+  if (!(nowMs > sinceMs) || sameLocalDay(at, now)) return `waiting since ${time}`;
+  const day = `${MONTHS[at.getMonth()] ?? ''} ${String(at.getDate())}`;
+  return at.getFullYear() === now.getFullYear()
+    ? `waiting since ${day} ${time}`
+    : `waiting since ${day} ${String(at.getFullYear())}`;
+}
+
+/** Whether `a` and `b` fall on the same calendar day in local time. */
+function sameLocalDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
+/**
+ * The heavy rule that opens a sheet ([ADR-0147](../../../../../docs/decisions/0147-a-system-started-question-is-a-sheet-with-a-frame-and-a-wait-clock.md)
+ * §1): `━━ <label> ━━━━━━ <clock> ━━`, `width` columns. The label is what the sheet asks, and the clock is the display value of how long it has
+ * waited (absent: no clock). The label is clipped against {@link WAIT_CLOCK_COLUMNS}, the room reserved for the widest clock, never against the
+ * clock shown, and the run of rule glyphs between them absorbs the clock's length: the rule is the same width and shows the same label whatever
+ * the clock says, so a tick never changes its geometry. Without colour the heavy glyph is `=` and the thin one `-` (the glyph table), so a sheet's
+ * rule and a thin rule stay apart. The label is `strong`; the view colours the whole rule (amber for a decision, cyan for the agent's question).
+ */
+export function sheetRule(label: string, clock: string, width: number): SheetLine {
+  const heavy = glyph('heavyRule');
+  const lead = `${heavy}${heavy} `;
+  const tail = ` ${heavy}${heavy}`;
+  // `━━ ` + label + ` ` + at least two rule glyphs + ` ` + the reserved clock + ` ━━`
+  const room = width - displayWidth(lead) - 1 - 2 - 1 - WAIT_CLOCK_COLUMNS - displayWidth(tail);
+  const shown = clipLine(label, Math.max(1, room));
+  const head = `${lead}${shown} `;
+  // With no clock the rule runs on unbroken to its end.
+  const end = clock === '' ? `${heavy}${heavy}` : ` ${clipLine(clock, WAIT_CLOCK_COLUMNS)}${tail}`;
+  const between = Math.max(2, width - displayWidth(head) - displayWidth(end));
+  return {
+    kind: 'rule',
+    text: `${head}${heavy.repeat(between)}${end}`,
+    spans: [{ from: lead.length, to: lead.length + shown.length, role: 'strong' }],
   };
 }
 
@@ -116,6 +273,45 @@ export function flushRow(left: string, right: string, width: number): string {
   if (room < MIN_LABEL) return clipLine(left, width);
   const clipped = clipLine(left, room);
   return `${clipped}${' '.repeat(Math.max(GAP, width - displayWidth(clipped) - displayWidth(right)))}${right}`;
+}
+
+/** A window of a list and how many entries it hides on each side ({@link markedWindow}). */
+export interface MarkedWindow {
+  readonly start: number;
+  readonly end: number;
+  /** How many entries a `▲ N more` marker on the window's FIRST row stands for, the entry under it counted. Absent when nothing is hidden above. */
+  readonly above?: number;
+  /** How many a `▼ N more` marker on the window's LAST row stands for. Absent when nothing is hidden below. */
+  readonly below?: number;
+}
+
+/**
+ * The window of `height` rows of `total` entries around `selected`, with the marker rows of the lists of the Home: a window that hides
+ * entries is marked on its first and last row (the entry under the marker counted, as every list counts them), and `windowBody` keeps
+ * `selected` off those two rows. The window is as tall as it was without markers, so a list that scrolled silently keeps its height. A window
+ * of fewer than three rows cannot hold a marker, a selected row and the other marker, and is marked on neither side. Pure and in numbers: the
+ * words are {@link windowMarkers}, written in the glyph form in force.
+ */
+export function markedWindow(total: number, selected: number, height: number): MarkedWindow {
+  const { start, end } = windowBody(total, selected, height);
+  const marked = end - start >= 3;
+  return {
+    start,
+    end,
+    ...(marked && start > 0 ? { above: start + 1 } : {}),
+    ...(marked && end < total ? { below: total - end + 1 } : {}),
+  };
+}
+
+/** The marker rows of a {@link MarkedWindow} as text (`▲ 3 more`), in the glyph form in force: a caller draws them inside the form its colour asks for. */
+export function windowMarkers(window: MarkedWindow): {
+  readonly above: string | undefined;
+  readonly below: string | undefined;
+} {
+  return {
+    above: window.above === undefined ? undefined : moreAboveText(window.above),
+    below: window.below === undefined ? undefined : moreBelowText(window.below),
+  };
 }
 
 /**

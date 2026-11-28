@@ -4,13 +4,13 @@ import { join } from 'node:path';
 import { createClient, createSessionStore, runMigrations } from '@relavium/db';
 import { expect, it, vi } from 'vitest';
 
-import * as doctor from '../chat/doctor.js';
-import { scriptedResolver } from '../chat/test-support.js';
 import { ConfigError } from '../config/errors.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
 import type { InvocationWorkOwner } from '../process/invocation-work-owner.js';
 import { DISABLE_MOUSE } from '../render/alt-screen.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
+import type { ProviderResolver } from '../engine/providers.js';
+import { hanging, recordingProvider } from '../popups/doctor.test-support.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
 import { captureIo } from '../test-support.js';
 import { driveHome } from './drive-home.js';
@@ -20,18 +20,25 @@ vi.mock('../secrets/os-keychain.js', () => ({
   createOsKeychainStore: () => ({ get: () => null, set: () => undefined, delete: () => false }),
 }));
 
+/**
+ * The Home's `/doctor` is a popup (ADR-0148 §8, MVP-11 Step 4b): its work is the Home's own, entered on the original owner. What this file
+ * pins is that ownership, through the real `driveHome`: a fault that escapes the doctor's work (a listener of the popup that throws as its
+ * checks land) reaches the ORIGINAL Home and its exit code, an ownerless Home survives it, a configuration the doctor could not read is a row
+ * and never a fault, and a deep request still in flight (one that ignores its abort) keeps the Home from finishing until it settles. The
+ * report reaches the popup and nothing reaches the Home's notice.
+ */
 const cases = [
   'healthy',
-  'checking-fault',
   'publication-fault',
-  'formatter-fault',
   'known-refusal',
-  'held-report',
-  'late-rejection',
+  'held-deep',
   'ownerless-publication-fault',
 ] as const;
 
+const KEY = ['sk', 'ant', 'home', 'owner', 'ABCDEF123456'].join('-');
+
 it.each(cases)('actual Home doctor retains original publication and work: %s', async (mode) => {
+  vi.useFakeTimers({ toFake: ['performance'] });
   const client = createClient(':memory:');
   runMigrations(client.db);
   const sessions = createSessionStore(client.db);
@@ -50,26 +57,14 @@ it.each(cases)('actual Home doctor retains original publication and work: %s', a
     owner = this.surface.work;
     return execute.call(this, body);
   });
-  let releaseReport: (report: doctor.DoctorReport) => void = () => {};
-  let rejectReport: (reason: unknown) => void = () => {};
-  const held = new Promise<doctor.DoctorReport>((resolve, reject) => {
-    releaseReport = resolve;
-    rejectReport = reject;
-  });
-  let reportEntered = () => {};
-  const entered = new Promise<void>((resolve) => {
-    reportEntered = resolve;
-  });
-  const report: doctor.DoctorReport = { checks: [] };
-  if (mode === 'held-report' || mode === 'late-rejection')
-    vi.spyOn(doctor, 'runDoctorChecks').mockImplementation(() => {
-      reportEntered();
-      return held;
-    });
-  if (mode === 'formatter-fault')
-    vi.spyOn(doctor, 'formatDoctorReport').mockImplementation(() => {
-      throw cause;
-    });
+  const stall = hanging();
+  const anthropic = recordingProvider('anthropic', () => stall.promise);
+  const resolver: ProviderResolver = {
+    resolveProvider: (id) => (id === 'anthropic' ? anthropic : undefined),
+    keyFor: () => KEY,
+    hasKey: (id) => id === 'anthropic',
+    endpointContext: () => 'Official endpoint: https://api.anthropic.com',
+  };
   let props: RootAppProps | undefined;
   let unmount = () => {};
   const exited = new Promise<void>((resolve) => {
@@ -90,13 +85,14 @@ it.each(cases)('actual Home doctor retains original publication and work: %s', a
       color: false,
       verbosity: 'normal',
     },
-    providers: scriptedResolver([]),
+    providers: resolver,
     doctorProbes: {
       keychain: () => {},
       config: () => {
         if (mode === 'known-refusal') throw new ConfigError('synthetic.toml', 'invalid shape');
       },
       toolHost: {},
+      providers: resolver,
     },
     openSessionStore: () => ({
       db: client.db,
@@ -108,6 +104,8 @@ it.each(cases)('actual Home doctor retains original publication and work: %s', a
     }),
     render: (value) => {
       props = value;
+      // No Home root is mounted here, so nothing binds the popup host's gate as RootApp does, and a host with none opens nothing: open.
+      value.popups?.bindOpenGate(() => undefined);
       value.onRendererReady?.(async (publish) => {
         await publish?.();
       });
@@ -127,11 +125,6 @@ it.each(cases)('actual Home doctor retains original publication and work: %s', a
       onContinue: () => () => {},
       suspendSelf: () => {},
     },
-    onboardingTerminalLifecycle: {
-      onInput: () => () => {},
-      isRawMode: () => false,
-      setRawMode: () => {},
-    },
   }).then((code) => {
     settled = true;
     return code;
@@ -140,62 +133,59 @@ it.each(cases)('actual Home doctor retains original publication and work: %s', a
   try {
     if (props === undefined) throw new Error('Expected actual Home mount.');
     const controller = props.controller;
-    remove = controller.subscribe(() => {
-      const text = controller.getSnapshot().notice;
-      const match =
-        mode === 'checking-fault'
-          ? text === 'doctor: checking…'
-          : text?.includes('all checks passed');
-      if (match && hits === 0) {
+    const popups = props.popups;
+    if (popups === undefined) throw new Error('Expected the Home’s popup host.');
+    // No renderer is mounted here: the test is the frame that is "on screen", acknowledged when it says so.
+    popups.bindVisibility(() => true);
+    const checks = () => popups.getSnapshot().frame?.steps[0]?.content;
+    remove = popups.subscribe(() => {
+      const content = checks();
+      if (content?.kind === 'list' && hits === 0) {
         hits++;
-        if (['checking-fault', 'publication-fault', 'ownerless-publication-fault'].includes(mode))
-          throw cause;
+        if (mode === 'publication-fault' || mode === 'ownerless-publication-fault') throw cause;
       }
     });
     controller.handleKey('/', {});
     for (const char of 'doctor') controller.handleKey(char, {});
     controller.handleKey('', { return: true });
-    if (mode === 'held-report' || mode === 'late-rejection') {
-      expect(await Promise.race([entered.then(() => 'report'), running.then(() => 'exit')])).toBe(
-        'report',
+    await vi.waitFor(() => expect(hits).toBe(1));
+    expect(controller.getSnapshot().notice, 'DOCTOR_WRITES_NO_HOME_NOTICE').toBeUndefined();
+    if (mode === 'known-refusal') {
+      const content = checks();
+      expect(
+        content?.kind === 'list' ? content.rows.map((row) => row.detail).join(' ') : '',
+      ).toContain('invalid shape');
+    }
+    if (mode === 'held-deep') {
+      popups.shown(popups.getSnapshot());
+      vi.advanceTimersByTime(600);
+      popups.input('d', {});
+      await vi.waitFor(() =>
+        expect(popups.getSnapshot().frame?.steps[2]?.content.kind).toBe('report'),
       );
+      popups.shown(popups.getSnapshot());
+      vi.advanceTimersByTime(900);
+      popups.input('y', { ctrl: true });
+      expect(anthropic.requests).toHaveLength(1);
+      // Leaving the Home closes the popup and aborts the run; the request ignores its abort, so it is still the Home's work.
+      remove();
+      popups.closeAll('escape');
+      expect(anthropic.requests[0]?.signal?.aborted).toBe(true);
       controller.handleKey('c', { ctrl: true });
       controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
       await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(settled, 'DOCTOR_RAW_REPORT_MUST_JOIN_ORIGINAL_HOME').toBe(false);
+      expect(settled, 'DOCTOR_RAW_REQUEST_MUST_JOIN_ORIGINAL_HOME').toBe(false);
       expect(closes).toBe(0);
       expect(client.sqlite.open).toBe(true);
       expect(f.registry.activeOwners).toBeGreaterThan(0);
-      if (mode === 'late-rejection') rejectReport(cause);
-      else releaseReport(report);
-    } else if (mode === 'formatter-fault') {
-      await vi.waitFor(() =>
-        expect(
-          owner?.firstFailure !== undefined ||
-            controller.getSnapshot().notice === 'doctor: check failed',
-        ).toBe(true),
-      );
-      remove();
-      controller.handleKey('c', { ctrl: true });
-      controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
-    } else if (mode === 'known-refusal') {
-      await vi.waitFor(() => expect(controller.getSnapshot().notice).toContain('check(s) failed'));
-      expect(controller.getSnapshot().notice).toContain('invalid shape');
-      remove();
-      controller.handleKey('c', { ctrl: true });
-      controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
+      stall.release();
     } else {
-      await vi.waitFor(() => expect(hits).toBe(1));
       remove();
+      popups.closeAll('escape');
       controller.handleKey('c', { ctrl: true });
       controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
     }
-    const faulted = [
-      'checking-fault',
-      'publication-fault',
-      'formatter-fault',
-      'late-rejection',
-    ].includes(mode);
+    const faulted = mode === 'publication-fault';
     expect(await running, 'DOCTOR_PUBLICATION_FAILURE_REACHES_ORIGINAL_HOME').toBe(faulted ? 9 : 0);
     if (faulted) {
       expect(owner?.firstFailure?.cause).toBe(cause);
@@ -216,10 +206,11 @@ it.each(cases)('actual Home doctor retains original publication and work: %s', a
     expect(captured.out() + captured.err()).not.toContain('PRIVATE_HOME_DOCTOR');
   } finally {
     remove();
-    releaseReport(report);
+    stall.release();
     unmount();
     await running;
     vi.restoreAllMocks();
+    vi.useRealTimers();
     if (client.sqlite.open) client.sqlite.close();
     rmSync(cwd, { recursive: true, force: true });
   }

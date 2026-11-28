@@ -35,12 +35,13 @@ import type { OpenedSessionStore } from '../history/session-open.js';
 import type { CliIo } from '../process/io.js';
 import { CliError } from '../process/cli-error.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
+import { APPROVAL_LOCKOUT_MS } from '../render/tui/tool-review-model.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { JobControlLifecycle } from '../render/suspend.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
 import { captureIo } from '../test-support.js';
-import { driveHome, type HomeDeps, type OnboardingTerminalLifecycle } from './drive-home.js';
+import { driveHome, type HomeDeps } from './drive-home.js';
 import { HOSTED_LEG_SETTLE_BOUND_MS, RunHost } from './run-host.js';
 import { SessionHomeLifetime } from './session-home-lifetime.js';
 
@@ -81,11 +82,6 @@ const INERT_JOB_CONTROL: JobControlLifecycle = {
   onContinue: () => () => undefined,
   suspendSelf: () => undefined,
 };
-const INERT_ONBOARDING_TERMINAL: OnboardingTerminalLifecycle = {
-  onInput: () => () => undefined,
-  isRawMode: () => false,
-  setRawMode: () => undefined,
-};
 
 let root: string;
 let operatorHome: string;
@@ -97,6 +93,16 @@ beforeEach(() => {
   client = createClient(':memory:');
   runMigrations(client.db);
 });
+/**
+ * The person reads the exit guard for its lockout before the deliberate `Ctrl+Y`: since MVP-11 unit 8 the lockout runs from the card's
+ * APPEARANCE, so a `Ctrl+Y` pressed with the card's opening is held (it is the held-key case). The Home's guards run on the monotonic clock,
+ * which steps forward by the lockout here, as reading the card takes; `afterEach` restores it.
+ */
+function readTheGuardForItsLockout(): void {
+  const real = performance.now.bind(performance);
+  vi.spyOn(performance, 'now').mockImplementation(() => real() + APPROVAL_LOCKOUT_MS);
+}
+
 afterEach(() => {
   if (client.sqlite.open) client.sqlite.close();
   rmSync(root, { recursive: true, force: true });
@@ -286,17 +292,9 @@ async function mountOwnedHome(options: { readonly closeRejects?: boolean } = {})
     subscribeSignals: () => () => undefined,
     subscribeProcessExit: () => () => undefined,
     jobControlLifecycle: INERT_JOB_CONTROL,
-    onboardingTerminalLifecycle: INERT_ONBOARDING_TERMINAL,
     writeControl: () => undefined,
     exit: () => undefined,
-    onboardingPrompter: {
-      intro: () => undefined,
-      outro: () => undefined,
-      note: () => undefined,
-      select: () => Promise.resolve(Symbol('cancel')),
-      password: () => Promise.resolve(Symbol('cancel')),
-      isCancel: (v): v is symbol => typeof v === 'symbol',
-    },
+    firstRunSetup: 'off',
     run: host,
     // THE OWNED PATH: the Home holds the invocation, so the connection is the surface's to close.
     invocation: f.invocation,
@@ -321,6 +319,7 @@ async function mountOwnedHome(options: { readonly closeRejects?: boolean } = {})
       timeout: WAIT_MS,
     });
     props.controller.bindHomeFrame(() => true); // the host measured the card on screen (this mount paints nothing)
+    readTheGuardForItsLockout();
     props.controller.handleKey('y', CTRL_Y);
     expect(stubborn.cancel, 'the leg was asked to stop, and ignores it').toHaveBeenCalled();
     // The grace ran out: the Home's exit now joins the host, which waits its own bound on the test's clock.

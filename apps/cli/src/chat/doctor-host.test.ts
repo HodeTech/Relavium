@@ -4,7 +4,7 @@ import { join, sep } from 'node:path';
 import type { McpServerRef } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
-import { GLOBAL_ARTIFACTS_REMEDY } from '../authoring/global-artifacts.js';
+import { GLOBAL_ARTIFACTS_REMEDY_TUI } from '../authoring/global-artifacts.js';
 import type { ProviderResolver } from '../engine/providers.js';
 import type { KeychainStore } from '../secrets/keychain.js';
 import { checkConfig } from './doctor.js';
@@ -27,7 +27,12 @@ describe('assembleDoctorProbes', () => {
       mkdirSync(workspace);
       mkdirSync(home, { mode: 0o700 });
       writeFileSync(join(workspace, 'notes.txt'), 'doctor read control');
-      const probes = assembleDoctorProbes({ cwd: workspace, operatorHomeDir: home, resolver });
+      const probes = assembleDoctorProbes({
+        noticeSurface: 'tui',
+        cwd: workspace,
+        operatorHomeDir: home,
+        resolver,
+      });
       const fs = probes.toolHost?.fs;
       if (fs === undefined) throw new Error('Doctor did not expose its filesystem capability.');
       expect((await fs.readFile('notes.txt', {})).content).toBe('doctor read control');
@@ -45,6 +50,7 @@ describe('assembleDoctorProbes', () => {
       const configPath = join(home, '.relavium', 'config.toml');
       writeFileSync(configPath, 'not = [valid');
       const probes = assembleDoctorProbes({
+        noticeSurface: 'tui',
         cwd: workspace,
         configPath,
         operatorHomeDir: home,
@@ -71,8 +77,16 @@ describe('assembleDoctorProbes', () => {
       // The marker lives only in the handed home: a probe that asked the OS for the home would see nothing.
       writeFileSync(join(home, '.relavium', 'workflows', 'stray.relavium.yaml'), 'x');
       writeFileSync(join(home, '.relavium', 'config.toml'), 'not = [valid');
-      const probes = assembleDoctorProbes({ cwd: workspace, operatorHomeDir: home, resolver });
-      expect(probes.globalArtifacts?.()).toBe(GLOBAL_ARTIFACTS_REMEDY);
+      const probes = assembleDoctorProbes({
+        noticeSurface: 'tui',
+        cwd: workspace,
+        operatorHomeDir: home,
+        resolver,
+      });
+      // `/doctor` is read in the TUI, so its remedy is the Home's `/import`, never the shell's `relavium import` (OD-20).
+      expect(probes.globalArtifacts?.()).toBe(GLOBAL_ARTIFACTS_REMEDY_TUI);
+      expect(GLOBAL_ARTIFACTS_REMEDY_TUI).toContain('/import');
+      expect(GLOBAL_ARTIFACTS_REMEDY_TUI).not.toContain('relavium import');
       const check = checkConfig(probes.config);
       expect(check.status, 'the handed home`s own config was the one read').toBe('fail');
       expect(check.detail).toContain('is not valid TOML');
@@ -91,6 +105,7 @@ describe('assembleDoctorProbes', () => {
       delete: vi.fn(() => false),
     };
     const probes = assembleDoctorProbes({
+      noticeSurface: 'tui',
       cwd: '/tmp/x',
       resolver,
       keychain,
@@ -107,6 +122,7 @@ describe('assembleDoctorProbes', () => {
     // No startMcpClient / opener is injected or reachable: the tier is a pure function of the bound agent's
     // declared servers + the manager-skipped tools. A live session means all declared servers are connected.
     const probes = assembleDoctorProbes({
+      noticeSurface: 'tui',
       cwd: '/tmp/x',
       resolver,
       agentMcpServers: [ref('fs'), ref('github')],
@@ -126,9 +142,9 @@ describe('assembleDoctorProbes', () => {
   });
 
   it('reports "none configured" when the bound agent declares no MCP servers (the Home default agent)', async () => {
-    const probes = assembleDoctorProbes({ cwd: '/tmp/x', resolver });
+    const probes = assembleDoctorProbes({ noticeSurface: 'tui', cwd: '/tmp/x', resolver });
     expect(await probes.deepMcp?.()).toEqual([
-      { id: 'mcp', label: 'MCP servers', status: 'warn', detail: 'none configured' },
+      { id: 'mcp', label: 'MCP servers', status: 'ok', detail: 'none configured' },
     ]);
   });
 });

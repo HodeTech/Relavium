@@ -48,7 +48,7 @@ describe('renderFinalSummary', () => {
     expect(out).toContain('$0.0500');
     expect(out).toContain('1.2s');
     expect(out).toContain('↑10 ↓5');
-    expect(out).toContain('✓ a (420ms)');
+    expect(out).toContain('✓ completed a (420ms)');
     expect(out.endsWith('\n')).toBe(true);
   });
 
@@ -82,7 +82,7 @@ describe('renderFinalSummary', () => {
     const out = renderFinalSummary(state);
     expect(out).toContain('run failed (provider_unavailable)');
     expect(out).toContain('upstream down');
-    expect(out).toContain('✗ a — provider_unavailable');
+    expect(out).toContain('✗ failed    a — provider_unavailable');
   });
 
   it('summarizes a paused run with the gate ids', () => {

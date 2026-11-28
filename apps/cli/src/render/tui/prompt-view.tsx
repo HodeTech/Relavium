@@ -1,32 +1,101 @@
-import { Box, Text } from 'ink';
+import { Box } from 'ink';
+import { Text } from './text.js';
 import type { ReactElement } from 'react';
 
 import type { EditorState } from './chat-input.js';
-import { sanitizeInline } from './chat-projection.js';
+import { sanitizeInline } from '../sanitize.js';
 import { promptRows, type PromptRow } from './prompt-cursor.js';
-import { colorProps } from './projection.js';
+import { promptWindow, type PromptWindowLine } from './prompt-window.js';
+import { emphasize } from './emphasis.js';
+import { withGlyphForm } from './glyphs.js';
+import { colorProps, dimProps } from './projection.js';
+import { moreAboveText, moreBelowText } from './sheet-frame.js';
+import { displayWidth } from './viewport.js';
 
 /**
  * The live multi-line prompt with the cursor drawn at its position (2.5.D step 2) — shared by `ChatView`
- * (`relavium chat`) and the Home `Prompt`, so both surfaces render the editor identically. Each row is a cyan
- * line: the first prefixed `> `, continuation lines aligned under it with two spaces. EVERY segment (before /
+ * (`relavium chat`) and the Home's two prompts, so every surface renders the editor identically. Each row is a cyan
+ * line: the first prefixed with the prompt glyph (`›`, ASCII `>`), continuation lines aligned under it with spaces. EVERY segment (before /
  * the cursor cell / after) passes {@link sanitizeInline} at this display boundary, so a pasted or typed control
- * sequence cannot corrupt the terminal or inject ANSI/OSC. The cursor cell is an inverse block (a terminal
- * attribute, gated on `color` like every other style); without color the underlying char is still rendered,
- * just not highlighted — matching the prior trailing-block behavior.
+ * sequence cannot corrupt the terminal or inject ANSI/OSC. The cursor cell is an inverse block, drawn WHETHER OR NOT
+ * colour is on: "no colour" means colour only (ADR-0145 §5, MVP-11 OD-6), and bold, inverse and underline stay.
+ *
+ * The cell is the SGR pair written out (`ESC[7m` … `ESC[27m`) by the one emphasis rule (`emphasis.ts`) in both modes: ink renders
+ * `inverse` through chalk, whose level is 0 under `--no-color`, `FORCE_COLOR=0` and `TERM=dumb`, so there `<Text inverse>` prints nothing
+ * and the prompt had no cursor at all (observed, MVP-11 step 1 evidence §A; the first fix covered only the `NO_COLOR` variable). The pair
+ * is zero-width to ink's width measurement and wrapping, which read SGR as part of no cell, so a row does not wrap earlier for it.
+ *
+ * **Three optional props** (ADR-0146 §1 and §4, MVP-11 step 7): `glyph` is the prefix of the first row (the chat and the Home pass the glyph table's
+ * `yourTurn`, `›`, ASCII `>`; absent, the literal `> ` this view has always drawn, so its other callers draw the same bytes); `placeholder` is
+ * the example or the invitation drawn in the empty prompt and nowhere else (never part of the editor's text, so never sent or recorded; the
+ * cursor is the inverse cell on its first character; dim with colour, plain without it, because dim is not relied on; the first keystroke
+ * replaces it); `cursor` (default `true`) is whether the cursor cell is drawn at all (`false` while something else owns the keys: a popup).
  *
  * The rows INTENTIONALLY reflow (ink's default `wrap`), unlike the Home strip's read-only `truncate-end` rows:
  * this is a LIVE editor, so the full input + the cursor must always stay visible (a `truncate-end` prompt would
  * hide the cursor once a line runs past the terminal edge, and would defeat the multi-line buffer entirely). A
  * long/many-line prompt therefore grows downward — it is the bottom element, so the strip above is unaffected.
+ *
+ * **A bound, for a host that has to keep what is below it** (OB7-M3, OB71): with `maxRows` a draft that does not fit is drawn as a window of its rows
+ * around the cursor, with a `▲ N more` / `▼ N more` marker for the rows it hides ({@link promptWindow}), so the cursor, the rule, the status line and
+ * the hint below a long paste stay on the screen. The chat and the Home's two prompts give it (`columns` is the width the rows are cut to). Absent
+ * `maxRows` (the picker's filter, a palette's query) the editor is drawn exactly as above, and a draft that fits the bound is too. The whole draft is
+ * still in the editor's text: only the drawing is windowed, and what is sent is that text.
  */
 export function PromptEditor(
-  props: Readonly<{ editor: EditorState; color: boolean }>,
+  props: Readonly<{
+    editor: EditorState;
+    color: boolean;
+    /** The first row's prefix, one column wide in practice; absent ⇒ `>`. Continuation rows hang under the text with spaces. */
+    glyph?: string | undefined;
+    /** Drawn only while the editor's text is empty; never part of that text. */
+    placeholder?: string | undefined;
+    /** Whether the cursor cell is drawn; absent ⇒ it is. */
+    cursor?: boolean | undefined;
+    /** The most rows the editor may take, markers included; a longer draft is drawn as a window around the cursor. Absent ⇒ unbounded. */
+    maxRows?: number | undefined;
+    /**
+     * The width a windowed draft's rows are cut to (the lead's columns are taken off); absent ⇒ 80. Read only with `maxRows`. A host that draws the
+     * editor in a box of its own width (the chat on the grid: the content column, unit 9) gives that width, so the cut and Ink's wrap are one.
+     */
+    columns?: number | undefined;
+  }>,
 ): ReactElement {
   const { editor, color } = props;
-  const rows = promptRows(editor.text, editor.cursor);
+  const lead = `${props.glyph ?? '>'} `;
+  const leadWidth = displayWidth(lead);
+  const hang = ' '.repeat(leadWidth);
+  const showCursor = props.cursor !== false;
+  if (props.placeholder !== undefined && editor.text === '') {
+    return (
+      <Box flexDirection="column">
+        <PlaceholderRow
+          lead={lead}
+          placeholder={props.placeholder}
+          color={color}
+          cursor={showCursor}
+        />
+      </Box>
+    );
+  }
+  // `-1` is before the text, so `promptRows` places the cursor on no row: the one way to draw the text without it.
+  const cursorAt = showCursor ? editor.cursor : -1;
+  const windowed =
+    props.maxRows === undefined
+      ? undefined
+      : promptWindow(
+          editor.text,
+          cursorAt,
+          (props.columns ?? DEFAULT_COLUMNS) - leadWidth,
+          props.maxRows,
+          sanitizeInline,
+          leadWidth,
+        );
+  if (windowed !== undefined)
+    return <WindowedRows lines={windowed} lead={lead} hang={hang} color={color} />;
+  const rows = promptRows(editor.text, cursorAt);
   // Key each row by its line START char offset — a stable, positional id (identical lines never collide, unlike a
-  // content key) that is NOT the array index React discourages for keys. The first row (offset 0) gets the `> `.
+  // content key) that is NOT the array index React discourages for keys. The first row (offset 0) gets the prefix.
   const keyed: { readonly row: PromptRow; readonly offset: number }[] = [];
   let offset = 0;
   for (const row of rows) {
@@ -40,13 +109,80 @@ export function PromptEditor(
         const cursorCell = row.at === undefined ? '' : sanitizeInline(row.at) || ' ';
         return (
           <Text key={rowOffset} {...colorProps(color, 'cyan')}>
-            {rowOffset === 0 ? '> ' : '  '}
+            {rowOffset === 0 ? lead : hang}
+            {/* ink wraps a draft only where it counts it as a terminal draws it: every host passes a window, and a draft that holds a
+                cluster ink would count narrower is drawn as the window's own rows (`promptWindow`, review round 5) */}
             {sanitizeInline(row.before)}
-            {row.at !== undefined && (color ? <Text inverse>{cursorCell}</Text> : cursorCell)}
+            {row.at !== undefined && emphasize(cursorCell, 'inverse')}
             {sanitizeInline(row.after)}
           </Text>
         );
       })}
     </Box>
+  );
+}
+
+/** The width a windowed draft is cut to when its host does not say (the terminal's usual 80 columns). */
+const DEFAULT_COLUMNS = 80;
+
+/**
+ * A draft drawn as a window ({@link promptWindow}): each line is one row, a row that carries the cursor draws its cell inverse, and the marker rows
+ * stand for the rows hidden above and below, dim and indented under the lead like the rows themselves. Every segment is already scrubbed.
+ */
+function WindowedRows(
+  props: Readonly<{
+    lines: readonly PromptWindowLine[];
+    lead: string;
+    hang: string;
+    color: boolean;
+  }>,
+): ReactElement {
+  const { color } = props;
+  return (
+    <Box flexDirection="column">
+      {props.lines.map((line, position) =>
+        line.kind === 'more' ? (
+          <Text key={`more-${String(position)}`} {...dimProps(color)} wrap="truncate-end">
+            {props.hang}
+            {withGlyphForm(!color, () =>
+              line.side === 'above' ? moreAboveText(line.count) : moreBelowText(line.count),
+            )}
+          </Text>
+        ) : (
+          <Text key={`row-${String(position)}`} {...colorProps(color, 'cyan')} wrap="truncate-end">
+            {line.row.first ? props.lead : props.hang}
+            {line.row.before}
+            {line.row.at !== undefined && emphasize(line.row.at, 'inverse')}
+            {line.row.after}
+          </Text>
+        ),
+      )}
+    </Box>
+  );
+}
+
+/**
+ * The empty prompt's invitation: the prefix in the prompt's colour, the cursor cell on the placeholder's FIRST character (inverse, drawn with
+ * colour and without it), the rest dim with colour and plain without it. The placeholder is scrubbed at this boundary like every other
+ * segment of the prompt.
+ */
+function PlaceholderRow(
+  props: Readonly<{ lead: string; placeholder: string; color: boolean; cursor: boolean }>,
+): ReactElement {
+  const text = sanitizeInline(props.placeholder);
+  const [first = ' '] = Array.from(text);
+  const rest = text.slice(first.length);
+  return (
+    <Text>
+      <Text {...colorProps(props.color, 'cyan')}>{props.lead}</Text>
+      {props.cursor ? (
+        <>
+          {emphasize(first, 'inverse')}
+          <Text {...dimProps(props.color)}>{rest}</Text>
+        </>
+      ) : (
+        <Text {...dimProps(props.color)}>{text}</Text>
+      )}
+    </Text>
   );
 }

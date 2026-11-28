@@ -274,7 +274,13 @@ function loadBuilderSession(fixture: WorkspaceCase) {
 }
 
 describe('secret workspace admission before canonical persistence', () => {
-  it.each([[], ['chat'], ['agent', 'run', 'unused-agent.yaml']].map((surface) => ({ surface })))(
+  // `run` (round 2 sitting #2, F1): a run records its directory's canonical root, so a run typed in an alias of a credential store would be
+  // resumed, from anywhere, jailed to a spelling that has lost the store's segment. It is refused before anything is read, as chat is.
+  it.each(
+    [[], ['chat'], ['agent', 'run', 'unused-agent.yaml'], ['run', 'unused-workflow.yaml']].map(
+      (surface) => ({ surface }),
+    ),
+  )(
     'refuses real argv surface %j before history/key/provider/MCP composition',
     async ({ surface }) => {
       return ownCase(async (fixture) => {
@@ -295,7 +301,9 @@ describe('secret workspace admission before canonical persistence', () => {
         ).toBe(2);
         expect(effects, 'FS_CAUSAL_WORKSPACE_ADMISSION').toEqual({ history: 0, keys: 0 });
         expect(existsSync(join(home, '.relavium', 'history.db'))).toBe(false);
-        expect(captured.err()).toContain('Choose another workspace');
+        expect(captured.err(), 'FS_CAUSAL_WORKSPACE_ADMISSION').toContain(
+          'Choose another workspace',
+        );
         expect(captured.err()).not.toContain(home);
         expect(captured.err()).not.toContain('synthetic key sentinel');
       });

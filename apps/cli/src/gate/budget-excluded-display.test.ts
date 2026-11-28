@@ -150,7 +150,7 @@ describe('excluded allowance candidates on human surfaces (ADR-0097)', () => {
     expect(choice.kind).toBe('invalid');
     if (choice.kind === 'invalid') {
       assertSafeDetails(choice.message);
-      expect(choice.message).toContain('display-gate: 20 microcents');
+      expect(choice.message).toContain('display-gate: allowance $0.0000002');
       expect(choice.message).toContain('second-gate: legacy gate');
     }
   });
@@ -210,7 +210,7 @@ describe('excluded allowance candidates on human surfaces (ADR-0097)', () => {
     if (body === undefined) throw new Error('expected rendered card');
     assertSafeDetails(body);
     expect(confirm).toHaveBeenCalledWith({
-      message: 'Approve exactly 20 microcents?',
+      message: 'Approve exactly $0.0000002?',
       active: 'Approve exact amount',
       inactive: 'Reject',
       initialValue: false, // a bare Enter rejects the spend
@@ -250,7 +250,8 @@ describe('excluded allowance candidates on human surfaces (ADR-0097)', () => {
         }),
       ).toBe(0);
       assertSafeDetails(out());
-      expect(out()).toContain('20 microcents');
+      expect(out()).toContain('allowance $0.0000002');
+      expect(out()).not.toContain('microcents');
       expect(out()).toContain('--approve-amount 20');
     } finally {
       client.sqlite.close();

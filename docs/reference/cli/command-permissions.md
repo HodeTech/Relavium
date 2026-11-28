@@ -1,8 +1,8 @@
 # Remembered command permissions
 
-> Last updated: 2026-11-23
+> Last updated: 2026-11-27
 
-- **Status**: Reference — the grant store, `relavium permissions`, the command card with its *This session* and *Remember* answers, and the chat's `/permissions` are implemented on `development` (MVP-4 steps 3 to 7; the chat's `/permissions` is a sheet since step 5, and the bare Home and a bare `relavium permissions` opened it since step 7; since MVP-8 step 4 they open the **Permissions tab of the Home's tab host**, which composes this sheet, see the *On the bare Home* item of the sheet's section below and [home.md](home.md#the-tab-host-defined-active-history-and-permissions-mvp-8-step-4-2026-11-23)).
+- **Status**: Reference — the grant store, `relavium permissions`, the command card with its *This session* and *Remember* answers, and the chat's `/permissions` are implemented on `development` (MVP-4 steps 3 to 7; the chat's `/permissions` was a docked sheet from step 5 and is a **popup** since MVP-11; the bare Home and a bare `relavium permissions` opened the sheet from step 7, the Permissions tab of the Home's tab host from MVP-8 step 4, and open the same popup since MVP-11 unit 8, see the *On the bare Home* item of the popup's section below and [home.md](home.md#permissions-on-the-bare-home-mvp-4-step-7-2026-11-21-a-popup-since-mvp-11-unit-8-2026-11-27)).
 - **Surface**: CLI (`relavium permissions`, the chat's command card, `!`)
 - **Scope**: A person's "Remember this command" answers, kept on one machine. Not the `[chat]` allowlist (config), not a workflow's allowlist, not MCP consent.
 - **Related**: [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md), [ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md), [ADR-0006](../../decisions/0006-os-keychain-for-api-keys.md), [commands.md](commands.md), [chat-session.md](chat-session.md), [keychain-and-secrets.md](../desktop/keychain-and-secrets.md), [mcp-integration.md](../shared-core/mcp-integration.md#the-grant-store), [security-review.md](../../standards/security-review.md#sandbox-and-tool-policy-run_command-node-tools-secret-inputs)
@@ -300,9 +300,9 @@ exact command for this session` and `Press Enter to allow this exact command now
 `Enter confirms · any other key cancels, allowing nothing`; an Enter that comes too early or too late says `Too early or too late
 for Enter — nothing was allowed.` A Remember written as the call is cancelled leaves the grant, and says so.
 
-The session approval a *Remember* leaves is **linked to its grant**: withdrawing the grant from this chat's `/permissions` sheet
+The session approval a *Remember* leaves is **linked to its grant**: withdrawing the grant from this chat's `/permissions` popup
 withdraws it too. A chat that is already open keeps its own session approval of a command revoked elsewhere (from
-`relavium permissions revoke`, or another chat) until the person withdraws that row in its sheet (the row then no longer says `(also remembered)`, because no grant covers it).
+`relavium permissions revoke`, or another chat) until the person withdraws that row in its popup (the row then no longer says `(also remembered)`, because no grant covers it).
 
 A session export (`/export`) carries no authority: a session that used `run_command` exports `tools: [run_command]` and no
 allowlist, neither the remembered commands nor this session's approvals. A workflow has no one to ask, so the scaffolded node
@@ -334,115 +334,47 @@ resolved lexically against the working directory is a path the file tools' read 
 warning on every command). The card says so (`⚠ Names a protected path (its output goes to the model). Allow once only.`) and the only
 answer that approves is *Once*. Nothing is resolved on disk and no shell expansion is imagined: the command is spawned without a shell.
 
-### In the chat: `/permissions`, a sheet
+<a id="in-the-chat-permissions-a-sheet"></a>
 
-([ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §2.) The bare `/permissions` opens a docked, keyboard-owning sheet under the
-conversation, where `/models` and `/effort` open, with the transcript still above it. The command takes **no argument**: the typed
-`--revoke <number>` forms are gone, because a typed number is a position and the sheet names a row. On a plain, `--json` or one-shot
-chat, which has no store and no one to ask, `/permissions` says `Remembered commands are not available in this chat.` The sheet opens
-only at an idle prompt, with no card open; if a card ever arrived while it was open, the sheet would close and the card would be shown.
+### In the chat: `/permissions`, a popup
+
+([ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §2, built as a popup by [ADR-0148](../../decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §3 and §10 in MVP-11; until then it was a docked sheet, whose rows, rules and sentences the popup keeps.) The bare `/permissions` opens a keyboard-owning popup over the conversation, with the transcript behind it (inline, a framed block that replaces the body). The command takes **no argument**: the typed `--revoke <number>` forms are gone, because a typed number is a position and the popup names a row. On a plain, `--json` or one-shot chat, which has no store and no one to ask, `/permissions` says `Remembered commands are not available in this chat.` The popup opens only at an idle prompt, with no turn running and no card open (a refused open is one notification); a card that arrived while it was open would close it unanswered and be shown.
 
 ```text
-─ Permissions · ask mode ─────────────────────────────────────────────────────
+ask mode · Session-approved commands run unasked here; a remembered one still asks.
+
 This project · remembered (2)
-› npm, 1 argument                             [d] withdraw   2026-11-19 12:00Z
-  node, 1 argument                                           2026-11-18 09:30Z
+› npm, 1 argument                              2026-11-19 12:00Z
+  node, 1 argument                             2026-11-18 09:30Z
+
 This session · approved (1)
-  git status                                                 (also remembered)
-Session-approved commands run unasked here; a remembered one still asks.
-Press d to withdraw it: auto mode will ask about this command again.
-↑/↓ select · [d / Del] withdraw · Esc close
+  git status                                   (also remembered)
+Press [d] to withdraw it: auto mode will ask about this command again.
+↑/↓ select · [d] / Del withdraw (then Enter) · Esc close
 ```
 
-With the question up (after `d`), the same sheet reads:
+The sketch shows the lists (the popup's top edge reads `/permissions` and `from chat`, and the column widths are the frame's). With the question up, after `[d]`, the popup's second step reads:
 
 ```text
-─ Permissions · ask mode ─────────────────────────────────────────────────────
-This project · remembered (2)
-› npm, 1 argument                         [Enter] withdraw   2026-11-19 12:00Z
-  node, 1 argument                                           2026-11-18 09:30Z
-This session · approved (1)
-  git status                                                 (also remembered)
-Session-approved commands run unasked here; a remembered one still asks.
-Withdraw npm, 1 argument (2026-11-19 12:00Z)? Any other key keeps it.
-[Enter] withdraw · Esc keep
+Withdraw this remembered command?
+  npm, 1 argument (remembered 2026-11-19 12:00Z)
+Auto mode will ask about this command again.
+Withdrawing only narrows what runs without asking.
+Enter withdraw · Esc keep
 ```
 
-**The action is on the thing it acts on.** The selected row carries its own action, `[d] withdraw`, just before its date, so a person
-who has not read a legend still sees that the row can be taken back and with which key; the date stays flush right on every row, so
-the dates stay in one column as the selection moves. The row under the note (the *message row*) says what withdrawing the selected row
-will do **before** it is done; the legend names the key in brackets, as the approval card brackets its answers (`[d / Del]`), and
-draws it in the danger colour, with the confirming `[Enter]` in the attention colour. The opening rule carries the title
-(`─ Permissions · <mode> mode ───`) and separates the sheet from the conversation above it.
+**The action is on the thing it acts on.** The highlighted row's effect is stated under the lists **before** anything is done, and the legend names the keys in brackets (`[d] / Del`), so a person who has not read a legend still sees that the row can be taken back and with which key.
 
-- **Rows.** A remembered row shows the label the store can give (a program's name only where it could be named without risking a
-  credential, and the argument count: `npm, 1 argument`) and when it was remembered, to the minute (UTC) so two grants of one
-  program can be told apart — never an argument. A session row shows the approved command, quoted and **scrubbed by the same
-  function the command card's title uses** (`scrubbedCommandDisplay`), cut to 400 characters once when the sheet loads. Every row, the
-  message row included, is drawn with each control, invisible or `<` character shown as a visible `<U+…>` or `<TAB>` token, as the card
-  shows it; nothing is stripped first. A session row is marked `(also remembered)` when a remembered grant covers the command **now**
-  (the store is asked; a link a *Remember* once made proves nothing, the grant may have been revoked elsewhere). The selected row
-  shows `›` and, at its right edge before the value, its action: `[d] withdraw`, and `[Enter] withdraw` while its question is up. There
-  are no row numbers: the cursor is the selection.
-- **Surfaces.** A chat's title is `Permissions · <mode> mode` and it shows both sections; the Home's Permissions tab (the bare Home's
-  `/permissions` and a bare `relavium permissions` on a terminal, MVP-4 step 7 and MVP-8 step 4, below) shows the project's section
-  only, under the tab host's strip, which names the tab where a chat's sheet carries its title rule (`Permissions · this project`). The note row says what the mode does with the two kinds of row, and matches the mode table of
-  [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1: in `ask` and `accept-edits`
-  `Session-approved commands run unasked here; a remembered one still asks.`; in `auto` `Auto runs approved commands; remembered ones
-  ask again after a file write.`; in `plan` `Plan mode refuses every command; nothing here runs.`; with no chat, `Only auto mode runs a
-  remembered command unasked, in a chat in this project.` (a remembered command in a fresh chat; a *Remember* also approves it for the
-  chat it was made in). An empty list says what to do (`Press Ctrl+O on a command card, then Enter, to remember one.`; `plan` has no
-  cards and says only that nothing is remembered), and a sheet with nothing to select offers only `Esc close`.
-- **Keys, and typing.** `↑`/`↓` move and clamp (`PgUp`, `PgDn` by six, `Home`, `End`). `d`, `Delete` or `Backspace` **arms** the
-  selected row; `Enter` withdraws it. A person who types `/permissions`, `Enter` and goes on typing must not withdraw a grant by
-  accident (a typed line that ends in `d`, then `Enter`, is two steps), and a gap between keys cannot tell typing from choosing (the
-  card learned that at 350 ms a key), so the rule is about *what* was typed: **once any key that is not navigation has arrived since
-  the sheet opened, `d` arms nothing until an arrow key** (or a page key, `Home` or `End`) says the person is choosing a row; a refused
-  `d` says `Typed keys are ignored here. Select a row with ↑/↓, then press d.` On top of that `d` waits for the sheet to settle
-  (400 ms after it opened; an early `d` says `Wait a moment, then press d.` and is not typing), and `Enter` withdraws only between 800 ms
-  and 10 s after the question appeared (the approval card's own minimum), and only with nothing held (an `Esc` then `Enter` inside a terminal's escape window arrives as
-  `Meta+Enter`). An `Enter` outside that window drops the question and says `Too early or too late for Enter — nothing was withdrawn.
-  Press d again.` An `Enter` that reaches a question always follows a deliberate `d`, so neither it nor the withdrawal it makes counts as
-  typing: the `d` the note asks for arms again, and so does the next row. A paste is typing. Any other key, a paste and `Esc` keep the row (the question is dropped and nothing is
-  withdrawn). Typing there is any key that is neither `Esc` nor a navigation key (an arrow, a page key, `Home`, `End`), and a paste: a `d` after a navigation key or `Esc` arms
-  again, a `d` after typing is refused with the note above. `Esc` closes an idle sheet; `Ctrl+C` closes it
-  from either state. Neither closing key ever withdraws, and nothing is added or edited here: a grant is a digest of an exact argv, and
-  one can only be made on a command card.
-- **The message row** is always one row, and it never moves the legend. Armed, it asks `Withdraw <row>? Any other key keeps it.` (a
-  remembered row shows its label and its minute in parentheses, the label clipped before the minute is; a session row shows the
-  scrubbed command, clipped) and the legend becomes `[Enter] withdraw · Esc keep`. Idle, it says what withdrawing the selected row will
-  do: for a remembered row `Press d to withdraw it: auto mode will ask about this command again.`, for a session row
-  `Press d to withdraw it: this command will need approval again.`, and for a session row a remembered grant also covers `Press d to
-  withdraw the session approval; the project still remembers it.` (the `d` is drawn in the danger colour). After a withdrawal it says
-  what happened, in a sentence that fits the row, that no mode can contradict, and that carries its tone in a glyph as well as a
-  colour: `✓` (green) for a withdrawal made, `✗` (red) for one that could not be made, and no glyph, in the attention colour, for what the
-  person needs to know and is neither (a row that was already gone, a session approval left standing, a refused key). A remembered row:
-  `✓ Withdrawn. Auto mode asks about it again.`; with its linked session approval `✓ Withdrawn, with its session approval. It needs
-  approval again.`; and, when a plain session approval of the same command stands, `Withdrawn, but a session approval of it remains: it
-  is still approved here.` (only the approvals *this* grant covered count: another remembered command's approval does not). A session
-  row: `✓ Session approval withdrawn. It needs approval again.` or, when a remembered grant covers the command, `Session approval
-  withdrawn. It is still remembered; auto may run it unasked.`
-- **Withdrawing is by identity.** A remembered row is held by its grant `id` and a session row by its exact argv. The store is read
-  again before a project withdrawal; a row that is gone says `That row was already withdrawn.` and the sheet reloads. Two records of
-  one argv are one grant and both are withdrawn. Withdrawing a remembered row also takes this chat's linked session approval; a
-  plain session approval of the same command stays, and the answer says it does.
-- **Failures.** A store that cannot be read shows its fixed sentence (`The OS keychain is not available…`, `The remembered-commands
-  file could not be read…`) in place of the rows, and the session section still works; a withdrawal that cannot be written leaves the
-  row and says so in one short row. A port that cannot be read at all does not open the sheet (`Could not read the permissions.`), and
-  one that cannot be read again after a withdrawal closes it (`… Could not read the permissions again.`) rather than leave it armed on a
-  stale list.
-- **Bounds.** At most three fifths of the terminal and at least eight transcript rows stay above (the card's rule), no line wider than
-  100 columns, and at most **eight body lines** (headings, rows and markers) with `▲ n more` / `▼ n more` markers that count the **rows**
-  they stand in for, the row under the marker included; a heading is never left alone above a `▼` marker. The title, the note, the message
-  row and the legend are always drawn: the floor of 80×24 leaves room for all of them. Below 80×24 the sheet says `Enlarge the terminal
-  to use this screen — Esc closes.`, `d` arms nothing, and a question asked before the terminal shrank is dropped by the next key. A
-  list that needs a window keeps one height as the cursor moves (a window that had to be one line shorter to avoid stranding a heading
-  is padded with a blank line), so the rule does not move under it; the first body line is always a heading, a marker, or the first line
-  of a whole sentence — never a row under a hidden heading and never the middle of a sentence.
-- **On the bare Home and from `relavium permissions`** (MVP-4 step 7, [ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §3; since MVP-8 step 4 the Permissions tab of the Home's tab host, [ADR-0140](../../decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §3). The Home's palette, and a `/permissions` that reaches the Home as a line (a paste, or typed with a leading space, since a `/` at an empty prompt opens the palette), open the **tab host on its Permissions tab**: this sheet's body and keys under the tab strip, with the project's list only (no session section, no mode), over the very store a chat and `relavium permissions list` read, and the repository's `[chat].allowed_commands` listed read-only under it (a listed command pre-approves nothing: it only labels a card, [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md)). The sheet is no longer a docked overlay of the Home: the tab host owns every key, `Esc` first drops a waiting withdrawal question and then closes the screen, and the keys of the sheet are otherwise the ones below, unchanged. **A bare `relavium permissions` on a terminal (stdout and stdin a TTY, no `--json`, not CI) opens the Home on that tab**, with no first-run provider setup over it, and ends the invocation with exit `0` when the screen is closed (`Esc`, or `Ctrl+C`); an argument is refused with `/permissions accepts no arguments.`, a Home with no port says `Remembered commands are not available here.`, and a port that cannot be read says `Could not read the permissions.` and opens nothing. Every rule above holds: the clock, the typed-keys rule, the floor, the sentences. Closing it returns to the Home. A store that cannot be read is not a Home notice: the sheet opens and says so in its project section, as in a chat. Only a faulting port (a defect, not a store state) keeps the Home open with a notice, so that it can be read, and then the command is over: a sheet opened later is an ordinary one. The command opens the whole Home, so it inherits the Home's start-up refusals and opens the history database ([commands.md](commands.md#relavium-permissions)); anywhere else the command group is unchanged. Every read and withdrawal in the Home opens its own grant store: a store keeps the digest key it first read, and a Home lives long.
-- **Inline renderer and colour off.** It works in the inline renderer (it is docked like the other overlays) and reads the same with
-  colour off: the `›` marker, the bracketed keys, the `✓`/`✗` of an answer, the headings and the markers carry the meaning; bold is the
-  only style left.
+- **Rows.** A remembered row shows the label the store can give (a program's name only where it could be named without risking a credential, and the argument count: `npm, 1 argument`) and when it was remembered, to the minute (UTC) so two grants of one program can be told apart — never an argument. A session row shows the approved command, quoted and **scrubbed by the same function the command card's title uses** (`scrubbedCommandDisplay`), cut to 400 characters once when the popup loads. Every row, the question that names it and the announcement are drawn with each control, invisible or `<` character shown as a visible `<U+…>` or `<TAB>` token, as the card shows it (nothing is stripped first), and then through the popups' one scrub (secrets masked, host glyphs blanked, answer chords and key tokens made inert). A session row is marked `(also remembered)` when a remembered grant covers the command **now** (the store is asked; a link a *Remember* once made proves nothing, the grant may have been revoked elsewhere). There are no row numbers: the cursor is the selection.
+- **Surfaces.** A chat's popup shows both sections under the note `<mode> mode · …`; the Home's (the bare Home's `/permissions` and a bare `relavium permissions` on a terminal, below) shows the project's section and the repository's allowlist read-only, with no session section and no mode. The note says what the mode does with the two kinds of row, and matches the mode table of [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1: in `ask` and `accept-edits` `Session-approved commands run unasked here; a remembered one still asks.`; in `auto` `Auto runs approved commands; remembered ones ask again after a file write.`; in `plan` `Plan mode refuses every command; nothing here runs.`; with no chat, `Only auto mode runs a remembered command unasked, in a chat in this project.` (a remembered command in a fresh chat; a *Remember* also approves it for the chat it was made in). An empty list says what to do (`Nothing is remembered for this project. Press [Ctrl+O] on a command card, then Enter, to remember one.`; `plan` has no cards and says only that nothing is remembered), and a popup with nothing to select offers only `Esc close`.
+- **Keys, and typing.** `↑`/`↓` move over the rows, `PgUp`/`PgDn` page and `Home`/`End` jump. `d`, `Delete` or `Backspace` **arms** the highlighted row (the legend names `[d] / Del`; Backspace arms too and is not on it); `Enter` withdraws it. A person who types `/permissions`, `Enter` and goes on typing must not withdraw a grant by accident (a typed line that ends in `d`, then `Enter`, is two steps), and a gap between keys cannot tell typing from choosing, so the rule is about *what* was typed: **once any key that is not navigation has reached the popup since it opened, `d` arms nothing until an arrow key** (or a page key, `Home` or `End`) says the person is choosing a row; a refused `d` says `Nothing withdrawn: a key was typed.` and what to do. On top of that a `d` or an `Enter` in the popup's first half second is dropped without a word (the popup's opening guard, [ADR-0148](../../decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §3), and **`Enter` withdraws only between 0.8 s and 10 s after the question's frame was on screen** (the approval card's own minimum, counted from the acknowledged frame, not from the key that armed it), after a quiet gap, outside the lockout of a key that answered something before, and only unmodified (an `Esc` then `Enter` inside a terminal's escape window arrives as `Meta+Enter`). While the 0.8 s holds, the question's legend reads `Enter withdraw (wait) · Esc keep`. An `Enter` that does not count, or a window that ran out, drops the question and says `Nothing withdrawn: too soon. [d] asks again.` (or `time ran out`); an `Enter` that reaches a question always follows a deliberate `d`, so neither it nor the withdrawal it makes counts as typing, and the next `d` arms again. A paste, a letter or any other key that is not navigation disarms the question and counts as typing; an arrow key moves nothing on the question and keeps it. `Esc` keeps the row (back to the lists) and, on the lists, closes the popup; `Ctrl+C` closes the whole popup from either state; neither closing key ever withdraws, and nothing is added or edited here: a grant is a digest of an exact argv, and one can only be made on a command card.
+- **The question** names the row and what withdrawing it does: for a remembered row `Withdraw this remembered command?`, its label and its minute, and `Auto mode will ask about this command again.`; for a session row `Withdraw this session approval?`, the scrubbed command (wrapped, at most six rows, the last ended with `…`) and `This command will need approval again.`, or, when a remembered grant also covers it, `The project still remembers it: auto may still run it.`; and always `Withdrawing only narrows what runs without asking.` The highlighted row's effect under the lists reads, for a remembered row, `Press [d] to withdraw it: auto mode will ask about this command again.`, for a session row `Press [d] to withdraw it: this command will need approval again.`, and for a session row a remembered grant also covers `Press [d] to withdraw the session approval; the project still remembers it.`
+- **After a withdrawal** the popup goes back to the lists, read again, and the result is said on the host's channel (one notification that outlives the popup, never the transcript): `Withdrawn: npm, 1 argument`, `Withdrawn, with a note: …` or `Not withdrawn: …`, the command cut to fit and never the lead. What the store said that the lists alone do not show is a row above them, `Note: …` for what the person needs to know and is neither a success nor a failure (a row that was already gone, `That row was already withdrawn.`; a session approval left standing, `Withdrawn, but a session approval of it remains: it is still approved here.`; a session row a remembered grant still covers, `Session approval withdrawn. It is still remembered; auto may run it unasked.`) and `Not withdrawn: …` for one that could not be made; a plain success adds no row, because the row is gone from the lists. Withdrawing a remembered row also takes the session approval its *Remember* linked to it (only the approvals *this* grant covered count: another remembered command's approval does not).
+- **Withdrawing is by identity.** A remembered row is held by its grant `id` and a session row by its exact argv. The store is read again before a project withdrawal; a row that is gone says `That row was already withdrawn.` and the lists reload. Two records of one argv are one grant and both are withdrawn. Withdrawing a remembered row also takes this chat's linked session approval; a plain session approval of the same command stays, and the answer says it does.
+- **Failures.** A store that cannot be read shows its fixed sentence (`The OS keychain is not available…`, `The remembered-commands file could not be read…`) in place of the rows, and the session section still works; a withdrawal that cannot be written leaves the row and says so (`The remembered-commands file could not be written, so nothing was withdrawn.`). A port that cannot be read at all (a defect, not a store state) opens the popup in an error state (`Could not read the permissions.`, with `Close this and try again.`), and one that cannot be read again after a withdrawal says `Could not read the permissions again.` rather than leave a stale list on screen.
+- **Bounds.** The popup is the standard one: 68 columns and at most 21 rows at 80×24, wider from 88 columns ([ADR-0148](../../decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §4), the lists windowed with `▲ n more` / `▼ n more` markers that count the **rows** they stand for. Below 80×24 a note replaces it. A question whose frame is cut by a resize is disarmed (`Nothing withdrawn: the line was cut.`) rather than left on screen armed.
+- **On the bare Home and from `relavium permissions`** (MVP-4 step 7, [ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §3; a popup since MVP-11 unit 8, [home.md](home.md#permissions-on-the-bare-home-mvp-4-step-7-2026-11-21-a-popup-since-mvp-11-unit-8-2026-11-27)). The Home's palette, and a `/permissions` that reaches the Home as a line (a paste, or typed with a leading space, since a `/` at an empty prompt opens the palette), open this popup in its Home form: the project's list only (no session section, no mode), over the very store a chat and `relavium permissions list` read, and the repository's `[chat].allowed_commands` listed read-only under it (a listed command pre-approves nothing: it only labels a card, [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md)); its way back reads `Esc back to Home`. **A bare `relavium permissions` on a terminal (stdout and stdin a TTY, no `--json`, not CI) opens the Home with the popup already open**, with no first-run provider setup over it, and ends the invocation with exit `0` when the popup is closed, however it closes (`Esc`, or `Ctrl+C`); an argument is refused with `/permissions accepts no arguments.`, and a Home with no port says `Remembered commands are not available here.`. Every rule above holds: the typed-keys rule, the clock, the floor, the sentences. A store that cannot be read is not a Home notice: the popup opens and says so in its project section, as in a chat. The command opens the whole Home, so it inherits the Home's start-up refusals and opens the history database ([commands.md](commands.md#relavium-permissions)); anywhere else the command group is unchanged. Every read and withdrawal in the Home opens its own grant store: a store keeps the digest key it first read, and a Home lives long.
+- **Inline renderer and colour off.** It works in the inline renderer (a framed block that replaces the body, with rules and no side bars) and reads the same with colour off: the selection marker, the bracketed keys, the headings and the `▲`/`▼` markers carry the meaning; bold is the only style left.
 
-The Home's Permissions tab composes this sheet (MVP-8 step 4, [home.md](home.md#the-tab-host-defined-active-history-and-permissions-mvp-8-step-4-2026-11-23)); its domain allowlist, MCP and egress sections arrive with MVP-7 and MVP-9, which own their add and remove;
+The Home's `/permissions` popup is this one (MVP-11 unit 8, [home.md](home.md#permissions-on-the-bare-home-mvp-4-step-7-2026-11-21-a-popup-since-mvp-11-unit-8-2026-11-27)); its domain allowlist, MCP and egress sections arrive with MVP-7 and MVP-9, which own their add and remove;
 add and remove belong to those sections, not to command grants.

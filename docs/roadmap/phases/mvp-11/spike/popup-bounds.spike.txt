@@ -1,0 +1,123 @@
+// MVP-11 Step 1 spike — THROWAWAY. Stored as .txt so no test runner collects it from docs/. Copy it to
+// apps/cli/src/render/tui/zz-popup-bounds.spike.test.tsx, run it, delete the copy. Does the repo's own measured-frame check accept an absolutely
+// positioned popup, and does anything catch a later sibling that covers it?
+import { Box, Text, type DOMElement } from 'ink';
+import { cleanup, render } from 'ink-testing-library';
+import { afterEach, expect, it } from 'vitest';
+import {
+  createMeasuredFrameAcknowledgement,
+  fitsTerminalBounds,
+} from './measured-frame-acknowledgement.js';
+import { settleFrames } from './harness-util.js';
+
+afterEach(cleanup);
+
+const COLS = 80;
+const ROWS = 24;
+const W = 68;
+const H = 21;
+const TOP = 1;
+const LEFT = 6;
+const body = Array.from({ length: ROWS - 1 }, () => 'x'.repeat(COLS));
+const popupRow = (i: number) => `│${String(i).padStart(2, '0')}${'P'.repeat(W - 4)}│`;
+
+function Screen(props: {
+  readonly popupRef: (n: DOMElement | null) => void;
+  readonly top?: number;
+  readonly rootWidth?: number;
+  readonly occluder?: boolean;
+}) {
+  return (
+    <Box width={props.rootWidth ?? COLS} height={ROWS} flexDirection="column">
+      {body.map((l, i) => (
+        <Text key={i}>{l}</Text>
+      ))}
+      <Box
+        ref={props.popupRef}
+        position="absolute"
+        marginTop={props.top ?? TOP}
+        marginLeft={LEFT}
+        width={W}
+        height={H}
+        flexDirection="column"
+      >
+        {Array.from({ length: H }, (_, i) => (
+          <Text key={i}>{popupRow(i)}</Text>
+        ))}
+      </Box>
+      {props.occluder === true ? (
+        <Box position="absolute" marginTop={TOP + 9} marginLeft={LEFT + 10}>
+          <Text>{'LATER-SIBLING'}</Text>
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
+/** The proposed occlusion test: every cell of the popup rectangle in the DRAWN frame equals the popup's own text. */
+function popupRowsIntact(frame: string | undefined): boolean {
+  const lines = (frame ?? '').split('\n');
+  for (let i = 0; i < H; i++) {
+    const line = lines[TOP + i] ?? '';
+    if ([...line].slice(LEFT, LEFT + W).join('') !== popupRow(i)) return false;
+  }
+  return true;
+}
+
+it('an absolutely positioned popup passes the existing bounds check and the acknowledgement', async () => {
+  let node: DOMElement | null = null;
+  const view = render(<Screen popupRef={(n) => (node = n)} />);
+  await settleFrames();
+  expect(node).not.toBeNull();
+  expect(fitsTerminalBounds(node as unknown as DOMElement, { cols: COLS, rows: ROWS })).toBe(true);
+  const snapshot = {};
+  const ack = createMeasuredFrameAcknowledgement({
+    current: () => snapshot,
+    getSize: () => ({ cols: COLS, rows: ROWS }),
+    hasCustody: () => true,
+  });
+  expect(ack.commit(snapshot, node, () => Promise.resolve())).toBe(true);
+  await Promise.resolve();
+  expect(ack.visible(snapshot)).toBe(true);
+  expect(popupRowsIntact(view.lastFrame())).toBe(true);
+  ack.dispose();
+});
+
+it('control: the check still rejects a popup pushed past the terminal bottom', async () => {
+  let node: DOMElement | null = null;
+  render(<Screen popupRef={(n) => (node = n)} top={10} />);
+  await settleFrames();
+  expect(fitsTerminalBounds(node as unknown as DOMElement, { cols: COLS, rows: ROWS })).toBe(false);
+});
+
+it('control: the check rejects a popup wider than its container', async () => {
+  let node: DOMElement | null = null;
+  render(<Screen popupRef={(n) => (node = n)} rootWidth={70} />);
+  await settleFrames();
+  expect(fitsTerminalBounds(node as unknown as DOMElement, { cols: COLS, rows: ROWS })).toBe(false);
+});
+
+it('a LATER sibling covering the popup passes the bounds check, and only the drawn-frame test sees it', async () => {
+  let node: DOMElement | null = null;
+  const view = render(<Screen popupRef={(n) => (node = n)} occluder />);
+  await settleFrames();
+  expect(fitsTerminalBounds(node as unknown as DOMElement, { cols: COLS, rows: ROWS })).toBe(true);
+  expect(view.lastFrame()).toContain('LATER-SIBLING');
+  expect(popupRowsIntact(view.lastFrame())).toBe(false);
+});
+
+it('a popup row one cell short of the frame width lets the body show through at its edge (padding is load-bearing)', async () => {
+  const view = render(
+    <Box width={COLS} height={ROWS} flexDirection="column">
+      {body.map((l, i) => (
+        <Text key={i}>{l}</Text>
+      ))}
+      <Box position="absolute" marginTop={TOP} marginLeft={LEFT} width={W} height={1}>
+        <Text>{popupRow(0).slice(0, W - 1)}</Text>
+      </Box>
+    </Box>,
+  );
+  await settleFrames();
+  const line = [...(view.lastFrame() ?? '').split('\n')[TOP]!];
+  expect(line.slice(LEFT, LEFT + W).join('')).toContain('x');
+});

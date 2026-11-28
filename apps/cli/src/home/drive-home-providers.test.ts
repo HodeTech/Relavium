@@ -20,7 +20,17 @@ import type { CliIo } from '../process/io.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
 import { OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
 import { driveHome, type HomeDeps } from './drive-home.js';
-import { visibleModels } from '../render/tui/model-picker.js';
+import { openModelsPopup, settleModelsForm } from './models-popup.test-support.js';
+import {
+  acknowledgePopupFrames,
+  choose as choosePopup,
+  closeDone,
+  pasteKey,
+  POPUP_ANSWER_WAIT_MS,
+  sleep,
+  STEP_WAIT_MS,
+} from './provider-popup.test-support.js';
+import { currentStep, visibleRows } from '../popups/popup-reducer.js';
 
 vi.mock('../engine/providers.js', async (original) => {
   const actual = await original<typeof import('../engine/providers.js')>();
@@ -67,17 +77,44 @@ const key = {
   capsLock: false,
   numLock: false,
 };
+type PromptUi = NonNullable<RootAppProps['nativePrompt']>;
+/**
+ * The Home's setup is the `/providers` POPUP (MVP-11 unit 6): its consent opens on `Not now` and `Use it` is GUARDED (an `Enter` on it counts
+ * after the lockout that runs from the select's opening), an answer waits out the popup's opening settle, and a setup that wrote ends in a Done
+ * step that is closed. `choose` (the support's) highlights a row with the popup's arrows, which stop at the ends, and presses `Enter` once.
+ */
+const choose = (ui: PromptUi, value: string): Promise<void> => choosePopup(ui, value);
+/**
+ * `Esc` on the first step of the automatic first run skips it. On this hand-made config the skip is NOT remembered (a skip never rewrites a
+ * config that exists, C-F3): the popup closes and the config is byte for byte as it was. Returns the config as the skip left it.
+ */
+async function skipFirstRun(ui: PromptUi, path: string): Promise<string> {
+  const before = readFileSync(path, 'utf8');
+  ui.input('', { ...key, escape: true });
+  await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false), { timeout: STEP_WAIT_MS });
+  const text = readFileSync(path, 'utf8');
+  expect(text).toBe(before);
+  return text;
+}
+/** Past a chord card's lockout, which runs from the moment the card appeared (`createChordCardGuard`), and its dwell. */
+const OPENING_LOCKOUT_WAIT_MS = 2_300;
 const baseline = '# retained until actual publication\n[preferences]\ntheme = "dark"\n';
 const paths: string[] = [];
 afterEach(() => {
   for (const path of paths.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
-function setup(holdNotice = false, custom = false, projectModel?: string, manualKeys = false) {
+function setup(
+  holdNotice = false,
+  custom = false,
+  projectModel?: string,
+  manualKeys = false,
+  config: 'hand-made' | 'none' = 'hand-made',
+) {
   const cwd = mkdtempSync(join(tmpdir(), 'relavium-home-provider-'));
   paths.push(cwd);
   const path = join(cwd, 'global.toml');
-  writeFileSync(path, baseline);
+  if (config === 'hand-made') writeFileSync(path, baseline);
   if (projectModel !== undefined) {
     mkdirSync(join(cwd, '.relavium'));
     writeFileSync(
@@ -149,8 +186,12 @@ function setup(holdNotice = false, custom = false, projectModel?: string, manual
     },
     render: (captured) => {
       props = captured;
+      // No Home root is mounted here, so nothing binds the popup host's gate as RootApp does (the `/models` popup opens on it).
+      captured.popups?.bindOpenGate(() => undefined);
       const ui = captured.nativePrompt;
       ui?.bindVisibility((expected) => ui.getSnapshot() === expected);
+      // The renderer's acknowledgement of each popup frame, which the popup's opening guard waits for.
+      if (ui !== undefined) acknowledgePopupFrames(ui);
       captured.nativePrompt?.subscribe(() =>
         frames.push(JSON.stringify(captured.nativePrompt?.getSnapshot())),
       );
@@ -178,7 +219,7 @@ function setup(holdNotice = false, custom = false, projectModel?: string, manual
   };
   const running = driveHome(deps);
   const ready = async (): Promise<RootAppProps> => {
-    await vi.waitFor(() => expect(props).toBeDefined());
+    await vi.waitFor(() => expect(props).toBeDefined(), { timeout: STEP_WAIT_MS });
     if (!props) throw new Error('missing Home mount');
     return props;
   };
@@ -212,36 +253,52 @@ function setup(holdNotice = false, custom = false, projectModel?: string, manual
 }
 
 describe('driveHome native provider setup', () => {
-  it('wires Home init to the shared native core without changing operator config or building a chat', async () => {
-    const f = setup();
-    const p = await f.ready();
-    const ui = p.nativePrompt;
-    if (!ui) throw new Error('Native prompt missing');
-    try {
-      f.announce(p);
-      await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(true));
-      ui.input('', { ...key, escape: true });
-      await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false));
-      for (const character of '/init') p.controller.handleKey(character, {});
-      p.controller.handleKey('', { return: true });
-      await vi.waitFor(() =>
-        expect(ui.getSnapshot().message).toContain('Create these project directories'),
-      );
-      const marker = join(dirname(f.path), '.relavium');
-      expect(existsSync(marker)).toBe(false);
-      expect(ui.getSnapshot().options[ui.getSnapshot().selected]?.value).toBe('no');
-      ui.input('', { ...key, upArrow: true });
-      ui.input('', { ...key, return: true });
-      await vi.waitFor(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false));
-      expect(readdirSync(marker).sort()).toEqual(['agents', 'workflows']);
-      expect(readFileSync(f.path, 'utf8')).toBe(baseline);
-      expect(p.controller.getSnapshot().notice).toContain('Created');
-      expect(f.built).toEqual([]);
-    } finally {
-      ui.input('', { ...key, escape: true });
-      await f.end(p);
-    }
-  });
+  it(
+    'wires Home init to the shared native core without changing operator config or building a chat',
+    { timeout: 30_000 },
+    async () => {
+      const f = setup();
+      const p = await f.ready();
+      const ui = p.nativePrompt;
+      if (!ui) throw new Error('Native prompt missing');
+      try {
+        f.announce(p);
+        await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(true), {
+          timeout: STEP_WAIT_MS,
+        });
+        const skipped = await skipFirstRun(ui, f.path);
+        for (const character of '/init') p.controller.handleKey(character, {});
+        p.controller.handleKey('', { return: true });
+        await vi.waitFor(
+          () => expect(ui.getSnapshot().message).toContain('Create these project directories'),
+          { timeout: STEP_WAIT_MS },
+        );
+        const marker = join(dirname(f.path), '.relavium');
+        expect(existsSync(marker)).toBe(false);
+        // The confirmation is a `Ctrl+Y` chord (ADR-0148 §3), answered after the lockout that runs from the moment the card appeared.
+        expect(ui.getSnapshot().kind).toBe('chord');
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, OPENING_LOCKOUT_WAIT_MS);
+        });
+        ui.input('y', { ...key, ctrl: true });
+        // A flow that wrote ends in its Done step, closed by `Esc`; nothing goes to the Home notice.
+        await vi.waitFor(() => expect(ui.getSnapshot().final).toBe('ok'), {
+          timeout: STEP_WAIT_MS,
+        });
+        await closeDone(ui, 'esc');
+        await vi.waitFor(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false), {
+          timeout: STEP_WAIT_MS,
+        });
+        expect(readdirSync(marker).sort()).toEqual(['agents', 'workflows']);
+        expect(readFileSync(f.path, 'utf8'), '/init writes no operator config').toBe(skipped);
+        expect(p.controller.getSnapshot().notice).toBeUndefined();
+        expect(f.built).toEqual([]);
+      } finally {
+        ui.input('', { ...key, escape: true });
+        await f.end(p);
+      }
+    },
+  );
 
   it('keeps the keyless Home model remedy inside the reachable provider screen', async () => {
     const f = setup();
@@ -250,20 +307,19 @@ describe('driveHome native provider setup', () => {
     if (!ui) throw new Error('Native setup missing');
     try {
       f.announce(p);
-      await vi.waitFor(() =>
-        expect(ui.getSnapshot().options.some((option) => option.value === 'defer')).toBe(true),
-      );
-      const index = ui.getSnapshot().options.findIndex((option) => option.value === 'defer');
-      for (let at = 0; at < index; at++) ui.input('', { ...key, downArrow: true });
-      ui.input('', { ...key, return: true });
-      await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false));
-      p.controller.handleKey('/', {});
-      for (const char of 'models') p.controller.handleKey(char, {});
-      p.controller.handleKey('', { return: true });
-      await vi.waitFor(() => expect(p.controller.getSnapshot().modelPicker).toBeDefined());
-      p.controller.handleKey('', { return: true });
-      expect(p.controller.getSnapshot().modelPicker?.hint).toContain('/providers');
-      expect(p.controller.getSnapshot().modelPicker?.hint).not.toContain('provider set-key');
+      await choose(ui, 'defer');
+      await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false), {
+        timeout: STEP_WAIT_MS,
+      });
+      // The `/models` popup: the models a key would make usable are under the heading that names the Home's remedy, never a shell command.
+      const popups = await openModelsPopup(p);
+      const frame = popups.getSnapshot().frame;
+      const content = frame?.steps[0]?.content;
+      if (content?.kind !== 'list') throw new Error('the /models popup listed nothing');
+      const words = content.rows.map((row) => `${row.label} ${row.reason ?? ''}`).join('\n');
+      expect(words).toContain('/providers');
+      expect(words).not.toContain('provider set-key');
+      popups.input('', { escape: true });
     } finally {
       ui.input('', { ...key, escape: true });
       p.controller.handleKey('', { escape: true });
@@ -279,81 +335,105 @@ describe('driveHome native provider setup', () => {
       const p = await f.ready();
       const ui = p.nativePrompt;
       if (!ui) throw new Error('Native setup missing');
-      const choose = async (value: string): Promise<void> => {
-        await vi.waitFor(() =>
-          expect(ui.getSnapshot().options.some((option) => option.value === value)).toBe(true),
-        );
-        const index = ui.getSnapshot().options.findIndex((option) => option.value === value);
-        const selected = ui.getSnapshot().selected;
-        const count = ui.getSnapshot().options.length;
-        for (let step = 0; step < (index - selected + count) % count; step++)
-          ui.input('', { ...key, downArrow: true });
-        ui.input('', { ...key, return: true });
-      };
       try {
         const original = f.path + '.original';
         writeFileSync(original, baseline);
         rmSync(f.path);
         symlinkSync(original, f.path);
         f.announce(p);
-        await choose('use');
-        await choose('once'); // separate source authority
-        await choose('once'); // separate invocation model
-        await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false));
+        const labelOf = async (value: string): Promise<string | undefined> => {
+          await vi.waitFor(
+            () =>
+              expect(ui.getSnapshot().options.some((option) => option.value === value)).toBe(true),
+            { timeout: STEP_WAIT_MS },
+          );
+          return ui.getSnapshot().options.find((option) => option.value === value)?.label;
+        };
+        await choose(ui, 'use');
+        // Two recovery cards in a row, each saying what it uses (round 2, B6): the source's variable, then the model. Without `Retry saving`
+        // the source's is the first row a held `Enter` would answer, so it is guarded too (MVP-11 unit 6).
+        expect(await labelOf('once')).toBe('Use OPENAI_API_KEY for this invocation only');
+        expect(ui.getSnapshot().options.find((option) => option.value === 'once')?.guarded).toBe(
+          true,
+        );
+        await choose(ui, 'once'); // separate source authority
+        expect(await labelOf('once')).toBe(
+          `Use ${KNOWN_PROVIDERS.openai.starterModel} for this invocation only`,
+        );
+        await choose(ui, 'once'); // separate invocation model
+        // The popup's Done step says what was allowed and that the consent was not saved.
+        await vi.waitFor(() => expect(ui.getSnapshot().final).toBe('ok'), {
+          timeout: STEP_WAIT_MS,
+        });
+        expect(ui.getSnapshot().details).toContain(
+          'Allowed for this invocation only; the consent was not saved.',
+        );
+        await closeDone(ui);
+        await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false), {
+          timeout: STEP_WAIT_MS,
+        });
         rmSync(f.path);
         writeFileSync(f.path, baseline); // operator repairs the target before the next save
         let chosen: string;
         if (route === 'picker') {
-          p.controller.handleKey('/', {});
-          for (const char of 'models') p.controller.handleKey(char, {});
-          p.controller.handleKey('', { return: true });
-          await vi.waitFor(() => expect(p.controller.getSnapshot().modelPicker).toBeDefined());
-          const picker = p.controller.getSnapshot().modelPicker;
-          const entry = picker?.entries.find(
-            (model) =>
-              model.provider === 'openai' &&
-              model.available &&
-              model.modelId !== KNOWN_PROVIDERS.openai.testModel,
+          // The `/models` popup on the bare Home: another keyed OpenAI model, its form's `Enter` sets the default of new chats.
+          const popups = await openModelsPopup(p);
+          const listed = popups.getSnapshot().frame?.steps[0]?.content;
+          if (listed?.kind !== 'list') throw new Error('the /models popup listed nothing');
+          const row = listed.rows.find(
+            (candidate) =>
+              candidate.enabled !== false &&
+              candidate.section !== true &&
+              (candidate.detail ?? '').includes('OpenAI') &&
+              candidate.id !== KNOWN_PROVIDERS.openai.starterModel,
           );
-          if (!entry) throw new Error('No alternate keyed model');
-          chosen = entry.modelId;
-          for (const char of chosen) p.controller.handleKey(char, {});
-          const filtered = p.controller.getSnapshot().modelPicker;
-          if (!filtered) throw new Error('Picker closed');
-          const index = visibleModels(filtered).findIndex((model) => model.modelId === chosen);
+          if (!row) throw new Error('No alternate keyed model');
+          chosen = row.id;
+          for (const char of chosen) popups.input(char, {});
+          const frame = popups.getSnapshot().frame;
+          if (!frame) throw new Error('the popup closed');
+          const { state } = currentStep(frame);
+          const index = visibleRows(state).findIndex((candidate) => candidate.id === chosen);
           if (index < 0) throw new Error('Selected model not visible');
-          for (let step = 0; step < index; step++) p.controller.handleKey('', { downArrow: true });
-          p.controller.handleKey('', { return: true });
-          if (p.controller.getSnapshot().modelPicker?.phase === 'effort')
-            p.controller.handleKey('', { return: true });
-          await vi.waitFor(() => expect(p.controller.getSnapshot().modelPicker).toBeUndefined());
+          while ((popups.getSnapshot().frame?.steps[0]?.selected ?? index) < index)
+            popups.input('', { downArrow: true });
+          popups.input('', { return: true });
+          await settleModelsForm(popups); // the form is a frame of its own, with its own settle
+          popups.input('', { return: true });
+          expect(popups.getSnapshot().open).toBe(false);
+          await vi.waitFor(() => expect(readFileSync(f.path, 'utf8')).toContain(chosen), {
+            timeout: STEP_WAIT_MS,
+          });
         } else {
           // The old source is gone: this is a new first-usable-source setup,
           // rather than key maintenance that must preserve the current model.
           delete f.env['OPENAI_API_KEY'];
           for (const char of '/providers') p.controller.handleKey(char, {});
           p.controller.handleKey('', { return: true });
-          await choose('anthropic');
-          await vi.waitFor(() => expect(ui.getSnapshot().kind).toBe('password'));
-          ui.paste('second-synthetic-provider-key');
-          ui.input('', { ...key, return: true });
-          await choose('continue'); // explicit save despite the offline validation fixture
-          await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false));
-          chosen = KNOWN_PROVIDERS.anthropic.testModel;
+          await choose(ui, 'anthropic');
+          await pasteKey(ui, 'second-synthetic-provider-key');
+          await choose(ui, 'continue'); // explicit save despite the offline validation fixture
+          await closeDone(ui);
+          await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false), {
+            timeout: STEP_WAIT_MS,
+          });
+          chosen = KNOWN_PROVIDERS.anthropic.starterModel;
         }
         expect(readFileSync(f.path, 'utf8')).toContain(chosen);
-        p.controller.handleKey('/', {});
-        for (const char of 'models') p.controller.handleKey(char, {});
-        p.controller.handleKey('', { return: true });
-        await vi.waitFor(() =>
-          expect(p.controller.getSnapshot().modelPicker?.currentDefault).toBe(chosen),
-        );
-        p.controller.handleKey('', { escape: true });
+        // The popup opens on the default in force now: the model just saved.
+        const reopened = await openModelsPopup(p);
+        const frame = reopened.getSnapshot().frame;
+        if (!frame) throw new Error('the /models popup did not open');
+        const { state } = currentStep(frame);
+        expect(visibleRows(state)[state.selected]?.id).toBe(chosen);
+        reopened.input('', { escape: true });
         for (const char of 'next chat') p.controller.handleKey(char, {});
         p.controller.handleKey('', { return: true });
-        await vi.waitFor(() => expect(f.built).toHaveLength(1));
+        await vi.waitFor(() => expect(f.built).toHaveLength(1), { timeout: STEP_WAIT_MS });
         expect(f.built[0]?.model).toBe(chosen);
-        await vi.waitFor(() => expect(p.controller.getSnapshot().mode).toBe('home'));
+        await vi.waitFor(() => expect(p.controller.getSnapshot().mode).toBe('home'), {
+          timeout: STEP_WAIT_MS,
+        });
       } finally {
         ui.input('', { ...key, escape: true });
         p.controller.handleKey('', { escape: true });
@@ -361,6 +441,8 @@ describe('driveHome native provider setup', () => {
         await f.end(p);
       }
     },
+    // ~10 s of real waits each (two guarded rows, two popup settles, the /models form) at low load; a loaded CI runner needs the margin (AR-2).
+    30_000,
   );
 
   it('waits for mounted renderer and paints rewrite notice before granting a standard source and starter default', async () => {
@@ -369,43 +451,56 @@ describe('driveHome native provider setup', () => {
     expect(p.nativePrompt?.getSnapshot().active).toBe(false);
     expect(p.controller.getSnapshot().keyless).toBe(true);
     f.announce(p);
-    await vi.waitFor(() =>
-      expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
+    await vi.waitFor(
+      () => expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
+      { timeout: STEP_WAIT_MS },
     );
-    p.nativePrompt?.input('\r', { ...key, return: true });
-    await vi.waitFor(() => expect(f.notices).toBe(1));
-    expect(p.nativePrompt?.getSnapshot().note).toContain('rewrites the global config');
+    if (p.nativePrompt === undefined) throw new Error('Native prompt missing');
+    await choose(p.nativePrompt, 'use');
+    await vi.waitFor(() => expect(f.notices).toBe(1), { timeout: STEP_WAIT_MS });
+    expect(p.nativePrompt.getSnapshot().note).toContain('rewrites the global config');
     expect(readFileSync(f.path, 'utf8')).toBe(baseline);
     f.release();
-    await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().active).toBe(false));
+    await closeDone(p.nativePrompt);
+    await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().active).toBe(false), {
+      timeout: STEP_WAIT_MS,
+    });
     const text = readFileSync(f.path, 'utf8');
     expect(text).toContain('OPENAI_API_KEY');
-    expect(text).toContain(KNOWN_PROVIDERS.openai.testModel);
+    expect(text).toContain(KNOWN_PROVIDERS.openai.starterModel);
     expect(p.controller.getSnapshot().keyless).toBe(false);
     expect(
       [...f.frames, ...f.outputs, JSON.stringify(p.controller.getSnapshot())].join(' '),
     ).not.toContain('7139');
     await f.end(p);
-  });
+  }, 15_000);
   it.each([undefined, 'project-model'] as const)(
     'reloads the persisted starter with project precedence (project %s)',
     async (project) => {
       const f = setup(false, false, project);
       const p = await f.ready();
       f.announce(p);
-      await vi.waitFor(() =>
-        expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
+      await vi.waitFor(
+        () => expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
+        { timeout: STEP_WAIT_MS },
       );
-      p.nativePrompt?.input('\r', { ...key, return: true });
-      await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().active).toBe(false));
+      if (p.nativePrompt === undefined) throw new Error('Native prompt missing');
+      await choose(p.nativePrompt, 'use');
+      await closeDone(p.nativePrompt);
+      await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().active).toBe(false), {
+        timeout: STEP_WAIT_MS,
+      });
       p.controller.handleKey('h', {});
       p.controller.handleKey('i', {});
       p.controller.handleKey('', { return: true });
-      await vi.waitFor(() => expect(f.built).toHaveLength(1));
-      expect(f.built[0]?.model).toBe(project ?? KNOWN_PROVIDERS.openai.testModel);
-      await vi.waitFor(() => expect(p.controller.getSnapshot().mode).toBe('home'));
+      await vi.waitFor(() => expect(f.built).toHaveLength(1), { timeout: STEP_WAIT_MS });
+      expect(f.built[0]?.model).toBe(project ?? KNOWN_PROVIDERS.openai.starterModel);
+      await vi.waitFor(() => expect(p.controller.getSnapshot().mode).toBe('home'), {
+        timeout: STEP_WAIT_MS,
+      });
       await f.end(p);
     },
+    15_000,
   );
   it.each(['not-now', 'cancel'] as const)(
     '%s never grants or persists standard consent',
@@ -413,16 +508,27 @@ describe('driveHome native provider setup', () => {
       const f = setup();
       const p = await f.ready();
       f.announce(p);
-      await vi.waitFor(() =>
-        expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
+      await vi.waitFor(
+        () => expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
+        { timeout: STEP_WAIT_MS },
       );
+      const ui = p.nativePrompt;
+      if (ui === undefined) throw new Error('Native prompt missing');
       if (action === 'not-now') {
-        p.nativePrompt?.input('', { ...key, downArrow: true });
-        p.nativePrompt?.input('', { ...key, downArrow: true });
-        p.nativePrompt?.input('\r', { ...key, return: true });
-      } else p.nativePrompt?.input('\x1b', { ...key, escape: true });
-      await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().active).toBe(false));
-      expect(readFileSync(f.path, 'utf8')).toBe(baseline);
+        // The card opens on Not now, so the bare Enter IS the answer (and is the one an Enter already on its way would give).
+        const open = ui.getSnapshot();
+        expect(open.options[open.selected]?.value).toBe('defer');
+        await sleep(POPUP_ANSWER_WAIT_MS);
+        ui.input('\r', { ...key, return: true });
+        await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false), {
+          timeout: STEP_WAIT_MS,
+        });
+        expect(readFileSync(f.path, 'utf8'), '`Not now` is no remembered skip').toBe(baseline);
+      } else {
+        // `Esc` on the first step skips the first run; on this hand-made config the skip is not remembered (C-F3), and the consent is not.
+        const skipped = await skipFirstRun(ui, f.path);
+        expect(skipped).not.toContain('OPENAI_API_KEY');
+      }
       expect(p.controller.getSnapshot().keyless).toBe(true);
       await f.end(p);
     },
@@ -431,36 +537,64 @@ describe('driveHome native provider setup', () => {
     const f = setup(false, true);
     const p = await f.ready();
     f.announce(p);
-    await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().kind).toBe('password'));
+    await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().kind).toBe('password'), {
+      timeout: STEP_WAIT_MS,
+    });
     expect(p.nativePrompt?.getSnapshot().note).toContain('https://custom.example');
     expect(p.nativePrompt?.getSnapshot().note).not.toContain('/private/path');
     expect(p.nativePrompt?.getSnapshot().note).not.toContain('secret');
-    p.nativePrompt?.input('\x1b', { ...key, escape: true });
-    await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().active).toBe(false));
-    expect(readFileSync(f.path, 'utf8')).toBe(baseline);
+    if (p.nativePrompt === undefined) throw new Error('Native prompt missing');
+    // `Esc` at a key step with no step before it leaves the first run, as a skip (not remembered on this hand-made config); the key was
+    // never written.
+    const skipped = await skipFirstRun(p.nativePrompt, f.path);
+    expect(skipped).not.toContain('OPENAI_API_KEY');
     expect(p.controller.getSnapshot().keyless).toBe(true);
     await f.end(p);
   });
+  it('W7 item 5: with no config, the starter default the Home writes after a granted consent paints no rewrite notice (the setup created the file a moment before)', async () => {
+    const f = setup(false, false, undefined, false, 'none');
+    const p = await f.ready();
+    f.announce(p);
+    await vi.waitFor(
+      () => expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
+      { timeout: STEP_WAIT_MS },
+    );
+    if (p.nativePrompt === undefined) throw new Error('Native prompt missing');
+    await choose(p.nativePrompt, 'use');
+    await closeDone(p.nativePrompt);
+    await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().active).toBe(false), {
+      timeout: STEP_WAIT_MS,
+    });
+    const text = readFileSync(f.path, 'utf8');
+    expect(text).toContain('OPENAI_API_KEY');
+    expect(text).toContain(KNOWN_PROVIDERS.openai.starterModel);
+    expect(f.frames.join(' ')).not.toContain('rewrites the global config');
+    await f.end(p);
+  }, 15_000);
   it('cancellation during the painted notice prevents late publication', async () => {
     const f = setup(true);
     const p = await f.ready();
     f.announce(p);
-    await vi.waitFor(() =>
-      expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
+    await vi.waitFor(
+      () => expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
+      { timeout: STEP_WAIT_MS },
     );
-    p.nativePrompt?.input('\r', { ...key, return: true });
-    await vi.waitFor(() => expect(f.notices).toBe(1));
-    p.nativePrompt?.input('\x1b', { ...key, escape: true });
+    if (p.nativePrompt === undefined) throw new Error('Native prompt missing');
+    await choose(p.nativePrompt, 'use');
+    await vi.waitFor(() => expect(f.notices).toBe(1), { timeout: STEP_WAIT_MS });
+    p.nativePrompt.input('\x1b', { ...key, escape: true });
     f.release();
-    await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().active).toBe(false));
+    await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().active).toBe(false), {
+      timeout: STEP_WAIT_MS,
+    });
     expect(readFileSync(f.path, 'utf8')).toBe(baseline);
     expect(p.controller.getSnapshot().keyless).toBe(true);
     await f.end(p);
-  });
+  }, 15_000);
 });
 
 it('retains the committed key fact when cancellation occurs inside keychain publication', async () => {
-  const { runOnboardingWizard } = await import('../onboarding/wizard.js');
+  const { runNativeSetup } = await import('../onboarding/wizard.js');
   const { createNativePromptChannel } = await import('../render/tui/native-prompt-channel.js');
   const { createProviderStore } = await import('@relavium/db');
   const db = createClient(':memory:');
@@ -479,30 +613,32 @@ it('retains the committed key fact when cancellation occurs inside keychain publ
     writeErrAcknowledged: async () => {},
   };
   try {
-    const running = runOnboardingWizard({
-      initialProvider: 'openai',
-      io,
-      native: {
+    const running = runNativeSetup(
+      {
+        initialProvider: 'openai',
+        io,
+        store: createProviderStore(db.db, { uuid: () => 'id', now: () => 1 }),
+        keychain: {
+          get: () => null,
+          set: (_account, value) => {
+            stored.push(value);
+            channel.flow.cancel();
+          },
+          delete: () => false,
+        },
+        resolver: { resolveProvider: () => undefined, keyFor: () => '' },
+        validate: () => Promise.resolve({ ok: true, reason: 'ok', detail: 'ok' }),
+        writeDefaultModel: () => {
+          throw new Error('must not run');
+        },
+      },
+      {
         flow: channel.flow,
         signal,
         assertAdmitting: () => signal.throwIfAborted(),
         endpointContext: () => 'official',
       },
-      store: createProviderStore(db.db, { uuid: () => 'id', now: () => 1 }),
-      keychain: {
-        get: () => null,
-        set: (_account, value) => {
-          stored.push(value);
-          channel.flow.cancel();
-        },
-        delete: () => false,
-      },
-      resolver: { resolveProvider: () => undefined, keyFor: () => '' },
-      validate: () => Promise.resolve({ ok: true, reason: 'ok', detail: 'ok' }),
-      writeDefaultModel: () => {
-        throw new Error('must not run');
-      },
-    });
+    );
     channel.ui.paste('credential-7139');
     channel.ui.input('\r', { ...key, return: true });
     await running;
@@ -517,7 +653,7 @@ it('retains the committed key fact when cancellation occurs inside keychain publ
 });
 
 it('retains the saved default fact when cancellation follows publication', async () => {
-  const { runOnboardingWizard } = await import('../onboarding/wizard.js');
+  const { runNativeSetup } = await import('../onboarding/wizard.js');
   const { createNativePromptChannel } = await import('../render/tui/native-prompt-channel.js');
   const { createProviderStore } = await import('@relavium/db');
   const db = createClient(':memory:');
@@ -535,24 +671,26 @@ it('retains the saved default fact when cancellation follows publication', async
     writeErrAcknowledged: async () => {},
   };
   try {
-    const running = runOnboardingWizard({
-      initialProvider: 'openai',
-      io,
-      native: {
+    const running = runNativeSetup(
+      {
+        initialProvider: 'openai',
+        io,
+        store: createProviderStore(db.db, { uuid: () => 'id', now: () => 1 }),
+        keychain: { get: () => null, set: () => {}, delete: () => false },
+        resolver: { resolveProvider: () => undefined, keyFor: () => '' },
+        validate: () => Promise.resolve({ ok: true, reason: 'ok', detail: 'ok' }),
+        writeDefaultModel: () => {
+          channel.flow.cancel();
+          return { kind: 'saved', durability: 'confirmed' };
+        },
+      },
+      {
         flow: channel.flow,
         signal,
         assertAdmitting: () => signal.throwIfAborted(),
         endpointContext: () => 'official',
       },
-      store: createProviderStore(db.db, { uuid: () => 'id', now: () => 1 }),
-      keychain: { get: () => null, set: () => {}, delete: () => false },
-      resolver: { resolveProvider: () => undefined, keyFor: () => '' },
-      validate: () => Promise.resolve({ ok: true, reason: 'ok', detail: 'ok' }),
-      writeDefaultModel: () => {
-        channel.flow.cancel();
-        return { kind: 'saved', durability: 'confirmed' };
-      },
-    });
+    );
     channel.ui.paste('credential-7139');
     channel.ui.input('\r', { ...key, return: true });
     await running;
@@ -565,7 +703,7 @@ it('retains the saved default fact when cancellation follows publication', async
 });
 
 it('does not swallow an unrelated storage failure merely because cancellation also arrived', async () => {
-  const { runOnboardingWizard } = await import('../onboarding/wizard.js');
+  const { runNativeSetup } = await import('../onboarding/wizard.js');
   const { createNativePromptChannel } = await import('../render/tui/native-prompt-channel.js');
   const { createProviderStore } = await import('@relavium/db');
   const db = createClient(':memory:');
@@ -583,28 +721,30 @@ it('does not swallow an unrelated storage failure merely because cancellation al
     writeErrAcknowledged: async () => {},
   };
   try {
-    const running = runOnboardingWizard({
-      initialProvider: 'openai',
-      io,
-      native: {
+    const running = runNativeSetup(
+      {
+        initialProvider: 'openai',
+        io,
+        store: createProviderStore(db.db, { uuid: () => 'id', now: () => 1 }),
+        keychain: {
+          get: () => null,
+          set: () => {
+            channel.flow.cancel();
+            throw new Error('credential-7139');
+          },
+          delete: () => false,
+        },
+        resolver: { resolveProvider: () => undefined, keyFor: () => '' },
+        validate: () => Promise.resolve({ ok: true, reason: 'ok', detail: 'ok' }),
+        writeDefaultModel: () => undefined,
+      },
+      {
         flow: channel.flow,
         signal,
         assertAdmitting: () => signal.throwIfAborted(),
         endpointContext: () => 'official',
       },
-      store: createProviderStore(db.db, { uuid: () => 'id', now: () => 1 }),
-      keychain: {
-        get: () => null,
-        set: () => {
-          channel.flow.cancel();
-          throw new Error('credential-7139');
-        },
-        delete: () => false,
-      },
-      resolver: { resolveProvider: () => undefined, keyFor: () => '' },
-      validate: () => Promise.resolve({ ok: true, reason: 'ok', detail: 'ok' }),
-      writeDefaultModel: () => undefined,
-    });
+    );
     channel.ui.paste('credential-7139');
     channel.ui.input('\r', { ...key, return: true });
     await expect(running).rejects.toThrow('Provider setup failed.');

@@ -1,5 +1,3 @@
-import type { TranscriptEntry } from './session-view-model.js';
-import type { ReseatTarget } from '../../commands/chat.js';
 import {
   realModeControl,
   TURN_COMPLETED,
@@ -9,11 +7,12 @@ import { MODE_CHANGE_RUNNING_NOTICE } from './chat-input.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type ChatMode } from '../../chat/chat-mode.js';
-import type { DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
+import type { RunHostSnapshot } from '../../home/run-host.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
-import { toolReviewPage } from './tool-review-model.js';
+import { HOSTED_RUN_POLL_MS } from './tui-constants.js';
+import { APPROVAL_SETTLE_MS, toolReviewPage } from './tool-review-model.js';
 import {
   createHomeController,
   type HomeChatSession,
@@ -23,33 +22,11 @@ import {
 import { routeKeyThroughCards } from './home-app.js';
 import type { UserCommandOutcome } from '@relavium/core';
 import type { ModelCatalogEntry } from '@relavium/llm';
-import { REASONING_EFFORTS, type LlmProviderId, type ReasoningEffort } from '@relavium/shared';
+import type { LlmProviderId, ReasoningEffort } from '@relavium/shared';
 
-import type { RefreshReport } from '../../engine/model-refresh.js';
+import type { SettingsPort } from '../../popups/settings-port.js';
 
-import { permissionsSheetOf } from './chat-sheet.js';
 import type { MentionReader } from './mention.js';
-import type {
-  PermissionEntry,
-  WithdrawAnswer,
-  PermissionsPort,
-  PermissionsSnapshot,
-} from '../../permissions/chat-permissions.js';
-import {
-  SHEET_CONFIRM_DWELL_MS,
-  SHEET_CONFIRM_WINDOW_MS,
-  SHEET_SETTLE_MS,
-  sheetEntries,
-  type PermissionsSheetState,
-} from './permissions-sheet.js';
-
-/** A no-op `/doctor` probe set — the fast-tier probes never throw, so a `/doctor` run reports all-ok. The
- *  `/doctor`-behavior tests below override individual probes; the rest just need a value for the required dep. */
-const STUB_DOCTOR_PROBES: DoctorProbes = {
-  keychain: () => {},
-  config: () => {},
-  toolHost: {},
-};
 
 /** A real chat store whose snapshot reports `running` — the controller reads `getSnapshot().state.status`. Built
  *  by overriding the live snapshot's status, so it satisfies {@link ChatStoreController} with no unsafe cast. */
@@ -63,11 +40,12 @@ const runningStore = (): ChatStoreController => {
 };
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 
@@ -86,7 +64,6 @@ function makeSession(
     mentionReader?: MentionReader;
     runShellCommand?: (command: string, args: readonly string[]) => Promise<UserCommandOutcome>;
     onSetEffort?: (effort: ReasoningEffort) => void;
-    permissions?: PermissionsPort;
     clear?: () => Promise<HomeChatSession>;
   } = {},
 ): {
@@ -114,7 +91,6 @@ function makeSession(
     stopReason: opts.stopReason ?? (() => 'exit'),
     ...(opts.clear === undefined ? {} : { clear: opts.clear }),
     ...(opts.onSetEffort === undefined ? {} : { onSetEffort: opts.onSetEffort }),
-    ...(opts.permissions === undefined ? {} : { permissions: opts.permissions }),
     ...(opts.onAbort === undefined ? {} : { onAbort: opts.onAbort }),
     ...(opts.onModeChange === undefined ? {} : { onModeChange: opts.onModeChange }),
     ...(opts.mentionReader === undefined ? {} : { mentionReader: opts.mentionReader }),
@@ -198,7 +174,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       });
       const made = makeSession({ onProcess: () => held });
       const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
         startChat: () => Promise.resolve(made.session),
         homeStore,
         onExit: vi.fn(),
@@ -230,7 +205,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     const onExit = vi.fn();
     const read = vi.fn(() => EMPTY);
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () => Promise.resolve(made.session),
       homeStore: { read },
       onExit,
@@ -265,7 +239,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     const onError = vi.fn();
     const read = vi.fn(() => EMPTY);
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () => Promise.resolve(made.session),
       homeStore: { read },
       onExit: vi.fn(),
@@ -288,7 +261,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
 
   it('types into the buffer and reflects it in the snapshot', () => {
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: vi.fn(),
       homeStore,
       onExit: vi.fn(),
@@ -306,7 +278,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     // Exercise the shared editor through the CONTROLLER (handleHomeKey → applyEditorAction), not just the reducer,
     // so a dropped case in the grouped edit arm would fail here (ink surfaces have no render-test backstop).
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: vi.fn(),
       homeStore,
       onExit: vi.fn(),
@@ -327,7 +298,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
   it('the in-Home chat recalls history with Up/Down and reverse-searches with Ctrl+R (2.5.D step 3)', async () => {
     const made = makeSession();
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () => Promise.resolve(made.session),
       homeStore,
       onExit: vi.fn(),
@@ -357,7 +327,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
   it('in-Home chat: reverse-search accept resets history nav so a following Down does not clobber it', async () => {
     const made = makeSession();
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () => Promise.resolve(made.session),
       homeStore,
       onExit: vi.fn(),
@@ -387,7 +356,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     // navIndex lets the next Down restore the pre-Up draft over the pasted text.
     const made = makeSession();
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () => Promise.resolve(made.session),
       homeStore,
       onExit: vi.fn(),
@@ -423,12 +391,15 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       read: (path) => Promise.resolve({ content: `// ${path}`, sizeBytes: 5 }),
     };
     const made = makeSession({ mentionReader });
+    // The Home's clock: an `Enter` right after the `Enter` that chose a file is held off as its repeat (`PickEnterLock`), so the
+    // deliberate submit below comes after the lockout.
+    let clock = 10_000;
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () => Promise.resolve(made.session),
       homeStore,
       onExit: vi.fn(),
       onError: vi.fn(),
+      now: () => clock,
     });
     type(c, 'hi');
     c.handleKey('', ENTER); // start the chat (input clears)
@@ -462,6 +433,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     // SUBMIT: the marker's file expands into the nonce-fenced <file> frame sent to the model (a fresh random nonce,
     // open === close — an unforgeable boundary); the buffer + the consumed attachment clear.
     made.lines.length = 0; // isolate the submitted message from the earlier 'hi'
+    clock += 2_500; // a deliberate Enter, past the lockout after the choice
     c.handleKey('', ENTER);
     await flush();
     const framed = made.lines[0]?.match(
@@ -481,7 +453,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     async (typedReason, expectedReason) => {
       const made = makeSession();
       const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
         startChat: () => Promise.resolve(made.session),
         homeStore,
         onExit: vi.fn(),
@@ -523,7 +494,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
   it('a bare `c` — the old reason key — opens no reason capture and answers nothing; neither does a bare `n`', async () => {
     const made = makeSession();
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () => Promise.resolve(made.session),
       homeStore,
       onExit: vi.fn(),
@@ -559,7 +529,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       }),
     });
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () => Promise.resolve(made.session),
       homeStore,
       onExit: vi.fn(),
@@ -586,7 +555,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     // approval rather than leaving it hung.
     const made = makeSession();
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () => Promise.resolve(made.session),
       homeStore,
       onExit: vi.fn(),
@@ -618,7 +586,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     // approval, so a settled approval after the FIRST Esc would be exactly that mistake.
     const made = makeSession();
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () => Promise.resolve(made.session),
       homeStore,
       onExit: vi.fn(),
@@ -640,7 +607,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(made.store.getSnapshot().review?.screen).toBe('card');
     expect(made.store.getSnapshot().approval, 'stepping back rejects nothing').toBeDefined();
     expect(c.getSnapshot().interruptArmed, 'and arms nothing').toBe(false);
-    hostKey(c, made.store, '', { escape: true }); // on the card Esc is the stop key: the card reports `abort`
+    // An Esc mashed inside the settle of the step back is no stop (ADR-0148 §7, unit 8): the call is still pending.
+    hostKey(c, made.store, '', { escape: true });
+    expect(made.store.getSnapshot().approval, 'a mashed Esc stops nothing').toBeDefined();
+    // The next Esc, once the settle has run on the guard's (monotonic) clock, is the stop key: the card reports `abort`.
+    const real = performance.now.bind(performance);
+    vi.spyOn(performance, 'now').mockImplementation(() => real() + APPROVAL_SETTLE_MS);
+    hostKey(c, made.store, '', { escape: true });
     await expect(pending).resolves.toEqual({ outcome: 'reject' });
     expect(made.store.getSnapshot().approval).toBeUndefined();
   });
@@ -652,7 +625,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     };
     const made = makeSession({ mentionReader });
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () => Promise.resolve(made.session),
       homeStore,
       onExit: vi.fn(),
@@ -690,7 +662,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     };
     const made = makeSession({ mentionReader });
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () => Promise.resolve(made.session),
       homeStore,
       onExit: vi.fn(),
@@ -729,12 +700,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       mentionReader,
       runShellCommand: () => Promise.resolve({ kind: 'ran', exitCode: 0, stdout: '', stderr: '' }),
     });
+    let clock = 10_000;
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () => Promise.resolve(made.session),
       homeStore,
       onExit: vi.fn(),
       onError: vi.fn(),
+      now: () => clock,
     });
     type(c, 'hi');
     c.handleKey('', ENTER);
@@ -744,6 +716,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     c.handleKey('@', {});
     await flush();
     c.handleKey('', ENTER); // accept the mention: the read is now PENDING
+    clock += 2_500; // past the lockout after the choice: the next Enter is a deliberate submit, not the choosing Enter's repeat
     c.handleKey('', ENTER); // submit `!echo "oops @app.ts`: an open quote, refused, NOT consumed
     expect(c.getSnapshot().input.text).toContain('!echo "oops');
 
@@ -769,7 +742,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       },
     });
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () => Promise.resolve(made.session),
       homeStore,
       onExit: vi.fn(),
@@ -826,7 +798,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       },
     });
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () => Promise.resolve(made.session),
       homeStore,
       onExit: vi.fn(),
@@ -865,7 +836,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       },
     });
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () => Promise.resolve(made.session),
       homeStore,
       onExit: vi.fn(),
@@ -897,7 +867,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
         Promise.resolve({ kind: 'denied', allowlist: true, message: 'not allowed' }),
     });
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () => Promise.resolve(made.session),
       homeStore,
       onExit: vi.fn(),
@@ -922,7 +891,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
   it('a bare `!` (no command) falls through to a normal message send', async () => {
     const made = makeSession({ runShellCommand: () => Promise.reject(new Error('unused')) });
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () => Promise.resolve(made.session),
       homeStore,
       onExit: vi.fn(),
@@ -951,7 +919,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
         }),
     });
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () => Promise.resolve(made.session),
       homeStore,
       onExit: vi.fn(),
@@ -1005,7 +972,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       onProcess: () => new Promise<void>((resolve) => (resolveProcess = resolve)),
     });
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () => Promise.resolve(made.session),
       homeStore,
       onExit: vi.fn(),
@@ -1034,7 +1000,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       runShellCommand: () => new Promise((resolve) => resolvers.push(resolve)),
     });
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () => Promise.resolve(made.session),
       homeStore,
       onExit: vi.fn(),
@@ -1077,7 +1042,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     const made = makeSession();
     const startChat = vi.fn(() => Promise.resolve(made.session));
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat,
       homeStore,
       onExit: vi.fn(),
@@ -1099,7 +1063,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
   it('an empty / whitespace submit stays on the Home and never builds a chat', () => {
     const startChat = vi.fn();
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat,
       homeStore,
       onExit: vi.fn(),
@@ -1112,10 +1075,9 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(c.getSnapshot().input.text).toBe('');
   });
 
-  it('a build failure routes back to Home with the banner (no session)', async () => {
+  it('a build failure routes back to Home with its whole message in the notice and the draft back in the prompt (no session)', async () => {
     const startChat = vi.fn(() => Promise.reject(new Error('no API key for provider')));
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat,
       homeStore,
       onExit: vi.fn(),
@@ -1125,7 +1087,8 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     c.handleKey('', ENTER);
     await flush();
     expect(c.getSnapshot().mode).toBe('home');
-    expect(c.getSnapshot().errorText).toBe('no API key for provider');
+    expect(c.getSnapshot().notice).toBe('Couldn’t start the chat: no API key for provider');
+    expect(c.getSnapshot().input.text, 'the draft is back in the prompt (G6)').toBe('hi');
     expect(c.getSnapshot().session).toBeUndefined();
   });
 
@@ -1134,7 +1097,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     const onError = vi.fn();
     const startChat = vi.fn(() => Promise.resolve(made.session));
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat,
       homeStore,
       onExit: vi.fn(),
@@ -1161,7 +1123,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     }); // shouldStop ⇒ the turn ended the session
     const startChat = vi.fn(() => Promise.resolve(made.session));
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat,
       homeStore,
       onExit: vi.fn(),
@@ -1190,7 +1151,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       let now = 10_000;
       const onExit = vi.fn();
       const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
         startChat: vi.fn(),
         homeStore,
         onExit,
@@ -1473,7 +1433,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     const made = makeSession();
     const startChat = vi.fn(() => new Promise<HomeChatSession>((r) => (resolveBuild = r)));
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat,
       homeStore,
       onExit: vi.fn(),
@@ -1495,7 +1454,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     const made = makeSession();
     const startChat = vi.fn(() => Promise.resolve(made.session));
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat,
       homeStore,
       onExit: vi.fn(),
@@ -1521,7 +1479,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     }); // the first turn ends the session ⇒ endChat fires
     made.teardown.mockImplementation(() => new Promise<void>(() => undefined)); // a graceful close that never settles
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: vi.fn(() => Promise.resolve(made.session)),
       homeStore,
       onExit: vi.fn(),
@@ -1542,7 +1499,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     const made = makeSession();
     const startChat = vi.fn(() => new Promise<HomeChatSession>((r) => (resolveBuild = r)));
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat,
       homeStore,
       onExit: vi.fn(),
@@ -1582,7 +1538,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     let built = 0;
     const startChat = vi.fn(() => Promise.resolve(built++ === 0 ? old.session : fresh.session));
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat,
       homeStore,
       onExit: vi.fn(),
@@ -1621,7 +1576,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       built++ === 0 ? Promise.resolve(old.session) : Promise.reject(new Error('no key')),
     );
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat,
       homeStore,
       onExit: vi.fn(),
@@ -1663,7 +1617,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
         : new Promise<HomeChatSession>((r) => (releaseFresh = r)),
     );
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat,
       homeStore,
       onExit: vi.fn(),
@@ -1697,7 +1650,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     };
     const startChat = vi.fn(() => Promise.resolve(session));
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat,
       homeStore,
       onExit: vi.fn(),
@@ -1732,7 +1684,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       teardown: vi.fn(() => new Promise<void>((r) => (releaseTeardown = r))),
     };
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: vi.fn(() => Promise.resolve(session)),
       homeStore,
       onExit: vi.fn(),
@@ -1756,7 +1707,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     const onExit = vi.fn();
     const onError = vi.fn();
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: vi.fn(() => Promise.resolve(made.session)),
       homeStore,
       onExit,
@@ -1776,7 +1726,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
   it('Ctrl-D (EOF) on an empty Home prompt exits; with text in the buffer it does not (no data loss)', () => {
     const onExit = vi.fn();
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: vi.fn(),
       homeStore,
       onExit,
@@ -1807,7 +1756,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     it('appends a whole multi-line paste (CRLF/CR → LF) and does NOT submit', () => {
       const startChat = vi.fn();
       const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
         startChat,
         homeStore,
         onExit: vi.fn(),
@@ -1823,7 +1771,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       const made = makeSession();
       const startChat = vi.fn(() => Promise.resolve(made.session));
       const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
         startChat,
         homeStore,
         onExit: vi.fn(),
@@ -1840,7 +1787,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       const made = makeSession({ running: true });
       const startChat = vi.fn(() => Promise.resolve(made.session));
       const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
         startChat,
         homeStore,
         onExit: vi.fn(),
@@ -1858,7 +1804,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       let resolveBuild: (s: HomeChatSession) => void = () => undefined;
       const startChat = vi.fn(() => new Promise<HomeChatSession>((r) => (resolveBuild = r)));
       const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
         startChat,
         homeStore,
         onExit: vi.fn(),
@@ -1878,7 +1823,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
 
     it('drops a paste while the `/` palette owns the keyboard (never leaks behind the overlay)', () => {
       const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
         startChat: vi.fn(),
         homeStore,
         onExit: vi.fn(),
@@ -1893,7 +1837,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     it('SECURITY: a pasted approval token during a pending approval NEVER answers the fail-closed floor (ADR-0057)', async () => {
       const made = makeSession();
       const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
         startChat: () => Promise.resolve(made.session),
         homeStore,
         onExit: vi.fn(),
@@ -1921,7 +1864,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     it("drops a paste while the card's reason box owns the keyboard", async () => {
       const made = makeSession();
       const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
         startChat: () => Promise.resolve(made.session),
         homeStore,
         onExit: vi.fn(),
@@ -1947,6 +1889,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
 
   describe('the / command palette (2.5.C S3b)', () => {
     const DOWN = { downArrow: true } as const;
+    const UP = { upArrow: true } as const;
     const ESC = { escape: true } as const;
 
     /** Build a controller, submit a first message so it is in `chat` mode at an empty prompt, ready for the palette. */
@@ -1954,7 +1897,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       made: ReturnType<typeof makeSession>,
     ): Promise<ReturnType<typeof createHomeController>> => {
       const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
         startChat: () => Promise.resolve(made.session),
         homeStore,
         onExit: vi.fn(),
@@ -1969,16 +1911,20 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     it('opens on a literal "/" at an empty chat prompt', async () => {
       const c = await intoChat(makeSession());
       c.handleKey('/', {});
-      expect(c.getSnapshot().palette).toEqual({ query: '', index: 0 });
+      expect(c.getSnapshot().palette?.state).toEqual({ query: '', index: 0 });
     });
 
     it('filters as you type and Enter submits the highlighted command as a slash line', async () => {
       const made = makeSession();
       const c = await intoChat(made);
       c.handleKey('/', {});
-      type(c, 'ex'); // filter → [exit, export]
-      c.handleKey('', DOWN); // highlight export
-      expect(c.getSnapshot().palette).toEqual({ query: 'ex', index: 1 });
+      type(c, 'ex'); // filter → [export, exit]: /exit ends the session, so it follows /export (ADR-0145 §7.6)
+      expect(c.getSnapshot().palette?.state).toEqual({ query: 'ex', index: 0 }); // the best match is the row beside the prompt
+      // A chat's list is drawn above the prompt, bottom-up: ↑ is the NEXT entry, ↓ the previous one (ADR-0145 §7.1).
+      c.handleKey('', UP);
+      expect(c.getSnapshot().palette?.state).toEqual({ query: 'ex', index: 1 });
+      c.handleKey('', DOWN);
+      expect(c.getSnapshot().palette?.state).toEqual({ query: 'ex', index: 0 });
       c.handleKey('', ENTER); // select → submit /export through the chat dispatch
       await flush();
       expect(made.lines).toEqual(['hi', '/export']);
@@ -2020,27 +1966,59 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
 
   describe('the / command palette in the bare Home (2.5.C S3c)', () => {
     const ESC = { escape: true } as const;
+    const DOWN = { downArrow: true } as const;
 
-    it('opens on "/" at the Home prompt, and selecting /exit ends the Home', () => {
+    it('opens on "/" at the Home prompt on the first row that can act, and `Enter` there never ends the Home (ADR-0145 §7.2)', () => {
       const onExit = vi.fn();
       const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
         startChat: vi.fn(),
         homeStore,
         onExit,
         onError: vi.fn(),
       });
       c.handleKey('/', {});
-      expect(c.getSnapshot().palette).toEqual({ query: '', index: 0 }); // HOME_PALETTE_COMMANDS = [exit, doctor]; index 0 = /exit
+      // This Home has no saved session: /resume (row 0) is dim, so the highlight is /run (row 1), the first row that can act.
+      expect(c.getSnapshot().palette?.state).toEqual({ query: '', index: 1 });
+      c.handleKey('', ENTER);
+      expect(onExit).not.toHaveBeenCalled();
+      expect(c.getSnapshot().palette).toBeUndefined();
+    });
+
+    it('selecting /exit ends the Home: only on the explicit selection, typed or reached at the end of the list', () => {
+      const onExit = vi.fn();
+      const c = createHomeController({
+        startChat: vi.fn(),
+        homeStore,
+        onExit,
+        onError: vi.fn(),
+      });
+      c.handleKey('/', {});
+      type(c, 'exit');
       c.handleKey('', ENTER); // select the highlighted /exit → run over the Home context → exitHome
       expect(onExit).toHaveBeenCalledTimes(1);
       expect(c.getSnapshot().palette).toBeUndefined();
+
+      const walked = vi.fn();
+      const d = createHomeController({
+        startChat: vi.fn(),
+        homeStore,
+        onExit: walked,
+        onError: vi.fn(),
+      });
+      d.handleKey('/', {});
+      for (let step = 0; step < 30; step += 1) d.handleKey('', DOWN); // far past the end: it stops on the last row, never wraps
+      expect(walked).not.toHaveBeenCalled(); // the highlight alone runs nothing
+      expect(
+        d.getSnapshot().palette?.state.index,
+        '/exit is the last row; /clear above it is dim',
+      ).toBe(14);
+      d.handleKey('', ENTER);
+      expect(walked).toHaveBeenCalledTimes(1);
     });
 
     it('Esc closes the Home palette without exiting', () => {
       const onExit = vi.fn();
       const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
         startChat: vi.fn(),
         homeStore,
         onExit,
@@ -2055,7 +2033,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     it('Ctrl-C closes the Home palette (the always-escapes hatch — does not exit the Home)', () => {
       const onExit = vi.fn();
       const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
         startChat: vi.fn(),
         homeStore,
         onExit,
@@ -2069,7 +2046,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
 
     it('a "/" mid-message in the Home is a normal character (the palette only triggers at an empty prompt)', () => {
       const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
         startChat: vi.fn(),
         homeStore,
         onExit: vi.fn(),
@@ -2084,7 +2060,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     it('does not open while a build is loading (the loading guard fires before the trigger)', () => {
       const startChat = vi.fn(() => new Promise<HomeChatSession>(() => undefined)); // never resolves
       const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
         startChat,
         homeStore,
         onExit: vi.fn(),
@@ -2099,41 +2074,62 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
 
     it('typing in the Home palette updates the query (the filter state path runs in the Home too)', () => {
       const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
         startChat: vi.fn(),
         homeStore,
         onExit: vi.fn(),
         onError: vi.fn(),
       });
       c.handleKey('/', {});
-      type(c, 'ex'); // 'ex' filters [exit, doctor] → [exit]; the query updates
-      expect(c.getSnapshot().palette).toEqual({ query: 'ex', index: 0 });
+      type(c, 'ex'); // 'ex' filters to [exit, workflows]; the query updates, and the highlight stays off /exit (ADR-0145 §7.6)
+      expect(c.getSnapshot().palette?.state).toEqual({ query: 'ex', index: 1 });
     });
 
-    it('selecting /doctor runs the fast tier into the Home notice surface', async () => {
+    // `/doctor` is a popup (ADR-0148 §8) that `driveHome` always wires. A Home without one (only a test's) has no doctor to show and says so in
+    // one line, as the other words with no port do: nothing checks, nothing runs later, nothing is written into the notice but that line.
+    it('selecting /doctor on a Home with no doctor popup says so in one line, and does nothing else', async () => {
+      const startChat = vi.fn();
+      const onExit = vi.fn();
       const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
-        startChat: vi.fn(),
+        startChat,
         homeStore,
-        onExit: vi.fn(),
+        onExit,
         onError: vi.fn(),
       });
       c.handleKey('/', {});
       type(c, 'doc'); // filter [exit, doctor] → [doctor]
       c.handleKey('', ENTER); // select /doctor → runDoctor(false) over the Home context
       expect(c.getSnapshot().palette).toBeUndefined();
-      await flush(); // the async runDoctor settles
-      // Assert the rendered ROWS, not just the heading — so a malformed/missing check row would fail the test.
-      const notice = c.getSnapshot().notice;
-      expect(notice).toContain('doctor: all checks passed');
-      expect(notice).toContain('✓ OS keychain: reachable');
-      expect(notice).toContain('✓ config: valid');
-      expect(notice).toContain('✓ wired tools: none'); // the STUB toolHost wires no arms
+      expect(c.getSnapshot().notice).toBe('Doctor is not available here.');
+      const revision = c.getSnapshot().noticeRevision;
+      await flush(); // nothing lands later: there is no check in flight
+      expect(c.getSnapshot().notice).toBe('Doctor is not available here.');
+      expect(c.getSnapshot().noticeRevision).toBe(revision);
+      expect(c.getSnapshot().screen).toBeUndefined();
+      expect(c.getSnapshot().mode).toBe('home');
+      expect(startChat).not.toHaveBeenCalled();
+      expect(onExit).not.toHaveBeenCalled();
     });
 
-    it('the Home /doctor notice clears on the next keystroke', async () => {
+    it('selecting /doctor where the popup is wired opens it on the quick tier and writes nothing into the notice', async () => {
+      const openDoctor = vi.fn();
       const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat: vi.fn(),
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+        openDoctor,
+      });
+      c.handleKey('/', {});
+      type(c, 'doc');
+      c.handleKey('', ENTER);
+      await flush();
+      expect(openDoctor).toHaveBeenCalledTimes(1);
+      expect(openDoctor).toHaveBeenCalledWith({ deep: false });
+      expect(c.getSnapshot().notice).toBeUndefined();
+    });
+
+    it('the notice clears on the next keystroke', () => {
+      const c = createHomeController({
         startChat: vi.fn(),
         homeStore,
         onExit: vi.fn(),
@@ -2142,16 +2138,14 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       c.handleKey('/', {});
       type(c, 'doc');
       c.handleKey('', ENTER);
-      await flush();
       expect(c.getSnapshot().notice).toBeDefined();
-      type(c, 'x'); // typing moves on — the report clears
+      type(c, 'x'); // typing moves on — the notice clears
       expect(c.getSnapshot().notice).toBeUndefined();
       expect(c.getSnapshot().input.text).toBe('x');
     });
 
-    it('a NO-OP cursor motion does NOT clear the Home /doctor notice (only a real edit does)', async () => {
+    it('a NO-OP cursor motion does NOT clear the notice (only a real edit does)', () => {
       const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
         startChat: vi.fn(),
         homeStore,
         onExit: vi.fn(),
@@ -2160,10 +2154,9 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       c.handleKey('/', {});
       type(c, 'doc');
       c.handleKey('', ENTER);
-      await flush();
       expect(c.getSnapshot().notice).toBeDefined();
       // The prompt is empty, so every cursor motion is a no-op (applyEditorAction returns the SAME reference); a
-      // boundary motion must NOT clear the report the user is reading (the widened edit arm was clearing it).
+      // boundary motion must NOT clear the notice the user is reading (the widened edit arm was clearing it).
       c.handleKey('', { leftArrow: true });
       c.handleKey('a', { ctrl: true }); // Ctrl+A (line-start) on an empty buffer
       c.handleKey('', { end: true });
@@ -2171,15 +2164,8 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       expect(c.getSnapshot().input).toEqual({ text: '', cursor: 0 }); // untouched
     });
 
-    it('a faulting fast-tier probe surfaces as a failed check (secret-free), never a crash', async () => {
-      const probes = {
-        ...STUB_DOCTOR_PROBES,
-        keychain: () => {
-          throw new Error('keychain locked');
-        },
-      };
+    it('a paste clears a stale notice (parity with typing)', () => {
       const c = createHomeController({
-        doctorProbes: probes,
         startChat: vi.fn(),
         homeStore,
         onExit: vi.fn(),
@@ -2188,58 +2174,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       c.handleKey('/', {});
       type(c, 'doc');
       c.handleKey('', ENTER);
-      await flush();
-      const notice = c.getSnapshot().notice;
-      expect(notice).toContain('doctor: 1 check(s) failed');
-      expect(notice).toContain('✗ OS keychain: keychain locked');
-    });
-
-    it('a report does NOT land if the prompt is edited during the run (the stale-run token guard)', async () => {
-      const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
-        startChat: vi.fn(),
-        homeStore,
-        onExit: vi.fn(),
-        onError: vi.fn(),
-      });
-      c.handleKey('/', {});
-      type(c, 'doc');
-      c.handleKey('', ENTER); // run /doctor: sets 'checking…' synchronously, then awaits
-      type(c, 'x'); // edit the prompt BEFORE the run settles — bumps the run token + clears the notice
-      await flush(); // the run resolves; its report is dropped (token mismatch), not re-shown over what's typed
-      expect(c.getSnapshot().notice).toBeUndefined();
-      expect(c.getSnapshot().input.text).toBe('x');
-    });
-
-    it('a report does NOT land if the palette is re-opened during the run (the palette branch of the guard)', async () => {
-      const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
-        startChat: vi.fn(),
-        homeStore,
-        onExit: vi.fn(),
-        onError: vi.fn(),
-      });
-      c.handleKey('/', {});
-      type(c, 'doc');
-      c.handleKey('', ENTER); // run /doctor (closes the palette, sets 'checking…'), then awaits
-      c.handleKey('/', {}); // re-open the palette BEFORE the run settles (clears the notice; token is unchanged)
-      await flush(); // the run resolves; the palette is open, so the report must NOT land over it
-      expect(c.getSnapshot().palette).toBeDefined();
-      expect(c.getSnapshot().notice).toBeUndefined();
-    });
-
-    it('a paste clears a stale /doctor notice (parity with typing)', async () => {
-      const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
-        startChat: vi.fn(),
-        homeStore,
-        onExit: vi.fn(),
-        onError: vi.fn(),
-      });
-      c.handleKey('/', {});
-      type(c, 'doc');
-      c.handleKey('', ENTER);
-      await flush();
       expect(c.getSnapshot().notice).toBeDefined();
       c.handlePaste('pasted');
       expect(c.getSnapshot().notice).toBeUndefined();
@@ -2250,7 +2184,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
   describe('in-chat mode / approval / abort keys (ADR-0057)', () => {
     const inChat = async (made: ReturnType<typeof makeSession>): Promise<HomeController> => {
       const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
         startChat: () => Promise.resolve(made.session),
         homeStore,
         onExit: vi.fn(),
@@ -2290,11 +2223,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
           'the footer must not claim a mode the turn is not under',
         ).toBe('ask');
         expect(m.policyPushes(), 'no policy is pushed mid-turn').toBe(before);
+        // OD-1: said as the chat's transient notification, not as a row of the transcript.
+        expect(m.announced).toEqual([MODE_CHANGE_RUNNING_NOTICE]);
         expect(
           m.store
             .getSnapshot()
             .state.transcript.flatMap((entry) => (entry.role === 'notice' ? [entry.text] : [])),
-        ).toEqual([MODE_CHANGE_RUNNING_NOTICE]);
+        ).toEqual([]);
         // Once the turn has ended the same key cycles again (ask -> plan).
         m.store.apply(TURN_COMPLETED);
         c.handleKey('', { tab: true, shift: true });
@@ -2476,12 +2411,11 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
 });
 
 /* ------------------------------------------------------------------------------------------------ *
- * The `/models` picker (2.5.G S7 / ADR-0064 §10) — HOME-ONLY, opened via the Home `/` palette.
+ * The Home's catalog port fake (2.5.G S7 / ADR-0064 §10): `/models` is a popup now (`home-models.test.ts`); the fake stays for the reseat
+ * marker case below.
  * ------------------------------------------------------------------------------------------------ */
 
-const CTRL_R = { ctrl: true } as const;
-
-/** A merged catalog entry with sensible defaults for the picker port fake. */
+/** A merged catalog entry with sensible defaults for the catalog port fake. */
 function pickerEntry(
   partial: Partial<ModelCatalogEntry> & Pick<ModelCatalogEntry, 'modelId'>,
 ): ModelCatalogEntry {
@@ -2563,542 +2497,38 @@ function makeModelsPort(
   };
 }
 
-describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () => {
+describe('/effort in a chat the Home hosts (the /models picker’s cases moved to `home-models.test.ts` with its retirement)', () => {
   const EMPTY_HOME: HomeSnapshot = {
-    attention: { gates: [], failedRuns: [] },
+    failedRuns: [],
     recentSessions: [],
     recentRuns: [],
     recentAgents: [],
-    unreadableRunIds: [],
+    unreadableRuns: [],
+    totals: { attention: 0, sessions: 0, runs: 0 },
     isEmpty: true,
   };
   const homeStore: HomeStore = { read: () => EMPTY_HOME };
 
-  /** Build a Home controller with the given models port, then open the picker via the `/` palette (the real path). */
-  function openPicker(port: HomeModelsPort): HomeController {
-    const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
-      startChat: vi.fn(),
-      homeStore,
-      onExit: vi.fn(),
-      onError: vi.fn(),
-      models: port,
-    });
-    c.handleKey('/', {}); // open the palette
-    type(c, 'models'); // filter HOME_PALETTE_COMMANDS → [/models]
-    c.handleKey('', ENTER); // run the highlighted /models → homeReplCtx.openModels → the picker opens
-    return c;
-  }
-
-  it('drops a model refresh rejection after Home teardown sealed publication', async () => {
-    let rejectRefresh: (cause: Error) => void = () => undefined;
-    const { port } = makeModelsPort({
-      refreshIfStale: () =>
-        new Promise((_resolve, reject) => {
-          rejectRefresh = reject;
-        }),
-    });
-    const c = openPicker(port);
-    const changed = vi.fn();
-    const unsubscribe = c.subscribe(changed);
-    await c.teardownActive();
-    changed.mockClear();
-    const sealed = c.getSnapshot();
-    rejectRefresh(new Error('owner stopped'));
-    await flush();
-    expect(changed, 'HOME_REJECTED_REFRESH_AFTER_SEAL').not.toHaveBeenCalled();
-    expect(c.getSnapshot()).toBe(sealed);
-    unsubscribe();
+  /** A chat's settings port whose `/effort` offers `tiers` (none ⇒ the model has no tier to choose). */
+  const effortSettings = (
+    tiers: readonly ReasoningEffort[],
+    apply: (effort: ReasoningEffort) => void = vi.fn(),
+  ): SettingsPort => ({
+    surface: 'home-chat',
+    announce: vi.fn(),
+    effort: { model: () => 'claude-opus-4-8', tiers: () => tiers, current: () => 'low', apply },
   });
 
-  it('opens over the merged catalog and kicks a TTL-bounded background refresh', async () => {
-    const { port, load, refreshIfStale } = makeModelsPort({ refreshedAt: 1000 });
-    const c = openPicker(port);
-    const picker = c.getSnapshot().modelPicker;
-    expect(picker?.entries.map((e) => e.modelId)).toEqual(['a', 'b']);
-    expect(picker?.refreshedAt).toBe(1000);
-    expect(refreshIfStale).toHaveBeenCalledTimes(1); // the auto background refresh (ADR-0064 §5c)
-    await flush();
-    // Nothing was stale (refreshIfStale → undefined): the spinner clears, the cache stands.
-    expect(c.getSnapshot().modelPicker?.loading).toBe(false);
-    expect(load).toHaveBeenCalled();
-  });
-
-  it('selecting a model writes the NEXT session default, closes the picker, and confirms in the notice', async () => {
-    const { port, writeDefault } = makeModelsPort({
-      entries: [pickerEntry({ modelId: 'claude-x', displayName: 'Claude X' })],
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('', ENTER); // accept the selected (available) model
-    expect(writeDefault).toHaveBeenCalledWith('claude-x', 'anthropic', undefined); // model + provider, no effort
-    expect(c.getSnapshot().modelPicker).toBeUndefined(); // the picker closed
-    expect(c.getSnapshot().notice).toContain('Claude X'); // the confirmation names the model
-    expect(c.getSnapshot().notice).toContain('next chat session'); // it is a NEXT-session action, not a live reseat
-  });
-
-  it("bare Home: the picked model's PROVIDER is persisted with it (ADR-0059 — the Bug-3 fix)", async () => {
-    // The provider is authoritative at pick time (the live `/models` list is per-provider). Persisting it means the
-    // next chat over a live-discovered id whose prefix the inference cannot place (an openai `chat-latest`) still
-    // resolves, instead of crashing "cannot infer a provider". The provider written is the picked ENTRY's provider.
-    const { port, writeDefault, latestProvider } = makeModelsPort({
-      entries: [
-        pickerEntry({ modelId: 'chat-latest', displayName: 'chat-latest', provider: 'openai' }),
-      ],
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('', ENTER);
-    expect(writeDefault).toHaveBeenCalledWith('chat-latest', 'openai', undefined);
-    expect(latestProvider()).toBe('openai');
-  });
-
-  it('bare Home: a REASONING model offers the effort sub-step, writing BOTH model + effort defaults (ADR-0066 §6)', async () => {
-    // ADR-0066 §6: in the bare Home a reasoning model advances to the effort sub-step (opened on the config effort
-    // default), and accepting writes model + effort together — so the user sets both future-session defaults at once.
-    const { port, writeDefault } = makeModelsPort({
-      entries: [
-        pickerEntry({
-          modelId: 'claude-opus-4-8',
-          displayName: 'Claude Opus 4.8',
-          provider: 'anthropic',
-        }),
-      ],
-      currentEffort: 'low', // the existing effort default — the sub-list opens highlighted on it
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('', ENTER); // model phase: Enter on the reasoning model ⇒ advance to the effort sub-step
-    expect(c.getSnapshot().modelPicker?.phase).toBe('effort');
-    expect(c.getSnapshot().modelPicker?.currentEffort).toBe('low'); // opened on the config effort default
-    c.handleKey('', { downArrow: true }); // low → medium
-    c.handleKey('', { downArrow: true }); // medium → high
-    c.handleKey('', ENTER); // accept the model + 'high'
-
-    expect(writeDefault).toHaveBeenCalledWith('claude-opus-4-8', 'anthropic', 'high'); // model+provider+effort, one atomic call
-    expect(c.getSnapshot().modelPicker).toBeUndefined(); // closed
-    expect(c.getSnapshot().notice).toContain('Claude Opus 4.8');
-    expect(c.getSnapshot().notice).toContain('effort high'); // the notice names the written effort
-    expect(c.getSnapshot().notice).toContain('next chat session');
-  });
-
-  it('bare Home: a reasoning model with NO prior effort default opens on medium; immediate Enter writes medium (ADR-0066 §6)', async () => {
-    // No `currentEffort` opt ⇒ the sub-list opens on the neutral 'medium' (initialEffortIndex(undefined)). There is
-    // no "model-only, skip effort" path for a reasoning model in the bare Home (Esc only backs to the model list), so
-    // accepting immediately writes the neutral default — pin that intended behavior (ADR-0066 §6).
-    const { port, writeDefault } = makeModelsPort({
-      entries: [
-        pickerEntry({
-          modelId: 'claude-opus-4-8',
-          displayName: 'Claude Opus 4.8',
-          provider: 'anthropic',
-        }),
-      ],
-      // no currentEffort → port.currentEffort() is undefined
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('', ENTER); // advance to the effort sub-step
-    expect(c.getSnapshot().modelPicker?.phase).toBe('effort');
-    expect(c.getSnapshot().modelPicker?.currentEffort).toBeUndefined(); // no config effort default
-    c.handleKey('', ENTER); // immediate Enter on the opening highlight (the neutral 'medium')
-
-    expect(writeDefault).toHaveBeenCalledWith('claude-opus-4-8', 'anthropic', 'medium'); // the neutral default is written
-    expect(c.getSnapshot().notice).toContain('effort medium');
-  });
-
-  it('bare Home: a COLLAPSED reasoning model with no prior effort opens on a reasoning-ON row; immediate Enter never writes `off`', async () => {
-    // The Bug-1 regression guard the opus test above cannot catch (opus keeps all five tiers, so `medium` IS a row).
-    // deepseek-v4-pro collapses to rows [off, high, max] — `medium` is not a row. Before the projection fix the
-    // opening highlight fell to index 0 = `off`, so this immediate Enter WROTE `off`, silently disabling reasoning
-    // on a model the user opened to configure. It must open on `high` (the neutral tier's representative) instead.
-    const { port, writeDefault } = makeModelsPort({
-      entries: [
-        pickerEntry({
-          modelId: 'deepseek-v4-pro',
-          displayName: 'DeepSeek V4 Pro',
-          provider: 'deepseek',
-        }),
-      ],
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('', ENTER); // advance to the effort sub-step
-    expect(c.getSnapshot().modelPicker?.phase).toBe('effort');
-    c.handleKey('', ENTER); // immediate Enter on the opening highlight
-
-    expect(writeDefault).toHaveBeenCalledWith('deepseek-v4-pro', 'deepseek', 'high');
-    expect(writeDefault).not.toHaveBeenCalledWith('deepseek-v4-pro', 'deepseek', 'off');
-  });
-
-  it('an honest notice when a project/workspace setting overrides the global write (no false success)', async () => {
-    // The write lands on the global file, but the effective default stays the project/workspace override, so the
-    // notice must NOT claim "applies to your next chat session" — it says the override still wins here.
-    const { port, writeDefault } = makeModelsPort({
-      entries: [pickerEntry({ modelId: 'claude-x', displayName: 'Claude X' })],
-      overrideDefault: 'project-pinned',
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('', ENTER);
-    expect(writeDefault).toHaveBeenCalledWith('claude-x', 'anthropic', undefined); // model + provider, no effort
-    expect(c.getSnapshot().notice).toContain('overrides it here');
-    expect(c.getSnapshot().notice).not.toContain('next chat session'); // no false claim of effect
-  });
-
-  it('reports a DISTINCT notice when the config can\'t be re-read after a write (not "overrides")', async () => {
-    const { port } = makeModelsPort({
-      entries: [pickerEntry({ modelId: 'claude-x', displayName: 'Claude X' })],
-      readFaults: true, // the write succeeds, but the re-read to confirm the effective default throws → undefined
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('', ENTER);
-    expect(c.getSnapshot().notice).toContain('could not be re-read');
-    expect(c.getSnapshot().notice).not.toContain('overrides'); // a read fault is NOT an override
-    expect(c.getSnapshot().notice).not.toContain('next chat session'); // nor a confirmed success
-  });
-
-  it('a catalog read fault on OPEN degrades to a notice, never crashes the Home (never opens a broken picker)', () => {
-    const { port } = makeModelsPort({ loadThrows: true });
-    const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
-      startChat: vi.fn(),
-      homeStore,
-      onExit: vi.fn(),
-      onError: vi.fn(),
-      models: port,
-    });
-    c.handleKey('/', {});
-    type(c, 'models');
-    c.handleKey('', ENTER); // /models → openModelPicker → port.load() throws → caught
-    expect(c.getSnapshot().modelPicker).toBeUndefined(); // no half-open picker
-    expect(c.getSnapshot().notice).toContain('could not read the model catalog');
-  });
-
-  it('a write fault keeps the picker OPEN with a secret-free hint, never crashes the Home', async () => {
-    const { port } = makeModelsPort({
-      entries: [pickerEntry({ modelId: 'claude-x', displayName: 'Claude X' })],
-      writeThrows: true,
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('', ENTER);
-    expect(c.getSnapshot().modelPicker).toBeDefined(); // stays open (recoverable)
-    expect(c.getSnapshot().modelPicker?.hint).toContain('could not save');
-    expect(c.getSnapshot().notice).toBeUndefined(); // no success notice on a failed write
-  });
-
-  it('a DIMMED (unavailable) model is non-selectable: Enter shows a HINT, never a write', async () => {
-    const { port, writeDefault } = makeModelsPort({
-      entries: [pickerEntry({ modelId: 'gone', displayName: 'Gone', available: false })],
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('', ENTER);
-    expect(writeDefault).not.toHaveBeenCalled(); // never write an unusable default
-    expect(c.getSnapshot().modelPicker).toBeDefined(); // stays open
-    expect(c.getSnapshot().modelPicker?.hint).toContain('Gone'); // an actionable action-hint (not the refresh banner)
-    // A navigation keystroke clears the transient hint (the user has moved on).
-    c.handleKey('x', {}); // a filter keystroke → 'state' step → hint cleared
-    expect(c.getSnapshot().modelPicker?.hint).toBeUndefined();
-  });
-
-  it('a `no-key` model is non-selectable with a hint NAMING the remedy (provider add) (2.5.G)', async () => {
-    const { port, writeDefault } = makeModelsPort({
-      entries: [
-        pickerEntry({
-          modelId: 'x',
-          displayName: 'Model X',
-          provider: 'openai',
-          available: false,
-          unavailableReason: 'no-key',
-        }),
-      ],
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('', ENTER);
-    expect(writeDefault).not.toHaveBeenCalled(); // a keyless model can never become the default
-    const hint = c.getSnapshot().modelPicker?.hint ?? '';
-    expect(hint).toContain('openai'); // names the provider
-    expect(hint).toContain('provider set-key'); // and the actionable single-command remedy
-  });
-
-  it('Esc closes the picker without writing a default', async () => {
-    const { port, writeDefault } = makeModelsPort();
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('', { escape: true });
-    expect(c.getSnapshot().modelPicker).toBeUndefined();
-    expect(writeDefault).not.toHaveBeenCalled();
-  });
-
-  it('Ctrl+R runs an unbounded refresh; a per-provider failure surfaces a secret-free banner', async () => {
-    const { port, refresh } = makeModelsPort({
-      refresh: () =>
-        Promise.resolve({
-          providers: [{ provider: 'openai', status: 'failed', error: 'redacted' }],
-        }),
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('r', CTRL_R);
-    expect(refresh).toHaveBeenCalledTimes(1);
-    await flush();
-    const picker = c.getSnapshot().modelPicker;
-    expect(picker?.loading).toBe(false);
-    expect(picker?.banner).toContain('openai'); // names the failed provider, not the (redacted) error body
-    expect(picker?.banner).not.toContain('redacted');
-  });
-
-  it("a reopened picker is NOT clobbered by a prior open's slow refresh (the epoch guard)", async () => {
-    // Open #1 kicks a SLOW refreshIfStale; open #2 (after a close) gets a fast one. When the slow first refresh
-    // finally resolves with a partial failure, it must NOT stamp the SECOND picker's banner (a different generation).
-    let resolveSlow: (report: RefreshReport) => void = () => undefined;
-    let call = 0;
-    const { port } = makeModelsPort({
-      refreshIfStale: () => {
-        call += 1;
-        return call === 1
-          ? new Promise<RefreshReport>((res) => {
-              resolveSlow = res;
-            })
-          : Promise.resolve(undefined);
-      },
-    });
-    const c = openPicker(port); // open #1 → the slow refresh is in flight (generation 1)
-    c.handleKey('', { escape: true }); // close it
-    // Reopen on the SAME controller (open #2, generation 2) via the palette.
-    c.handleKey('/', {});
-    type(c, 'models');
-    c.handleKey('', ENTER);
-    await flush();
-    expect(c.getSnapshot().modelPicker).toBeDefined(); // picker #2 is open
-
-    resolveSlow({ providers: [{ provider: 'openai', status: 'failed', error: 'redacted' }] }); // gen-1 refresh lands late
-    await flush();
-    // The stale gen-1 result is dropped — picker #2's banner is untouched (no ghost partial-failure).
-    expect(c.getSnapshot().modelPicker?.banner).toBeUndefined();
-  });
-
-  it('the picker owns the keyboard: typing filters, it does not edit the Home buffer', async () => {
-    const { port } = makeModelsPort({
-      entries: [pickerEntry({ modelId: 'alpha' }), pickerEntry({ modelId: 'beta' })],
-    });
-    const c = openPicker(port);
-    await flush();
-    c.handleKey('b', {}); // a printable char → extends the picker filter, NOT the Home prompt
-    expect(c.getSnapshot().modelPicker?.filter).toBe('b');
-    expect(c.getSnapshot().input.text).toBe(''); // the Home buffer behind the overlay is untouched
-  });
-
-  it('degrades to an honest notice when no models port is wired (a test/partial host)', () => {
-    const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
-      startChat: vi.fn(),
-      homeStore,
-      onExit: vi.fn(),
-      onError: vi.fn(),
-      // no `models` port
-    });
-    c.handleKey('/', {});
-    type(c, 'models');
-    c.handleKey('', ENTER);
-    expect(c.getSnapshot().modelPicker).toBeUndefined();
-    expect(c.getSnapshot().notice).toContain('unavailable');
-  });
-
-  it('in-Home chat: /models opens the reseat picker; accepting a model RESEATS the live session (ADR-0059)', async () => {
-    const sessionA = makeSession({ sessionId: 'sess-A' });
-    // A LIVE chat has turns on screen — that is the conversation the reseat must carry (2.6.C / F1). An empty store
-    // here would make the carry assertion below vacuous.
-    sessionA.session.store.appendUser('what is 2+2');
-    sessionA.session.store.notice('assistant: four');
-    const sessionB = makeSession({ sessionId: 'sess-A' }); // a reseat continues the SAME sessionId
-    const startChat = vi.fn(() => Promise.resolve(sessionA.session));
-    const reseatChat = vi.fn<
-      (id: string, t: ReseatTarget, carried: readonly TranscriptEntry[]) => Promise<HomeChatSession>
-    >(() => Promise.resolve(sessionB.session));
-    const { port } = makeModelsPort({
-      entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' })],
-    });
-    const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
-      startChat,
-      reseatChat,
-      models: port,
-      homeStore,
-      onExit: vi.fn(),
-      onError: vi.fn(),
-    });
-    type(c, 'hi');
-    c.handleKey('', ENTER); // start the chat (session A)
-    await flush();
-    expect(c.getSnapshot().mode).toBe('chat');
-
-    // Open the reseat picker from the chat palette (`/` → filter `models` → run) — the in-chat intercept opens the
-    // picker instead of dispatching `/models` to the "interactive terminal" hint.
-    c.handleKey('/', {});
-    type(c, 'models');
-    c.handleKey('', ENTER);
-    await flush();
-    expect(c.getSnapshot().modelPicker).toBeDefined(); // the picker opened IN the chat
-
-    // Accept the (only, available) model → a LIVE reseat, not a next-session-default write.
-    c.handleKey('', ENTER);
-    await flush();
-
-    // The reseat is handed the OUTGOING store's rendered transcript (2.6.C / F1) — the conversation the reseated
-    // store must open with, so the alt-screen viewport does not go blank. Passing `[]` here IS the bug.
-    expect(reseatChat).toHaveBeenCalledWith(
-      'sess-A',
-      { modelId: 'claude-opus-4-8', provider: 'anthropic' },
-      sessionA.session.store.getSnapshot().state.transcript,
-    );
-    expect(reseatChat.mock.calls[0]?.[2]).not.toHaveLength(0); // a live chat has turns; an empty carry is F1
-    expect(sessionA.teardown).toHaveBeenCalledTimes(1); // the old session torn down (bounded)
-    expect(c.getSnapshot().session).toBe(sessionB.session); // swapped to the reseated session
-    expect(c.getSnapshot().mode).toBe('chat'); // stayed in chat (the model switched underneath)
-    expect(c.getSnapshot().modelPicker).toBeUndefined(); // the picker closed
-  });
-
-  it('in-Home chat: a SAME-model effort change calls the setter — NO reseat (ADR-0066 §5)', async () => {
-    // Bound to a reasoning-capable model at effort 'low'. Re-picking the SAME model then choosing 'high' in the
-    // effort sub-step must push the SESSION override (onSetEffort) — NOT a reseat (which would tear the session down).
-    const boundStore = createChatStore(
-      false,
-      { model: 'claude-opus-4-8', transcript: [] },
-      INLINE_TRANSCRIPT_BOUND,
-    );
-    boundStore.setReasoningEffort('low'); // the session's current tier (drives the sub-list's ✓/highlight)
+  it('in-Home chat: /effort from the palette opens the settings popup through the Home’s opener, with the chat’s port — NO reseat, no overlay (ADR-0148 §6)', async () => {
     const onSetEffort = vi.fn();
-    const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore, onSetEffort });
+    const settings = effortSettings(['low', 'medium', 'high'], onSetEffort);
+    const sessionA = makeSession({ sessionId: 'sess-A', onSetEffort });
     const reseatChat = vi.fn(() => Promise.resolve(makeSession().session));
-    const { port } = makeModelsPort({
-      entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' })],
-    });
+    const openSettings = vi.fn();
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
-      startChat: () => Promise.resolve(sessionA.session),
+      startChat: () => Promise.resolve({ ...sessionA.session, settings }),
       reseatChat,
-      models: port,
-      homeStore,
-      onExit: vi.fn(),
-      onError: vi.fn(),
-    });
-    type(c, 'hi');
-    c.handleKey('', ENTER);
-    await flush();
-    c.handleKey('/', {});
-    type(c, 'models');
-    c.handleKey('', ENTER);
-    await flush();
-    c.handleKey('', ENTER); // model phase: Enter on the reasoning model ⇒ advance to the effort sub-step
-    expect(c.getSnapshot().modelPicker?.phase).toBe('effort');
-    c.handleKey('', { downArrow: true }); // low → medium
-    c.handleKey('', { downArrow: true }); // medium → high
-    c.handleKey('', ENTER); // apply 'high'
-    await flush();
-
-    expect(onSetEffort).toHaveBeenCalledWith('high'); // the SESSION override (no reseat)
-    expect(reseatChat).not.toHaveBeenCalled(); // an effort change is NOT a reseat (ADR-0066 §5, not option (d))
-    expect(sessionA.teardown).not.toHaveBeenCalled(); // the live session is untouched (no teardown/MCP reconnect)
-    expect(c.getSnapshot().modelPicker).toBeUndefined(); // the picker closed after the effort pick
-  });
-
-  it('in-Home chat: re-picking the SAME model AND same effort is a no-op (no setter, no reseat) (ADR-0066)', async () => {
-    const boundStore = createChatStore(
-      false,
-      { model: 'claude-opus-4-8', transcript: [] },
-      INLINE_TRANSCRIPT_BOUND,
-    );
-    boundStore.setReasoningEffort('high');
-    const onSetEffort = vi.fn();
-    const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore, onSetEffort });
-    const reseatChat = vi.fn(() => Promise.resolve(makeSession().session));
-    const { port } = makeModelsPort({
-      entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' })],
-    });
-    const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
-      startChat: () => Promise.resolve(sessionA.session),
-      reseatChat,
-      models: port,
-      homeStore,
-      onExit: vi.fn(),
-      onError: vi.fn(),
-    });
-    type(c, 'hi');
-    c.handleKey('', ENTER);
-    await flush();
-    c.handleKey('/', {});
-    type(c, 'models');
-    c.handleKey('', ENTER);
-    await flush();
-    c.handleKey('', ENTER); // effort sub-step opens highlighted on the bound 'high'
-    c.handleKey('', ENTER); // accept 'high' (unchanged)
-    await flush();
-
-    expect(onSetEffort).not.toHaveBeenCalled(); // same tier ⇒ no setter call
-    expect(reseatChat).not.toHaveBeenCalled();
-    expect(c.getSnapshot().modelPicker).toBeUndefined();
-  });
-
-  it('in-Home chat: accepting the ALREADY-bound model does NOT reseat — a no-op hint (ADR-0059)', async () => {
-    // The session is bound to claude-opus-4-8; the only picker entry IS that model. Accepting it must NOT tear the
-    // session down + rebuild for zero change (which would wipe the approval cache) — it keeps the picker open + hints.
-    const boundStore = createChatStore(
-      false,
-      { model: 'claude-opus-4-8', transcript: [] },
-      INLINE_TRANSCRIPT_BOUND,
-    );
-    const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore });
-    const reseatChat = vi.fn(() => Promise.resolve(makeSession().session));
-    const { port } = makeModelsPort({
-      entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' })],
-    });
-    const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
-      startChat: () => Promise.resolve(sessionA.session),
-      reseatChat,
-      models: port,
-      homeStore,
-      onExit: vi.fn(),
-      onError: vi.fn(),
-    });
-    type(c, 'hi');
-    c.handleKey('', ENTER);
-    await flush();
-    c.handleKey('/', {});
-    type(c, 'models');
-    c.handleKey('', ENTER);
-    await flush();
-    c.handleKey('', ENTER); // accept the (only, ALREADY-bound) model
-    await flush();
-
-    expect(reseatChat).not.toHaveBeenCalled(); // no pointless reseat onto the current model
-    expect(sessionA.teardown).not.toHaveBeenCalled(); // the live session is untouched
-    expect(c.getSnapshot().modelPicker?.hint).toContain('Already on'); // the picker stays open with a hint
-  });
-
-  it('in-Home chat: /effort opens the interactive tier overlay; applying pushes the setter — NO reseat (ADR-0066 §6)', async () => {
-    // The standalone `/effort` overlay (distinct from the `/models` effort sub-step): a reasoning-capable live chat
-    // opens a fixed tier list on the bound effort; picking a new tier pushes the per-turn session override, never a
-    // reseat. Reached via the `/` palette (typing `/` opens it), matching how a user runs it.
-    const boundStore = createChatStore(
-      false,
-      { model: 'claude-opus-4-8', transcript: [] },
-      INLINE_TRANSCRIPT_BOUND,
-    );
-    boundStore.setReasoningEffort('low'); // the session's current tier — drives the overlay's ✓/opening highlight
-    const onSetEffort = vi.fn();
-    const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore, onSetEffort });
-    const reseatChat = vi.fn(() => Promise.resolve(makeSession().session));
-    const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
-      startChat: () => Promise.resolve(sessionA.session),
-      reseatChat,
+      openSettings,
       homeStore,
       onExit: vi.fn(),
       onError: vi.fn(),
@@ -3107,34 +2537,21 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     c.handleKey('', ENTER);
     await flush();
     c.handleKey('/', {}); // open the `/` palette
-    type(c, 'effort'); // filter CHAT_PALETTE_COMMANDS → [/effort]
-    c.handleKey('', ENTER); // run /effort → the interactive overlay opens (NOT the model picker)
-    expect(c.getSnapshot().effortPicker?.current).toBe('low');
-    expect(c.getSnapshot().effortPicker?.selected).toBe(REASONING_EFFORTS.indexOf('low'));
-    expect(c.getSnapshot().modelPicker).toBeUndefined();
-    c.handleKey('', { downArrow: true }); // low → medium
-    c.handleKey('', { downArrow: true }); // medium → high
-    c.handleKey('', ENTER); // apply 'high'
-
-    expect(onSetEffort).toHaveBeenCalledWith('high'); // the per-turn SESSION override
+    type(c, 'effort'); // filter the chat's palette rows → [/effort]
+    c.handleKey('', ENTER); // run /effort → the settings popup (NOT the model picker)
+    expect(openSettings).toHaveBeenCalledTimes(1);
+    expect(openSettings).toHaveBeenCalledWith({ command: 'effort', chat: settings });
+    expect(sessionA.lines).not.toContain('/effort'); // it did NOT dispatch
     expect(reseatChat).not.toHaveBeenCalled(); // an effort change is NOT a reseat (ADR-0066 §5)
-    expect(sessionA.teardown).not.toHaveBeenCalled(); // the live session is untouched
-    expect(c.getSnapshot().effortPicker).toBeUndefined(); // the overlay closed after applying
+    expect(onSetEffort).not.toHaveBeenCalled(); // opening applies nothing
   });
 
-  it('in-Home chat: /effort on a NON-reasoning model does NOT open the overlay — it dispatches to the notice (ADR-0066 §6)', async () => {
-    // A non-reasoning bound model has no controllable tier, so `/effort` must fall through to the slash dispatch
-    // (the ctx handler prints "no controllable tier"), never opening a dead overlay.
-    const boundStore = createChatStore(
-      false,
-      { model: 'gpt-4o', transcript: [] },
-      INLINE_TRANSCRIPT_BOUND,
-    ); // gpt-4o is not a reasoning model
-    const onSetEffort = vi.fn();
-    const made = makeSession({ store: boundStore, onSetEffort });
+  it('in-Home chat: /effort on a model with NO tier opens nothing and dispatches to the notice (ADR-0066 §6)', async () => {
+    const made = makeSession();
+    const openSettings = vi.fn();
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
-      startChat: () => Promise.resolve(made.session),
+      startChat: () => Promise.resolve({ ...made.session, settings: effortSettings([]) }),
+      openSettings,
       homeStore,
       onExit: vi.fn(),
       onError: vi.fn(),
@@ -3146,26 +2563,17 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     type(c, 'effort');
     c.handleKey('', ENTER);
     await flush();
-
-    expect(c.getSnapshot().effortPicker).toBeUndefined(); // no overlay for a non-reasoning model
+    expect(openSettings).not.toHaveBeenCalled();
     expect(made.lines).toContain('/effort'); // it dispatched (the ctx handler surfaces the "no tier" notice)
-    expect(onSetEffort).not.toHaveBeenCalled();
   });
 
-  it('in-Home chat: a typed (pasted) /effort line opens the overlay via applySubmitAction (ADR-0066 §6)', async () => {
-    // Typing `/` at an empty prompt opens the palette, so a LITERAL `/effort` line reaches applySubmitAction only via
-    // paste (bracketed paste appends verbatim). This covers the typed-intercept branch, distinct from the palette one.
-    const boundStore = createChatStore(
-      false,
-      { model: 'claude-opus-4-8', transcript: [] },
-      INLINE_TRANSCRIPT_BOUND,
-    );
-    boundStore.setReasoningEffort('medium');
-    const onSetEffort = vi.fn();
-    const sessionA = makeSession({ store: boundStore, onSetEffort });
+  it('in-Home chat: a typed (pasted) bare /effort opens the popup via applySubmitAction; `/effort high` dispatches and applies (ADR-0148 §6)', async () => {
+    const sessionA = makeSession();
+    const settings = effortSettings(['low', 'medium', 'high']);
+    const openSettings = vi.fn();
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
-      startChat: () => Promise.resolve(sessionA.session),
+      startChat: () => Promise.resolve({ ...sessionA.session, settings }),
+      openSettings,
       homeStore,
       onExit: vi.fn(),
       onError: vi.fn(),
@@ -3174,26 +2582,22 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     c.handleKey('', ENTER);
     await flush();
     c.handlePaste('/effort'); // pasted literally — the `/` intercept is bypassed (paste is a usePaste event, not a key)
-    expect(c.getSnapshot().input.text).toBe('/effort');
-    c.handleKey('', ENTER); // submit the literal line → applySubmitAction → the typed intercept opens the overlay
-
-    expect(c.getSnapshot().effortPicker?.current).toBe('medium'); // opened on the bound tier
+    c.handleKey('', ENTER);
+    expect(openSettings).toHaveBeenCalledWith({ command: 'effort', chat: settings });
     expect(c.getSnapshot().input.text).toBe(''); // the buffer was cleared
-    expect(sessionA.lines).not.toContain('/effort'); // it did NOT dispatch — it opened the overlay
+    expect(sessionA.lines).not.toContain('/effort');
+    c.handlePaste('/effort high');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(openSettings).toHaveBeenCalledTimes(1); // a setting with its value opens no popup
+    expect(sessionA.lines).toContain('/effort high'); // the dispatch applies it
   });
 
-  it('in-Home chat: Esc closes the /effort overlay without applying; same-tier re-pick is a no-op (ADR-0066 §6)', async () => {
-    const boundStore = createChatStore(
-      false,
-      { model: 'claude-opus-4-8', transcript: [] },
-      INLINE_TRANSCRIPT_BOUND,
-    );
-    boundStore.setReasoningEffort('high'); // the overlay opens highlighted on 'high'
-    const onSetEffort = vi.fn();
-    const sessionA = makeSession({ store: boundStore, onSetEffort });
+  it('in-Home chat: with no settings opener wired (or no port on the chat), /effort dispatches as before', async () => {
+    const noOpener = makeSession();
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
-      startChat: () => Promise.resolve(sessionA.session),
+      startChat: () =>
+        Promise.resolve({ ...noOpener.session, settings: effortSettings(['low', 'high']) }),
       homeStore,
       onExit: vi.fn(),
       onError: vi.fn(),
@@ -3201,784 +2605,206 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     type(c, 'hi');
     c.handleKey('', ENTER);
     await flush();
-    // Open via the palette, then Esc — closes the overlay without a setter call.
-    c.handleKey('/', {});
-    type(c, 'effort');
+    c.handlePaste('/effort');
     c.handleKey('', ENTER);
-    expect(c.getSnapshot().effortPicker).toBeDefined();
-    c.handleKey('', { escape: true });
-    expect(c.getSnapshot().effortPicker).toBeUndefined(); // Esc closed it
-    expect(onSetEffort).not.toHaveBeenCalled(); // …applying nothing
+    await flush();
+    expect(noOpener.lines).toContain('/effort');
 
-    // Re-open and Enter on the ALREADY-bound 'high' → a gentle no-op (no setter call), overlay closed.
-    c.handleKey('/', {});
-    type(c, 'effort');
-    c.handleKey('', ENTER);
-    c.handleKey('', ENTER); // Enter on the opening highlight (the bound 'high')
-    expect(onSetEffort).not.toHaveBeenCalled(); // same tier ⇒ no setter call
-    expect(c.getSnapshot().effortPicker).toBeUndefined(); // closed
+    const noPort = makeSession();
+    const openSettings = vi.fn();
+    const d = createHomeController({
+      startChat: () => Promise.resolve(noPort.session),
+      openSettings,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(d, 'hi');
+    d.handleKey('', ENTER);
+    await flush();
+    d.handlePaste('/effort');
+    d.handleKey('', ENTER);
+    await flush();
+    expect(openSettings).not.toHaveBeenCalled();
+    expect(noPort.lines).toContain('/effort');
   });
 });
 
-describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
-  const homeStore = { read: () => EMPTY, refresh: () => undefined } as unknown as HomeStore;
-  const SNAPSHOT: PermissionsSnapshot = {
-    project: {
-      ok: true,
-      rows: [
-        { id: 'a', label: 'npm, 1 argument', remembered: '2026-11-19 12:00Z' },
-        { id: 'b', label: 'node, 1 argument', remembered: '2026-11-18 09:30Z' },
-      ],
-    },
-    session: [{ argv: ['git', 'status'], text: 'git status', alsoRemembered: false }],
+describe('the lines the controller writes into a chat itself follow `plainGlyphs` (ADR-0145 §5)', () => {
+  const RUN = '3f2a9c1e-7b64-4d0a-9c11-5a2e8f6d0b13';
+  const EMPTY_HOME: HomeSnapshot = {
+    failedRuns: [],
+    recentSessions: [],
+    recentRuns: [],
+    recentAgents: [],
+    unreadableRuns: [],
+    totals: { attention: 0, sessions: 0, runs: 0 },
+    isEmpty: true,
   };
-  const portOf = (): { port: PermissionsPort; withdraw: ReturnType<typeof vi.fn> } => {
-    let current = SNAPSHOT;
-    const withdraw = vi.fn((entry: PermissionEntry): WithdrawAnswer => {
-      if (entry.kind === 'project' && current.project.ok)
-        current = {
-          ...current,
-          project: {
-            ok: true,
-            rows: current.project.rows.filter((row) => row.id !== entry.row.id),
-          },
-        };
-      return { tone: 'done', text: 'Withdrawn. Auto mode asks about it again.' };
-    });
-    return { port: { surface: 'chat', load: () => current, withdraw }, withdraw };
-  };
-  /** The monotonic clock the controller's timed keys run on: a test moves it by hand, as the interrupt keymap's tests do. */
-  const clock = (): { now: () => number; advance: (ms: number) => void } => {
-    let t = 10_000;
-    return { now: () => t, advance: (ms) => void (t += ms) };
-  };
-  const inChat = async (
-    made: ReturnType<typeof makeSession>,
-    now: () => number,
-  ): Promise<HomeController> => {
-    const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
-      startChat: () => Promise.resolve(made.session),
-      homeStore,
-      onExit: vi.fn(),
-      onError: vi.fn(),
-      now,
-    });
-    type(c, 'hi');
-    c.handleKey('', ENTER);
-    await flush();
-    return c;
-  };
-  const open = async (
-    made: ReturnType<typeof makeSession>,
-    t = clock(),
-  ): Promise<{ c: HomeController; sent: string[]; t: ReturnType<typeof clock> }> => {
-    const c = await inChat(made, t.now);
-    const before = made.lines.length;
-    type(c, '/permissions');
-    c.handleKey('', ENTER);
-    await flush();
-    return { c, sent: made.lines.slice(before), t };
-  };
-  /** The sheet has settled and the keyboard has been quiet, as after a person has read the list. */
-  const settle = (t: ReturnType<typeof clock>): void => t.advance(SHEET_SETTLE_MS + 100);
+  const homeStore: HomeStore = { read: () => EMPTY_HOME };
 
-  it('a typed bare /permissions opens the sheet over the chat instead of sending it, and clears the prompt', async () => {
-    const { port } = portOf();
-    const { c, sent } = await open(makeSession({ permissions: port }));
-    const sheet = permissionsSheetOf(c.getSnapshot().chatSheet);
-    expect(sheet?.surface).toBe('chat');
-    expect(sheet?.mode).toBe('ask');
-    expect(sent, 'nothing was dispatched').toEqual([]);
-    expect(c.getSnapshot().input.text).toBe('');
-  });
-
-  it('is dispatched like any command where the chat has no port', async () => {
-    const { c, sent } = await open(makeSession({}));
-    expect(c.getSnapshot().chatSheet).toBeUndefined();
-    expect(sent).toEqual(['/permissions']);
-  });
-
-  it('does not open when the port cannot be read: the chat says so', async () => {
-    const { port } = portOf();
-    const made = makeSession({
-      permissions: {
-        ...port,
-        load: () => {
-          throw new Error('boom');
+  it.each([
+    { plain: false, line: '✓ run 3f2a9c1e completed. Leave this chat to see it on the Home.' },
+    { plain: true, line: 'ok run 3f2a9c1e completed. Leave this chat to see it on the Home.' },
+  ])(
+    'a leg that ends behind the chat is announced in the form of the colour setting (plainGlyphs $plain)',
+    async ({ plain, line }) => {
+      const { session, store } = makeSession();
+      const note = vi.spyOn(store, 'note');
+      let host: RunHostSnapshot = {
+        launching: false,
+        active: { leg: 'start', runId: RUN, cancelling: false },
+        last: undefined,
+      };
+      const timers = new Map<number, { at: number; run: () => void }>();
+      let now = 0;
+      let nextTimer = 1;
+      const c = createHomeController({
+        ...(plain ? { plainGlyphs: true } : {}),
+        startChat: () => Promise.resolve(session),
+        homeStore,
+        hostedRuns: { snapshot: () => host, cancel: () => true, close: () => Promise.resolve() },
+        gateCards: {
+          list: () => [],
+          read: () => undefined,
+          resume: () => Promise.reject(new Error('nothing is answered here')),
         },
-      },
-    });
-    const { c } = await open(made);
-    expect(c.getSnapshot().chatSheet).toBeUndefined();
-    expect(made.store.getSnapshot().state.warnings).toContain('Could not read the permissions.');
-  });
-
-  it('owns every key while open: typing reaches no prompt, Esc closes, Ctrl+C closes without arming an exit', async () => {
-    const { port } = portOf();
-    const { c } = await open(makeSession({ permissions: port }));
-    type(c, 'hello');
-    expect(c.getSnapshot().input.text).toBe('');
-    c.handleKey('', { escape: true });
-    expect(c.getSnapshot().chatSheet).toBeUndefined();
-    type(c, '/permissions');
-    c.handleKey('', ENTER);
-    await flush();
-    expect(c.getSnapshot().chatSheet).toBeDefined();
-    c.handleKey('c', CTRL_C);
-    expect(c.getSnapshot().chatSheet).toBeUndefined();
-    expect(c.getSnapshot().interruptArmed, 'a Ctrl+C that closes an overlay arms nothing').toBe(
-      false,
-    );
-  });
-
-  it('`d` asks, Enter withdraws through the port by the row, and the sheet shows the answer, each once its moment has passed', async () => {
-    const { port, withdraw } = portOf();
-    const { c, t } = await open(makeSession({ permissions: port }));
-    settle(t);
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(true);
-    expect(withdraw).not.toHaveBeenCalled();
-    t.advance(SHEET_CONFIRM_DWELL_MS);
-    c.handleKey('', ENTER);
-    expect(withdraw).toHaveBeenCalledTimes(1);
-    expect(withdraw.mock.calls[0]?.[0]).toMatchObject({ kind: 'project', row: { id: 'a' } });
-    const sheet = permissionsSheetOf(c.getSnapshot().chatSheet);
-    expect(sheet?.armed).toBe(false);
-    expect(sheet?.message).toEqual({
-      tone: 'done',
-      text: 'Withdrawn. Auto mode asks about it again.',
-    });
-    expect(sheet?.snapshot.project.ok && sheet.snapshot.project.rows.map((row) => row.id)).toEqual([
-      'b',
-    ]);
-  });
-
-  it('SECURITY: keys typed ahead withdraw nothing, at any pace: `d` too soon says to wait, and once anything was typed `d` arms nothing until an arrow key', async () => {
-    const { port, withdraw } = portOf();
-    const { c, t } = await open(makeSession({ permissions: port }));
-    // `d` pressed at once: too soon, and it says so; it is not typing.
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(false);
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.message).toEqual({
-      tone: 'note',
-      text: 'Wait a moment, then press d.',
-    });
-    // The person goes on typing at a slow, human pace: "…build", a character every 380 ms, then a long pause, `d`, a pause, Enter.
-    for (const char of 'build') {
-      t.advance(380);
-      c.handleKey(char, {});
-    }
-    t.advance(2_000);
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed, 'typed text poisons arming').toBe(
-      false,
-    );
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.message?.text).toMatch(
-      /^Typed keys are ignored here/u,
-    );
-    t.advance(2_000);
-    c.handleKey('', ENTER);
-    expect(withdraw).not.toHaveBeenCalled();
-    // An arrow key says the person is choosing a row: after it `d` arms, and an Enter in the same breath is too early.
-    c.handleKey('', { downArrow: true });
-    c.handleKey('', { upArrow: true });
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(true);
-    c.handleKey('', ENTER);
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(false);
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.message?.text).toMatch(
-      /^Too early or too late for Enter/u,
-    );
-    expect(withdraw).not.toHaveBeenCalled();
-  });
-
-  it('the settle time runs from the moment the sheet opened on the controller’s own clock', async () => {
-    const { port } = portOf();
-    const { c, t } = await open(makeSession({ permissions: port }));
-    t.advance(SHEET_SETTLE_MS - 1);
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(false);
-    t.advance(1);
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(true);
-  });
-
-  it('an Enter long after the question is too late: a suspended or abandoned question is not answered by a stray Enter', async () => {
-    const { port, withdraw } = portOf();
-    const { c, t } = await open(makeSession({ permissions: port }));
-    settle(t);
-    c.handleKey('d', {});
-    t.advance(SHEET_CONFIRM_WINDOW_MS + 1);
-    c.handleKey('', ENTER);
-    expect(withdraw).not.toHaveBeenCalled();
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.message?.text).toMatch(
-      /^Too early or too late for Enter/u,
-    );
-  });
-
-  it('a paste or any other key drops the question and withdraws nothing', async () => {
-    const { port, withdraw } = portOf();
-    const { c, t } = await open(makeSession({ permissions: port }));
-    settle(t);
-    c.handleKey('d', {});
-    c.handlePaste('withdraw it all');
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(false);
-    expect(c.getSnapshot().input.text, 'the paste did not reach the prompt').toBe('');
-    // The paste was typing: `d` arms nothing until an arrow key.
-    settle(t);
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(false);
-    c.handleKey('', { downArrow: true });
-    c.handleKey('', { upArrow: true });
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(true);
-    t.advance(SHEET_CONFIRM_DWELL_MS);
-    c.handleKey('x', {});
-    c.handleKey('', ENTER);
-    expect(withdraw).not.toHaveBeenCalled();
-  });
-
-  it('does not arm in a terminal that cannot show the question, drops a question asked before it shrank, and says how to leave', async () => {
-    const { port, withdraw } = portOf();
-    const { c, t } = await open(makeSession({ permissions: port }));
-    settle(t);
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(true);
-    c.setTerminalSize(60, 20); // shrinks while the question is up
-    t.advance(SHEET_CONFIRM_DWELL_MS);
-    c.handleKey('', ENTER);
-    expect(
-      withdraw,
-      'Enter withdraws nothing in a frame that hides the question',
-    ).not.toHaveBeenCalled();
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(false);
-    settle(t);
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(false);
-    c.setTerminalSize(80, 24);
-    // The Enter and the `d` above were keys typed into a sheet: an arrow key says the person is choosing a row again.
-    c.handleKey('', { downArrow: true });
-    c.handleKey('', { upArrow: true });
-    settle(t);
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(true);
-  });
-
-  it('survives a port that throws on a withdrawal: nothing changed, the sheet stays open', async () => {
-    const { port } = portOf();
-    const { c, t } = await open(
-      makeSession({
-        permissions: {
-          ...port,
-          withdraw: () => {
-            throw new Error('boom');
-          },
+        schedule: (run, delayMs) => {
+          const id = nextTimer;
+          nextTimer += 1;
+          timers.set(id, { at: now + delayMs, run });
+          return () => {
+            timers.delete(id);
+          };
         },
-      }),
-    );
-    settle(t);
-    c.handleKey('d', {});
-    t.advance(SHEET_CONFIRM_DWELL_MS);
-    c.handleKey('', ENTER);
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.message).toEqual({
-      tone: 'failed',
-      text: 'Could not withdraw that row; nothing changed.',
-    });
-  });
-
-  it('closes, and says so, when the list cannot be read again after a withdrawal', async () => {
-    const { port } = portOf();
-    let reads = 0;
-    const made = makeSession({
-      permissions: {
-        ...port,
-        load: () => {
-          reads += 1;
-          if (reads > 1) throw new Error('boom');
-          return SNAPSHOT;
-        },
-      },
-    });
-    const { c, t } = await open(made);
-    settle(t);
-    c.handleKey('d', {});
-    t.advance(SHEET_CONFIRM_DWELL_MS);
-    c.handleKey('', ENTER);
-    expect(c.getSnapshot().chatSheet).toBeUndefined();
-    expect(made.store.getSnapshot().state.warnings.join(' ')).toContain(
-      'Could not read the permissions again.',
-    );
-  });
-
-  it('gives way to a card that arrives while it is open: the sheet closes and the key goes on to the card', async () => {
-    const { port, withdraw } = portOf();
-    const made = makeSession({ permissions: port });
-    const { c, t } = await open(made);
-    settle(t);
-    c.handleKey('d', {});
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(true);
-    void made.store.requestApproval(
-      { toolId: 'write_file', action: 'fs_write', preview: { path: 'x' } },
-      true,
-    );
-    t.advance(SHEET_CONFIRM_DWELL_MS);
-    c.handleKey('', ENTER);
-    expect(c.getSnapshot().chatSheet).toBeUndefined();
-    expect(withdraw, 'the Enter was never the sheet’s').not.toHaveBeenCalled();
-  });
-});
-
-describe('the /permissions tab on the bare Home (ADR-0137 §3, ADR-0140 §3)', () => {
-  const homeStore = { read: () => EMPTY, refresh: () => undefined } as unknown as HomeStore;
-  const SNAPSHOT: PermissionsSnapshot = {
-    project: {
-      ok: true,
-      rows: [
-        { id: 'a', label: 'npm, 1 argument', remembered: '2026-11-19 12:00Z' },
-        { id: 'b', label: 'node, 1 argument', remembered: '2026-11-18 09:30Z' },
-      ],
-    },
-    // the bare Home has no chat, so no session list at all
-    session: undefined,
-  };
-  const portOf = (): { port: PermissionsPort; withdraw: ReturnType<typeof vi.fn> } => {
-    let current = SNAPSHOT;
-    const withdraw = vi.fn((entry: PermissionEntry): WithdrawAnswer => {
-      if (entry.kind === 'project' && current.project.ok)
-        current = {
-          ...current,
-          project: {
-            ok: true,
-            rows: current.project.rows.filter((row) => row.id !== entry.row.id),
-          },
-        };
-      return { tone: 'done', text: 'Withdrawn. Auto mode asks about it again.' };
-    });
-    return { port: { surface: 'project', load: () => current, withdraw }, withdraw };
-  };
-  const clock = (): { now: () => number; advance: (ms: number) => void } => {
-    let t = 10_000;
-    return { now: () => t, advance: (ms) => void (t += ms) };
-  };
-  const home = (
-    port: PermissionsPort | undefined,
-    t = clock(),
-    extra: Partial<Parameters<typeof createHomeController>[0]> = {},
-  ): { c: HomeController; t: ReturnType<typeof clock>; startChat: ReturnType<typeof vi.fn> } => {
-    const startChat = vi.fn(() => Promise.resolve(makeSession().session));
-    const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
-      startChat,
-      homeStore,
-      onExit: vi.fn(),
-      onError: vi.fn(),
-      now: t.now,
-      ...(port === undefined ? {} : { permissions: port }),
-      ...extra,
-    });
-    return { c, t, startChat };
-  };
-  /** The sheet the Permissions tab holds, when the tab host is open on that tab (the bare Home's `/permissions` is that tab, ADR-0140 §3). */
-  const sheetOf = (c: HomeController): PermissionsSheetState | undefined => {
-    const screen = c.getSnapshot().screen;
-    return screen?.kind === 'tab-host' ? screen.host.sheet : undefined;
-  };
-  const openSheet = async (c: HomeController): Promise<void> => {
-    type(c, '/permissions');
-    c.handleKey('', ENTER);
-    await flush();
-  };
-
-  it('a typed bare /permissions opens the Permissions tab instead of starting a chat, with the project list only', async () => {
-    const { port } = portOf();
-    const { c, startChat } = home(port);
-    await openSheet(c);
-    const snap = c.getSnapshot();
-    expect(snap.mode).toBe('home');
-    expect(snap.screen?.kind, 'a screen of the slot, not an overlay').toBe('tab-host');
-    expect(snap.chatSheet, 'the chat’s overlay is not the bare Home’s').toBeUndefined();
-    expect(sheetOf(c)?.surface).toBe('project');
-    expect(sheetOf(c)?.mode, 'no chat, no mode').toBeUndefined();
-    expect(snap.input.text).toBe('');
-    expect(startChat, 'nothing was sent as a message').not.toHaveBeenCalled();
-    expect(sheetEntries(sheetOf(c)?.snapshot ?? SNAPSHOT)).toHaveLength(2);
-  });
-
-  it('the palette’s /permissions opens it too, and an argument is refused with a notice and opens nothing', async () => {
-    const { port } = portOf();
-    const { c } = home(port);
-    c.handleKey('/', {});
-    for (const ch of 'permissions') c.handleKey(ch, {});
-    c.handleKey('', ENTER);
-    await flush();
-    expect(sheetOf(c)?.surface).toBe('project');
-    c.handleKey('', { escape: true });
-    // A `/` typed at an empty prompt opens the palette, so a line with an argument reaches the Home as a paste.
-    c.handlePaste('/permissions now');
-    c.handleKey('', ENTER);
-    await flush();
-    expect(sheetOf(c)).toBeUndefined();
-    expect(c.getSnapshot().notice).toBe('/permissions accepts no arguments.');
-  });
-
-  it('says so, and opens nothing, where the Home has no port', async () => {
-    const { c, startChat } = home(undefined);
-    await openSheet(c);
-    expect(sheetOf(c)).toBeUndefined();
-    expect(c.getSnapshot().notice).toBe('Remembered commands are not available here.');
-    expect(startChat).not.toHaveBeenCalled();
-  });
-
-  it('does not open when the port cannot be read: the Home says so', async () => {
-    const { port } = portOf();
-    const { c } = home({
-      ...port,
-      load: () => {
-        throw new Error('boom');
-      },
-    });
-    await openSheet(c);
-    expect(sheetOf(c)).toBeUndefined();
-    expect(c.getSnapshot().notice).toBe('Could not read the permissions.');
-  });
-
-  it('owns every key while open: typing reaches no prompt, Esc closes, Ctrl+C closes without arming an exit', async () => {
-    const { port } = portOf();
-    const { c } = home(port);
-    await openSheet(c);
-    type(c, 'hello');
-    expect(c.getSnapshot().input.text).toBe('');
-    c.handleKey('', { escape: true });
-    expect(sheetOf(c)).toBeUndefined();
-    await openSheet(c);
-    c.handleKey('c', { ctrl: true });
-    expect(sheetOf(c)).toBeUndefined();
-    expect(c.getSnapshot().interruptArmed, 'a Ctrl+C that closes an overlay arms nothing').toBe(
-      false,
-    );
-    expect(c.getSnapshot().mode).toBe('home');
-  });
-
-  it('`d` asks and Enter withdraws through the port by the row, and the answer is shown; the clock rules apply here as in a chat', async () => {
-    const { port, withdraw } = portOf();
-    const { c, t } = home(port);
-    await openSheet(c);
-    t.advance(SHEET_SETTLE_MS + 100);
-    c.handleKey('d', {});
-    expect(sheetOf(c)?.armed).toBe(true);
-    c.handleKey('', ENTER); // at once: too early
-    expect(withdraw).not.toHaveBeenCalled();
-    t.advance(SHEET_SETTLE_MS + 100);
-    c.handleKey('d', {});
-    t.advance(SHEET_CONFIRM_DWELL_MS);
-    c.handleKey('', ENTER);
-    expect(withdraw).toHaveBeenCalledTimes(1);
-    expect(withdraw.mock.calls[0]?.[0]).toMatchObject({ kind: 'project', row: { id: 'a' } });
-    expect(sheetOf(c)?.message).toEqual({
-      tone: 'done',
-      text: 'Withdrawn. Auto mode asks about it again.',
-    });
-  });
-
-  it('a pasted or leading-space /permissions reaches the Home as a line, not a palette: it opens the sheet; with an argument or a longer word it does not', async () => {
-    const { port } = portOf();
-    const { c } = home(port);
-    c.handlePaste('/permissions');
-    c.handleKey('', ENTER);
-    await flush();
-    expect(sheetOf(c)?.surface).toBe('project');
-    c.handleKey('', { escape: true });
-    c.handlePaste('/permissionsx');
-    c.handleKey('', ENTER);
-    await flush();
-    expect(sheetOf(c), 'a longer word is another command').toBeUndefined();
-    expect(c.getSnapshot().notice).toBe('Unknown command. Did you mean /permissions?');
-  });
-
-  it('with no port a pasted /permissions says so and starts no chat', async () => {
-    const { c, startChat } = home(undefined);
-    c.handlePaste('/permissions');
-    c.handleKey('', ENTER);
-    await flush();
-    expect(c.getSnapshot().notice).toBe('Remembered commands are not available here.');
-    expect(startChat).not.toHaveBeenCalled();
-  });
-
-  it('inside a chat the CHAT’s port is the one a withdrawal goes through, even with the Home’s own port wired (the real product wires both)', async () => {
-    const homePort = portOf();
-    const chatWithdraw = vi.fn(
-      (): WithdrawAnswer => ({ tone: 'done', text: 'Session approval withdrawn.' }),
-    );
-    const chatPort: PermissionsPort = {
-      surface: 'chat',
-      load: () => ({
-        project: { ok: true, rows: [] },
-        session: [{ argv: ['git', 'status'], text: 'git status', alsoRemembered: false }],
-      }),
-      withdraw: chatWithdraw,
-    };
-    const t = clock();
-    const { c } = home(homePort.port, t, {
-      startChat: () => Promise.resolve(makeSession({ permissions: chatPort }).session),
-    });
-    type(c, 'hi');
-    c.handleKey('', ENTER);
-    await flush();
-    c.handlePaste('/permissions');
-    c.handleKey('', ENTER);
-    await flush();
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.surface).toBe('chat');
-    t.advance(SHEET_SETTLE_MS + 100);
-    c.handleKey('d', {});
-    t.advance(SHEET_CONFIRM_DWELL_MS);
-    c.handleKey('', ENTER);
-    expect(chatWithdraw, 'the chat’s port').toHaveBeenCalledTimes(1);
-    expect(homePort.withdraw, 'never the Home’s project-only one').not.toHaveBeenCalled();
-  });
-
-  it('a pasted /permissions inside a chat opens the CHAT’s sheet (both lists), never the Home’s project-only one', async () => {
-    const { port } = portOf();
-    const chatPort: PermissionsPort = {
-      surface: 'chat',
-      load: () => ({ ...SNAPSHOT, session: [] }),
-      withdraw: () => ({ tone: 'done', text: 'Withdrawn.' }),
-    };
-    const { c } = home(port, clock(), {
-      startChat: () => Promise.resolve(makeSession({ permissions: chatPort }).session),
-    });
-    type(c, 'hi');
-    c.handleKey('', ENTER);
-    await flush();
-    expect(c.getSnapshot().mode).toBe('chat');
-    c.handlePaste('/permissions');
-    c.handleKey('', ENTER);
-    await flush();
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.surface).toBe('chat');
-    expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.snapshot.session).toEqual([]);
-  });
-
-  it('SECURITY: keys typed ahead after the command withdraw nothing on the Home either, at any pace', async () => {
-    const { port, withdraw } = portOf();
-    const { c, t } = home(port);
-    await openSheet(c);
-    for (const ch of 'run the build') {
-      c.handleKey(ch, {});
-      t.advance(120);
-    }
-    c.handleKey('d', {});
-    t.advance(120);
-    c.handleKey('', ENTER);
-    t.advance(2_000);
-    c.handleKey('d', {});
-    t.advance(SHEET_CONFIRM_DWELL_MS + 50);
-    c.handleKey('', ENTER);
-    expect(withdraw).not.toHaveBeenCalled();
-  });
-
-  it('a port that throws on a withdrawal leaves the sheet open with a failure; a list that cannot be read again closes it with a notice', async () => {
-    const { port } = portOf();
-    const t = clock();
-    const { c } = home(
-      {
-        ...port,
-        withdraw: () => {
-          throw new Error('boom');
-        },
-      },
-      t,
-    );
-    await openSheet(c);
-    t.advance(SHEET_SETTLE_MS + 100);
-    c.handleKey('d', {});
-    t.advance(SHEET_CONFIRM_DWELL_MS);
-    c.handleKey('', ENTER);
-    expect(sheetOf(c)?.message).toEqual({
-      tone: 'failed',
-      text: 'Could not withdraw that row; nothing changed.',
-    });
-    // now the list cannot be read again after a withdrawal
-    let loads = 0;
-    const t2 = clock();
-    const { c: c2 } = home(
-      {
-        ...port,
-        load: () => {
-          loads += 1;
-          if (loads > 1) throw new Error('boom');
-          return SNAPSHOT;
-        },
-      },
-      t2,
-    );
-    await openSheet(c2);
-    t2.advance(SHEET_SETTLE_MS + 100);
-    c2.handleKey('d', {});
-    t2.advance(SHEET_CONFIRM_DWELL_MS);
-    c2.handleKey('', ENTER);
-    expect(sheetOf(c2)).toBeUndefined();
-    expect(c2.getSnapshot().notice).toMatch(/Could not read the permissions again\.$/u);
-  });
-
-  it('a paste is typing, not input for the prompt behind the sheet, and drops a waiting question', async () => {
-    const { port } = portOf();
-    const { c, t } = home(port);
-    await openSheet(c);
-    t.advance(SHEET_SETTLE_MS + 100);
-    c.handleKey('d', {});
-    expect(sheetOf(c)?.armed).toBe(true);
-    c.handlePaste('pasted words');
-    expect(sheetOf(c)?.armed).toBe(false);
-    expect(c.getSnapshot().input.text).toBe('');
-  });
-
-  it('is told the terminal size, so a withdrawal is not asked for below the floor', async () => {
-    const { port } = portOf();
-    const { c, t } = home(port);
-    await openSheet(c);
-    c.setTerminalSize(60, 20);
-    t.advance(SHEET_SETTLE_MS + 100);
-    c.handleKey('d', {});
-    expect(sheetOf(c)?.armed).toBe(false);
-  });
-
-  describe('opened as the run’s whole job: a bare `relavium permissions` (ADR-0137 §3)', () => {
-    it('opens the sheet at once, and closing it with Esc ends the Home with success instead of leaving it behind', () => {
-      const { port } = portOf();
-      const onExit = vi.fn();
-      const { c } = home(port, clock(), { onExit });
-      c.openPermissionsAsCommand();
-      expect(sheetOf(c)?.surface).toBe('project');
-      expect(onExit).not.toHaveBeenCalled();
-      c.handleKey('', { escape: true });
-      expect(onExit).toHaveBeenCalledTimes(1);
-      // The last frame the run leaves (the scrollback of the inline renderer) is the sheet's: a closed state with the Home's prompt is
-      // never published on the way out.
-      expect(sheetOf(c)?.surface, 'the closed state is not published').toBe('project');
-    });
-
-    it('Ctrl+C closes it and ends the run too, once', () => {
-      const { port } = portOf();
-      const onExit = vi.fn();
-      const { c } = home(port, clock(), { onExit });
-      c.openPermissionsAsCommand();
-      c.handleKey('c', { ctrl: true });
-      expect(onExit).toHaveBeenCalledTimes(1);
-      c.handleKey('c', { ctrl: true });
-      expect(onExit, 'idempotent').toHaveBeenCalledTimes(1);
-    });
-
-    it('keeps the run while a question is up: the first Esc only drops the question, the second closes and ends', () => {
-      const { port } = portOf();
-      const t = clock();
-      const onExit = vi.fn();
-      const { c } = home(port, t, { onExit });
-      c.openPermissionsAsCommand();
-      t.advance(SHEET_SETTLE_MS + 100);
-      c.handleKey('d', {});
-      expect(sheetOf(c)?.armed).toBe(true);
-      c.handleKey('', { escape: true });
-      expect(sheetOf(c)?.armed).toBe(false);
-      expect(onExit).not.toHaveBeenCalled();
-      c.handleKey('', { escape: true });
-      expect(onExit).toHaveBeenCalledTimes(1);
-    });
-
-    it('does not end the run when the sheet closed because the list could not be read again: the Home stays, and says why', async () => {
-      const { port } = portOf();
-      let loads = 0;
-      const t = clock();
-      const onExit = vi.fn();
-      const { c } = home(
-        {
-          ...port,
-          load: () => {
-            loads += 1;
-            if (loads > 1) throw new Error('boom');
-            return SNAPSHOT;
-          },
-        },
-        t,
-        { onExit },
-      );
-      c.openPermissionsAsCommand();
-      t.advance(SHEET_SETTLE_MS + 100);
-      c.handleKey('d', {});
-      t.advance(SHEET_CONFIRM_DWELL_MS);
-      c.handleKey('', ENTER);
-      expect(sheetOf(c)).toBeUndefined();
-      expect(c.getSnapshot().notice).toBe(
-        'Withdrawn. Auto mode asks about it again. Could not read the permissions again.',
-      );
-      expect(onExit, 'the person must be able to read the note').not.toHaveBeenCalled();
-      // The command is over: a sheet opened later is an ordinary one, and closing it returns to the Home instead of ending the run.
-      loads = 0;
-      await openSheet(c);
-      expect(sheetOf(c)).toBeDefined();
-      c.handleKey('', { escape: true });
-      expect(sheetOf(c)).toBeUndefined();
-      expect(
-        onExit,
-        'the flag did not outlive the sheet that closed on a fault',
-      ).not.toHaveBeenCalled();
-    });
-
-    it('stays in the Home with the reason when the sheet cannot open, and a later typed /permissions then closes without ending the run', async () => {
-      const { port } = portOf();
-      const onExit = vi.fn();
-      let fail = true;
-      const { c } = home(
-        {
-          ...port,
-          load: () => {
-            if (fail) throw new Error('boom');
-            return SNAPSHOT;
-          },
-        },
-        clock(),
-        { onExit },
-      );
-      c.openPermissionsAsCommand();
-      expect(sheetOf(c)).toBeUndefined();
-      expect(c.getSnapshot().notice).toBe('Could not read the permissions.');
-      fail = false;
-      await openSheet(c);
-      c.handleKey('', { escape: true });
-      expect(sheetOf(c)).toBeUndefined();
-      expect(onExit, 'the flag did not leak from the failed open').not.toHaveBeenCalled();
-    });
-
-    it('does nothing where the Home has no port: no sheet, no notice, no exit', () => {
-      const onExit = vi.fn();
-      const { c } = home(undefined, clock(), { onExit });
-      c.openPermissionsAsCommand();
-      expect(sheetOf(c)).toBeUndefined();
-      expect(onExit).not.toHaveBeenCalled();
-    });
-
-    it('does not open from anywhere but the Home: a chat being built keeps its place', () => {
-      const { port } = portOf();
-      const onExit = vi.fn();
-      const { c } = home(port, clock(), {
-        onExit,
-        startChat: () => new Promise<never>(() => undefined), // the build never finishes: the Home stays in `loading`
+        now: () => now,
+        onExit: vi.fn(),
+        onError: vi.fn(),
       });
-      type(c, 'hello');
+      // the run's view is opened once and left, so the poll that watches the live leg is running
+      expect(c.openScreen('run-view', { runId: RUN })).toBe(true);
+      c.closeScreen();
+      type(c, 'hi');
       c.handleKey('', ENTER);
-      expect(c.getSnapshot().mode).toBe('loading');
-      c.openPermissionsAsCommand();
-      expect(sheetOf(c)).toBeUndefined();
-      expect(onExit).not.toHaveBeenCalled();
-    });
+      await flush();
+      expect(c.getSnapshot().mode).toBe('chat');
 
-    it('an ordinary typed /permissions closes back to the Home and ends nothing', async () => {
-      const { port } = portOf();
-      const onExit = vi.fn();
-      const { c } = home(port, clock(), { onExit });
-      await openSheet(c);
-      c.handleKey('', { escape: true });
-      expect(c.getSnapshot().mode).toBe('home');
-      expect(onExit).not.toHaveBeenCalled();
+      host = {
+        launching: false,
+        active: undefined,
+        last: {
+          leg: 'start',
+          runId: RUN,
+          terminal: {
+            disposition: 'completed',
+            safety: undefined,
+            headline: 'h',
+            remedy: undefined,
+          },
+          handedOff: false,
+          retirement: 'retired',
+          fault: undefined,
+        },
+      };
+      now += HOSTED_RUN_POLL_MS;
+      for (const [id, timer] of [...timers.entries()]) {
+        if (timer.at <= now) {
+          timers.delete(id);
+          timer.run();
+        }
+      }
+      await flush();
+      // A fact about the session's world: it stays until `/clear` (MVP-11 unit 7, round 1: SE73).
+      expect(note).toHaveBeenCalledWith(line, 'session');
+      await c.teardownActive();
+    },
+  );
+
+  it.each([
+    { plain: false, mark: '⇄' },
+    { plain: true, mark: '<->' },
+  ])(
+    'the model-switch marker of a reseat is drawn in the form of the colour setting (plainGlyphs $plain)',
+    async ({ plain, mark }) => {
+      const sessionA = makeSession({ sessionId: 'sess-A', onSetEffort: vi.fn() });
+      sessionA.session.store.appendUser('what is 2+2');
+      const sessionB = makeSession({ sessionId: 'sess-A' });
+      const notice = vi.spyOn(sessionB.session.store, 'notice');
+      const { port } = makeModelsPort({
+        entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' })],
+      });
+      // The `/models` popup's `This chat` reaches the Home's reseat through the chat's member the controller builds (`openSettings`).
+      let opened: SettingsPort | undefined;
+      const c = createHomeController({
+        ...(plain ? { plainGlyphs: true } : {}),
+        startChat: () =>
+          Promise.resolve({
+            ...sessionA.session,
+            settings: { surface: 'home-chat', announce: vi.fn() },
+          }),
+        reseatChat: () => Promise.resolve(sessionB.session),
+        models: port,
+        openSettings: ({ chat }) => {
+          opened = chat;
+        },
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
+      type(c, 'hi');
+      c.handleKey('', ENTER);
+      await flush();
+      c.handleKey('/', {});
+      type(c, 'models');
+      c.handleKey('', ENTER);
+      opened?.models?.switchModel?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' }); // a live reseat
+      await flush();
+
+      const marker = notice.mock.calls
+        .map((call) => call[0])
+        .find((line) => line.includes('model changed'));
+      expect(marker, 'the reseat wrote its marker into the new transcript').toBeDefined();
+      expect(marker?.startsWith(`${mark} model changed`)).toBe(true);
+      if (plain) expect(marker).not.toContain('⇄');
+      else expect(marker).not.toContain('<->');
+      await c.teardownActive();
+    },
+  );
+
+  it('the model-switch notice of a reseat names the model switch as its own lead, so the transcript keeps the host’s `⇄` and blanks any other (ADR-0145 §6)', async () => {
+    const sessionA = makeSession({ sessionId: 'sess-A', onSetEffort: vi.fn() });
+    sessionA.session.store.appendUser('what is 2+2');
+    const sessionB = makeSession({ sessionId: 'sess-A' });
+    const notice = vi.spyOn(sessionB.session.store, 'notice');
+    const { port } = makeModelsPort({
+      entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' })],
     });
+    let opened: SettingsPort | undefined;
+    const c = createHomeController({
+      startChat: () =>
+        Promise.resolve({
+          ...sessionA.session,
+          settings: { surface: 'home-chat', announce: vi.fn() },
+        }),
+      reseatChat: () => Promise.resolve(sessionB.session),
+      models: port,
+      openSettings: ({ chat }) => {
+        opened = chat;
+      },
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handleKey('/', {});
+    type(c, 'models');
+    c.handleKey('', ENTER);
+    opened?.models?.switchModel?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
+    await flush();
+    const call = notice.mock.calls.find(([line]) => line.includes('model changed'));
+    expect(call?.[1]).toBe('modelSwitch');
+    await c.teardownActive();
   });
 });

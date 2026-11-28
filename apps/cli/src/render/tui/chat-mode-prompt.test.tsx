@@ -234,7 +234,7 @@ describe('mounted standalone chat mode prompt', () => {
     );
     f.input.push('\r\r');
     await f.rendered();
-    expect(f.channel.ui.getSnapshot().message).toContain('without approval');
+    expect(f.channel.ui.getSnapshot().message).toContain('without asking');
     expect(f.channel.ui.getSnapshot().options[f.channel.ui.getSnapshot().selected]?.value).toBe(
       'no',
     );

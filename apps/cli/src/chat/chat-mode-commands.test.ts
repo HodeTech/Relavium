@@ -52,6 +52,7 @@ function rig(
   });
   const remembered = new Set((options.remembered ?? []).map((argv) => JSON.stringify(argv)));
   const policy = buildTurnPolicy(mode, {
+    commandPaths: undefined,
     governed: new Set(['run_command']),
     prompt: options.canAsk === false ? nonInteractiveApprovalPrompt('here') : prompt,
     cache,
@@ -221,6 +222,7 @@ describe('auto has a hard edge: only a command the OPERATOR pre-approved runs wi
     it('a write accepted in accept-edits counts for a later auto turn of the same session', async () => {
       const cache = new ApprovalCache();
       const edits = buildTurnPolicy('accept-edits', {
+        commandPaths: undefined,
         governed: new Set(['run_command', 'write_file']),
         prompt: vi.fn<ApprovalPrompt>(() => Promise.resolve({ outcome: 'reject' })),
         cache,
@@ -387,6 +389,7 @@ describe('the command card: facts, offers and the Remember answer (ADR-0118 §1,
     const notes: string[] = [];
     const prompt = vi.fn<ApprovalPrompt>(() => Promise.resolve(options.answer));
     const policy = buildTurnPolicy(options.mode ?? 'ask', {
+      commandPaths: undefined,
       governed: new Set(['run_command']),
       prompt,
       cache,
@@ -607,6 +610,7 @@ describe('the command card hook, round 1 test review: what reaches the prompt an
     const cache = new ApprovalCache();
     const prompt = vi.fn<ApprovalPrompt>(() => Promise.resolve(answer));
     const policy = buildTurnPolicy('ask', {
+      commandPaths: undefined,
       governed: new Set(['run_command']),
       prompt,
       cache,
@@ -690,7 +694,12 @@ describe('the command card hook, round 1 test review: what reaches the prompt an
     const prompt = vi.fn<ApprovalPrompt>(() =>
       Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'remember' }),
     );
-    const policy = buildTurnPolicy('ask', { governed: new Set(['fs_write']), prompt, cache });
+    const policy = buildTurnPolicy('ask', {
+      governed: new Set(['fs_write']),
+      prompt,
+      cache,
+      commandPaths: undefined,
+    });
     const decision = await policy.confirm!(
       {
         toolId: 'write_file',
@@ -709,6 +718,7 @@ describe('the command card hook, round 1 test review: what reaches the prompt an
     const notes: string[] = [];
     const cache = new ApprovalCache();
     const policy = buildTurnPolicy('ask', {
+      commandPaths: undefined,
       governed: new Set(['run_command']),
       prompt: () => Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'remember' }),
       cache,
@@ -752,6 +762,7 @@ describe('a remembered grant that a recorded file write outdated, a listed comma
       Promise.resolve(options.answer ?? { outcome: 'approve', scope: 'once' }),
     );
     const policy = buildTurnPolicy(mode, {
+      commandPaths: undefined,
       governed: new Set(['run_command', 'fs_write']),
       prompt,
       cache,
@@ -897,6 +908,7 @@ describe('a Remember answered while the call is being cancelled leaves no grant 
     });
     const remember = vi.fn(options.remember);
     const policy = buildTurnPolicy('ask', {
+      commandPaths: undefined,
       governed: new Set(['run_command']),
       prompt,
       cache,

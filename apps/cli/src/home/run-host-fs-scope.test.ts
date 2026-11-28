@@ -11,7 +11,7 @@
  * name a tier in the project's own config and read it back from the same place, so the default cannot be what an unreachable config
  * layer happened to yield.
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -79,8 +79,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** A host for the project, recording the options of every engine it builds. */
-function rig() {
+/** A host for the project (spelled `cwd`), recording the options of every engine it builds. */
+function rig(cwd: string = project) {
   const f = invocationFixture();
   const engineOptions: (BuildEngineOptions | undefined)[] = [];
   const host = new RunHost({
@@ -89,7 +89,7 @@ function rig() {
     global: {
       json: false,
       color: false,
-      cwd: project,
+      cwd,
       configPath: undefined,
       verbosity: 'normal',
     },
@@ -216,5 +216,19 @@ describe('a start bound to the file scope a person confirmed (P1-7)', () => {
       r.host.start({ workflow: r.path, rawInputs: { n: '3' }, expectedFsScope: 'sandboxed' }),
     );
     expect(bound.terminal.disposition).toBe('paused');
+  });
+});
+
+describe('both legs of a hosted run work in the directory as the Home spelled it (MVP-11 unit 7, round 2)', () => {
+  it('through a symlink: the start and the resume are jailed to that spelling, and the run records the canonical root', async () => {
+    const link = join(root, 'project-link');
+    symlinkSync(project, link, 'junction');
+    const r = rig(link);
+    await startThenResume(r);
+    // The filesystem floor keeps the spelling a leg was admitted with (ADR-0105); only the run's identity is canonical.
+    expect(r.engineOptions.map((options) => options?.toolEnv?.workspaceDir)).toEqual([link, link]);
+    expect(client.sqlite.prepare('SELECT project_root AS root FROM runs').all()).toEqual([
+      { root: realpathSync.native(project) },
+    ]);
   });
 });

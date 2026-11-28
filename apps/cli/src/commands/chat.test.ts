@@ -37,6 +37,7 @@ import { render } from 'ink';
 import { createElement } from 'react';
 
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
+import { DEFAULT_CHAT_MODEL } from '../chat/default-agent.js';
 import { createCommandGrantStore } from '../permissions/command-grants.js';
 import { NOT_WIRED_MARK } from '../render/tui/agent-sheet.js';
 import type { DoctorProbes } from '../chat/doctor.js';
@@ -680,7 +681,7 @@ describe('chatCommand', () => {
     await chatCommand({ agent: undefined }, d);
     const out = err();
     expect(out).toContain('doctor: all checks passed');
-    expect(out).toContain('✓ OS keychain: reachable');
+    expect(out).toContain('ok · OS keychain: reachable');
     expect(out).not.toContain('anthropic'); // the fast tier never ran the deep provider probe
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2); // read-only: the session continued
   });
@@ -691,8 +692,8 @@ describe('chatCommand', () => {
     });
     await chatCommand({ agent: undefined }, d);
     const out = err();
-    expect(out).toContain('✓ anthropic: key works'); // the deep provider probe ran
-    expect(out).toContain('⚠ MCP servers: none configured'); // the deep MCP probe ran
+    expect(out).toContain('ok · anthropic: key works'); // the deep provider probe ran
+    expect(out).toContain('! warning · MCP servers: none configured'); // the deep MCP probe ran
   });
 
   it('rejects an unknown flag on an arg-taking command (/doctor --bogus)', async () => {
@@ -1155,7 +1156,7 @@ describe('chatCommand', () => {
       out,
       'the typed forms are gone: the dispatch rejects the token and says where the job went',
     ).toContain(
-      "/permissions: unknown argument '--revoke'. Open /permissions and press d on a row to withdraw it.",
+      "/permissions: unknown argument '--revoke'. Open /permissions and press [d] on a row to withdraw it.",
     );
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2); // read-only: only the 'hello' turn persisted
   });
@@ -1202,8 +1203,9 @@ describe('chatCommand', () => {
           try {
             ctx.startSession();
             await ctx.onActivated?.(() => !ctx.shouldStop());
-            const port = ctx.permissions;
-            if (port === undefined) throw new Error('an interactive chat opens the sheet');
+            const port = ctx.settings?.permissions?.port;
+            if (port === undefined)
+              throw new Error('an interactive chat opens the /permissions popup');
             expect(port.surface).toBe('chat');
             const turn = ctx.processLine('Run node --version');
             await vi.waitFor(() => expect(ctx.store.getSnapshot().approval).toBeDefined());
@@ -1300,8 +1302,9 @@ describe('chatCommand', () => {
           try {
             ctx.startSession();
             await ctx.onActivated?.(() => !ctx.shouldStop());
-            const port = ctx.permissions;
-            if (port === undefined) throw new Error('an interactive chat opens the sheet');
+            const port = ctx.settings?.permissions?.port;
+            if (port === undefined)
+              throw new Error('an interactive chat opens the /permissions popup');
             const turn = ctx.processLine('Run node --version');
             await vi.waitFor(() => expect(ctx.store.getSnapshot().approval).toBeDefined());
             ctx.store.answerApproval({ outcome: 'approve', scope: 'remember' });
@@ -1336,7 +1339,7 @@ describe('chatCommand', () => {
     const { d, err } = deps(['/permissions now please', '/exit'], [textTurn('hi')]);
     await chatCommand({ agent: undefined }, d);
     expect(err()).toContain(
-      "/permissions: unknown argument 'now'. Open /permissions and press d on a row to withdraw it.",
+      "/permissions: unknown argument 'now'. Open /permissions and press [d] on a row to withdraw it.",
     );
   });
 
@@ -1351,7 +1354,8 @@ describe('chatCommand', () => {
     expect(out).toContain('Agent · relavium-chat');
     expect(out).toMatch(/Name\s+Relavium chat · the built-in chat agent/u);
     expect(out).toMatch(/Provider\s+anthropic/u);
-    expect(out).toMatch(/Model\s+claude-sonnet-4-6/u);
+    // The zero-config model is the starter table's Anthropic entry since MVP-11 unit 6 (ADR-0146 §6, ruled: Haiku 5.5).
+    expect(out).toMatch(new RegExp(`Model\\s+${DEFAULT_CHAT_MODEL}`, 'u'));
     // A headless chat has no question card, so the grant's `ask_user` is not offered and the notice says so (the count leads).
     expect(out).toMatch(/Tools\s+\d+ of 9 offered: read_file, list_directory/u);
     expect(out).toContain(`ask_user ${NOT_WIRED_MARK}`);
@@ -1487,14 +1491,14 @@ describe('chatCommand', () => {
     expect(out()).not.toContain('Agent ·');
     expect(out()).not.toContain('System prompt'); // the model rides `session:started`, so a field label is the leak test
     expect(err()).toContain('Agent · relavium-chat');
-    expect(err()).toMatch(/Model\s+claude-sonnet-4-6/u);
+    expect(err()).toMatch(new RegExp(`Model\\s+${DEFAULT_CHAT_MODEL}`, 'u'));
   });
 
   it.each([
     {
       label: 'an interactive chat hands the driver',
       interactive: true,
-      expected: 'claude-sonnet-4-6',
+      expected: DEFAULT_CHAT_MODEL,
     },
     { label: 'a plain chat hands the driver no', interactive: false, expected: undefined },
   ])(
@@ -1522,7 +1526,7 @@ describe('chatCommand', () => {
 
   it('after a /models reseat the driver’s bound-agent view shows the reseated model, not the one the chat started on (ADR-0140 §3)', async () => {
     const { d } = deps([], [textTurn('sonnet reply'), textTurn('opus reply')]);
-    seedCatalogModel(client.db, 'anthropic', 'claude-sonnet-4-6');
+    seedCatalogModel(client.db, 'anthropic', DEFAULT_CHAT_MODEL);
     seedCatalogModel(client.db, 'anthropic', 'claude-opus-4-8');
     const interactiveIo = { ...d.io, stdoutIsTty: true };
     const views: (string | undefined)[] = [];
@@ -1543,7 +1547,7 @@ describe('chatCommand', () => {
       { agent: undefined },
       { ...d, ...INERT_HOIST, io: interactiveIo, drive: reseatThenExit },
     );
-    expect(views).toEqual(['claude-sonnet-4-6', 'claude-opus-4-8']);
+    expect(views).toEqual([DEFAULT_CHAT_MODEL, 'claude-opus-4-8']);
   });
 
   it('/help lists the curated commands on stderr without ending the session or persisting a turn', async () => {
@@ -1768,6 +1772,7 @@ describe('chatCommand', () => {
             throw new Error('missing standalone host');
           applyChatMode(
             makeChatModeEnv({
+              commandPaths: undefined,
               session: built.session,
               tools: built.tools,
               workspaceDir: built.context.workingDir,
@@ -1920,6 +1925,7 @@ describe('chatCommand', () => {
               throw new Error('missing standalone host');
             applyChatMode(
               makeChatModeEnv({
+                commandPaths: undefined,
                 session: built.session,
                 tools: built.tools,
                 workspaceDir: built.context.workingDir,
@@ -2086,6 +2092,7 @@ describe('chatCommand', () => {
               throw new Error('missing standalone host');
             applyChatMode(
               makeChatModeEnv({
+                commandPaths: undefined,
                 session: built.session,
                 tools: built.tools,
                 workspaceDir: built.context.workingDir,
@@ -2426,11 +2433,13 @@ describe('chatCommand', () => {
         expect(events.filter((event) => event.type === 'session:exported')).toEqual([
           expect.objectContaining({ workflowPath: exportedAt(cwd, 'private-user-sentinel') }),
         ]);
-        // The documented split: under --json the event carries the path, and no human path or run-hint line is
-        // printed on either stream.
+        // The documented split: under --json the event carries the path, and no human path line is printed on
+        // either stream (and, since MVP-11 OD-20, no run-hint line is printed in any mode).
         expect(err()).not.toContain('exported session to');
         expect(`${err()}${out()}`).not.toContain('run it with');
       } else {
+        // The plain driver is scripted output on stderr: it keeps the hint that names the shell command that runs the file (ADR-0122 §6;
+        // the interactive chat's notice is the path alone, OD-20). MVP-11 Step 2 review round 2, N3.
         expect(err()).toContain(
           `exported session to ${join('.relavium', 'workflows', 'private-user-sentinel.relavium.yaml')} — run it with \`relavium run private-user-sentinel\``,
         );
@@ -2540,9 +2549,13 @@ describe('chatCommand', () => {
               expect(frames).toContain('exported session to');
               expect(
                 notices.some((text) =>
-                  text.includes('run it with `relavium run private-user-sentinel`'),
+                  text.endsWith(
+                    `exported session to ${join('.relavium', 'workflows', 'private-user-sentinel.relavium.yaml')}`,
+                  ),
                 ),
               ).toBe(true);
+              // OD-20: the transcript notice names no command to run the file.
+              expect(notices.some((text) => text.includes('relavium run'))).toBe(false);
               expect(err()).not.toContain('exported session to');
             }
             expect(err()).not.toContain('note: exported workflow');
@@ -2581,6 +2594,7 @@ describe('chatCommand', () => {
     await chatCommand({ agent: undefined }, { ...d, drive: probingDrive });
 
     expect(existsSync(exportedAt(cwd, 'hello'))).toBe(true);
+    // The plain driver keeps the shell hint (scripted output, ADR-0122 §6); the interactive chat's notice is the path alone (OD-20).
     expect(err()).toContain(
       `exported session to ${join('.relavium', 'workflows', 'hello.relavium.yaml')} — run it with \`relavium run hello\``,
     );
@@ -3147,7 +3161,7 @@ describe('chatCommand', () => {
   it('/models reseat: rebinds the model on the SAME session, carrying the transcript + per-turn attribution (ADR-0059)', async () => {
     const { d, store } = deps([], [textTurn('sonnet reply'), textTurn('opus reply')]);
     // Seed both models into the catalog so attribution resolves the model string → the FK-target UUID.
-    const sonnetId = seedCatalogModel(client.db, 'anthropic', 'claude-sonnet-4-6');
+    const sonnetId = seedCatalogModel(client.db, 'anthropic', DEFAULT_CHAT_MODEL);
     const opusId = seedCatalogModel(client.db, 'anthropic', 'claude-opus-4-8');
     // A live reseat is TTY-interactive only (like `/clear`), so `onReseat` is wired only on an interactive io.
     const interactiveIo = { ...d.io, stdoutIsTty: true };
@@ -3179,7 +3193,7 @@ describe('chatCommand', () => {
     expect(intros[0]).toBeUndefined(); // the original session has no intro
     // The marker names BOTH ends of the switch (2.6.C) — it now lands beneath a conversation the user can still see,
     // so "what changed" is the useful thing to say, not "here is your new model" to an empty screen.
-    expect(intros[1]).toContain('claude-sonnet-4-6 → claude-opus-4-8');
+    expect(intros[1]).toContain(`${DEFAULT_CHAT_MODEL} → claude-opus-4-8`);
     // ADR-0059 BINDS this disclosure clause: tool arguments and results do not cross a reseat. ADR-0128 (Accepted
     // 2026-11-15) refines it — content-free records of tool names and outcomes DO cross — and the notice must say
     // both, so each half is asserted, not just present.
@@ -3248,7 +3262,7 @@ describe('chatCommand', () => {
     // NOT reseated: id-0 kept its one 'hello' exchange, still bound to the ORIGINAL model.
     const full = store.loadFull('id-0');
     expect(full?.messages).toHaveLength(2);
-    expect(full?.session.agentSnapshot?.model).toBe('claude-sonnet-4-6');
+    expect(full?.session.agentSnapshot?.model).toBe(DEFAULT_CHAT_MODEL);
   });
 
   it('chat --json drives the headless stream: stdout pure NDJSON, the unknown-slash diagnostic on stderr', async () => {
@@ -3934,8 +3948,10 @@ describe('chatResumeCommand (2.N)', () => {
 
     const panel = err();
     expect(panel).toContain('Session cost: $');
-    expect(panel).not.toContain('$0.0000'); // the prior process's spend is VISIBLE, not zeroed
-    expect(panel).toMatch(/\(\d+ calls?, \d+ tok\)/); // …and its per-model row survived the process boundary
+    // The prior process's spend is VISIBLE, not zeroed: its per-model row survived the process boundary with its calls and tokens. (Since
+    // MVP-11 unit 6 the zero-config model is Haiku 5.5, whose one short turn costs under $0.0001 and is drawn as $0.0000, so the money
+    // figure is no longer the evidence; the non-zero token count of the prior process is.)
+    expect(panel).toMatch(/\([1-9]\d* calls?, [1-9]\d* tok\)/);
   });
 
   it.each([0, 100_000_000])(
@@ -4032,8 +4048,8 @@ describe('chatResumeCommand (2.N)', () => {
         expect(panel).not.toContain('(0 calls');
         expect(panel).not.toContain('free');
       }
-      expect(panels[0]).toContain('~12345µ¢ estimated, possibly billed');
-      expect(panels[1]).toContain('Released ~12345µ¢');
+      expect(panels[0]).toContain('~$0.00012345 estimated, possibly billed');
+      expect(panels[1]).toContain('Released ~$0.00012345');
       expect(panels[1]).not.toContain('estimated, possibly billed');
       const after = store.loadSessionCostBreakdown('id-0');
       expect(after.totalCostMicrocents).toBe(amount);

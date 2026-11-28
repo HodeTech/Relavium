@@ -1,4 +1,5 @@
-import { Box, Text, useApp, useStdout, type DOMElement } from 'ink';
+import { Box, useApp, useStdout, type DOMElement } from 'ink';
+import { Text } from './text.js';
 import { denialReasonDisclosure } from './chat-projection.js';
 import {
   useEffect,
@@ -7,11 +8,14 @@ import {
   useState,
   useSyncExternalStore,
   type ReactElement,
+  type ReactNode,
+  type RefObject,
 } from 'react';
 import type { ChatStoreController, ChatStoreSnapshot } from './chat-store.js';
 import {
   createMeasuredFrameAcknowledgement,
   reviewTerminalFits,
+  TERMINAL_TOO_SMALL_TEXT,
 } from './measured-frame-acknowledgement.js';
 import {
   inspectionPending,
@@ -23,7 +27,7 @@ import {
   type ToolReviewState,
 } from './tool-review-model.js';
 import {
-  cardKeyRows,
+  cardKeyLegend,
   cardScopePhrase,
   cardStats,
   cardVerb,
@@ -34,31 +38,52 @@ import {
   fullChrome,
   fullBodyRows,
   fullStatusRow,
-  keyLabelParts,
+  inspectionBottomEdge,
+  inspectionGeometry,
+  inspectionOrigin,
+  inspectionTitle,
+  inspectionTopEdge,
   type CallListRow,
   type FullChrome,
+  type InspectionGeometry,
   type InspectionPending,
 } from './tool-review-screen.js';
+import { glyph, glyphOf, withGlyphForm } from './glyphs.js';
+import {
+  exitKey,
+  keyToken,
+  legend,
+  legendItems,
+  legendRows,
+  type LegendExit,
+  type LegendItem,
+  type LegendRender,
+} from './legend.js';
+import { rowSegments } from './legend-row.js';
+import { EmphText } from './emphasis-view.js';
+import { emphasisDescription, SELECTED_ROW, type EmphasisSet } from './emphasis.js';
+import { inkRows, sheetRule, type SheetRole } from './sheet-frame.js';
+import { useWaitClock, type WaitClockForm } from './wait-clock.js';
 import { colorProps, dimProps } from './projection.js';
 import {
   createReviewDocument,
-  escapeReviewCharacter,
+  escapeReviewText,
   projectReviewPage,
   REVIEW_START,
   type ReviewPage,
 } from './tool-review-projection.js';
 import { attemptClipboardWrite, type ClipboardWriter } from '../clipboard.js';
 import { sanitizeUntrustedInline } from '../sanitize.js';
+import { displayWidth } from './viewport.js';
 
-const escaped = (text: string): string =>
-  [...text].map((char) => escapeReviewCharacter(char, false)).join('');
+const escaped = (text: string): string => escapeReviewText(text).join('');
 
 function inputDisplay(text: string): string {
   let output = '',
     count = 0;
   const chars = [...text];
-  for (const char of chars) {
-    const token = escapeReviewCharacter(char, false);
+  const tokens = escapeReviewText(text);
+  for (const token of tokens) {
     if (output.length + token.length > 40) break;
     output += token;
     count++;
@@ -116,10 +141,23 @@ export function ToolReviewHost(
     clipboard?: ClipboardWriter | undefined;
     /** Whether colour output is on (the card colours additions, removals and warnings). */
     color?: boolean | undefined;
+    /**
+     * How the sheet's wait clock is drawn (ADR-0147 §2): `ticking` in the alternate screen, the static `waiting since HH:MM` inline (the
+     * default: a host that does not say starts no timer).
+     */
+    waitClock?: WaitClockForm | undefined;
   }>,
 ): ReactElement | null {
   const snapshot = useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
   const review = snapshot.review;
+  // The wait clock: a display value of this host, not of the store's snapshot, re-rendered by the host's own one-second timer while the card
+  // is on screen; no guard reads it (ADR-0147 §2).
+  const clock = useWaitClock(cardWaitOrigin(snapshot), props.waitClock);
+  // The answer lockout as the grants draw it (`(wait)`): the store's display value, beside the snapshot; one repaint when it opens.
+  const locked = useSyncExternalStore(
+    props.store.answerLock.subscribe,
+    props.store.answerLock.read,
+  );
   const app = useApp();
   const { stdout } = useStdout();
   const ref = useRef<DOMElement | null>(null);
@@ -163,12 +201,15 @@ export function ToolReviewHost(
     acknowledgement.invalidate();
     props.store.invalidateToolReview();
   }, [props.size.cols, props.size.rows, props.store, acknowledgement]);
-  const identity = reviewIdentity(snapshot, props.size.cols);
-  const { page, chrome } = reviewScreen(
-    snapshot,
-    props.size,
-    props.clipboard !== undefined,
-    identity,
+  // The size the page is projected for: the terminal's for the card, the inspection popup's for the full view and the call list (ADR-0148 §7),
+  // from the one geometry that also sizes the popup's frame below.
+  const pageSize = reviewPageSize(review, props.size);
+  const identity = reviewIdentity(snapshot, pageSize.cols);
+  // The rows the card is built from carry glyphs of the table: the plain forms when colour is explicitly off (an absent `color` is the Unicode
+  // form, as a view mounted without the prop always drew), and none of them is wider than its Unicode glyph, so the measured frame is the same.
+  const plain = props.color === false;
+  const { page, chrome } = withGlyphForm(plain, () =>
+    reviewScreen(snapshot, props.size, props.clipboard !== undefined, identity, locked),
   );
   pageRef.current = page;
   useLayoutEffect(() => {
@@ -187,16 +228,19 @@ export function ToolReviewHost(
   });
   if (review === undefined) return null;
   if (!reviewTerminalFits(props.size))
-    return <Text>Terminal too small — resize to at least 80×24. {reviewExitHint(review)}</Text>;
+    return <Text>{reviewExitHint(review, TERMINAL_TOO_SMALL_TEXT, props.size.cols)}</Text>;
   if (blocked === review || page?.valid === false || identity?.valid === false)
     return (
       <Text>
-        {reviewUnavailableText({
-          identityInvalid: identity?.valid === false,
-          commandTooLarge: review.facts !== undefined && review.document?.valid === false,
-          onCard: review.screen === 'card',
-        })}{' '}
-        {reviewExitHint(review)}
+        {reviewExitHint(
+          review,
+          reviewUnavailableText({
+            identityInvalid: identity?.valid === false,
+            commandTooLarge: review.facts !== undefined && review.document?.valid === false,
+            onCard: review.screen === 'card',
+          }),
+          props.size.cols,
+        )}
       </Text>
     );
   if (review.screen === 'card') {
@@ -211,19 +255,33 @@ export function ToolReviewHost(
           columns={props.size.cols}
           rows={props.size.rows}
           color={props.color === true}
+          plain={plain}
+          clock={clock}
+          locked={locked}
         />
       </Box>
     );
   }
+  // The full view and the call list: the large inspection popup the sheet owns (ADR-0148 §7), the page drawn inside its frame. The terminal
+  // fits (checked above), so the popup's geometry exists.
   return (
-    <Box ref={ref} flexDirection="column" flexShrink={0}>
+    <InspectionFrame
+      geometry={inspectionGeometry(props.size)}
+      columns={props.size.cols}
+      title={inspectionTitle(review.kind, review.facts !== undefined)}
+      origin={inspectionOrigin(review.kind)}
+      color={props.color === true}
+      plain={plain}
+      contentRef={ref}
+    >
       {review.screen === 'list' ? (
         <ReviewCallList
           snapshot={snapshot}
           review={review}
-          columns={props.size.cols}
-          rows={props.size.rows}
+          columns={pageSize.cols}
+          rows={pageSize.rows}
           color={props.color === true}
+          plain={plain}
         />
       ) : (
         chrome !== undefined && (
@@ -231,12 +289,77 @@ export function ToolReviewHost(
             review={review}
             page={page}
             chrome={chrome}
-            columns={props.size.cols}
-            rows={props.size.rows}
+            columns={pageSize.cols}
+            rows={pageSize.rows}
             color={props.color === true}
+            plain={plain}
           />
         )
       )}
+    </InspectionFrame>
+  );
+}
+
+/**
+ * The size a review's page is projected for (ADR-0148 §7): the terminal's for the docked card, and for the full view and the call list the
+ * inspection popup's page ({@link inspectionGeometry}), so the page, the required target, the identity and the copy all fit the popup they are
+ * drawn in. Below the popup's floor the terminal's (nothing is drawn there but the refusal).
+ */
+export function reviewPageSize(
+  review: ToolReviewState | undefined,
+  size: { readonly cols: number; readonly rows: number },
+): { readonly cols: number; readonly rows: number } {
+  if (review === undefined || review.screen === 'card') return size;
+  return inspectionGeometry(size)?.page ?? size;
+}
+
+/**
+ * The inspection popup's frame (ADR-0148 §7): a box of the popup's size, `columns − 2` by `rows − 1`, centred, with its top edge (the popup's
+ * name and where it came from), the screen across the box's whole width, and its bottom edge. The measured-frame acknowledgement is handed the
+ * CONTENT node (`contentRef`), which has no fixed size of its own: a row one cell too wide wraps and an extra row is an extra row, and either makes
+ * it taller than the box, which the acknowledgement refuses (Allow stays locked). The box is in the flow, in the body's place (the chat is hidden
+ * while it is open), in both renderers: it is as tall as the full screen it replaces was, so nothing can be drawn over it.
+ */
+function InspectionFrame(
+  props: Readonly<{
+    /** Absent below the popup's floor, where the host has drawn the refusal already: nothing is drawn. */
+    geometry: InspectionGeometry | undefined;
+    columns: number;
+    title: string;
+    origin: string;
+    color: boolean;
+    plain: boolean;
+    contentRef: RefObject<DOMElement | null>;
+    children: ReactNode;
+  }>,
+): ReactElement | null {
+  if (props.geometry === undefined) return null;
+  const { box } = props.geometry;
+  const top = withGlyphForm(props.plain, () =>
+    inspectionTopEdge(props.title, props.origin, box.width),
+  );
+  const bottom = withGlyphForm(props.plain, () => inspectionBottomEdge(box.width));
+  return (
+    <Box
+      width={box.width}
+      height={box.height}
+      marginLeft={Math.max(0, Math.floor((props.columns - box.width) / 2))}
+      flexDirection="column"
+      flexShrink={0}
+    >
+      <Box ref={props.contentRef} flexDirection="column" flexGrow={1} flexShrink={0}>
+        <Text wrap="truncate-end">
+          <Text {...dimProps(props.color)}>{top.lead}</Text>
+          <EmphText emphasis="bold">{top.title}</EmphText>
+          <Text {...dimProps(props.color)}>{top.rest}</Text>
+        </Text>
+        <Box flexDirection="column" flexGrow={1}>
+          {props.children}
+        </Box>
+        <Text {...dimProps(props.color)} wrap="truncate-end">
+          {bottom}
+        </Text>
+      </Box>
     </Box>
   );
 }
@@ -248,10 +371,17 @@ export function ToolReviewHost(
  */
 export function reviewScreen(
   snapshot: ChatStoreSnapshot,
-  size: { readonly cols: number; readonly rows: number },
+  terminal: { readonly cols: number; readonly rows: number },
   canCopy: boolean,
-  identity: Pick<ReviewPage, 'rows' | 'valid'> | undefined = reviewIdentity(snapshot, size.cols),
+  identity: Pick<ReviewPage, 'rows' | 'valid'> | undefined = reviewIdentity(
+    snapshot,
+    reviewPageSize(snapshot.review, terminal).cols,
+  ),
+  /** The answer lockout holds the grants now (the store's `answerLock`): the full view's grants row reads `(wait)`. */
+  locked = false,
 ): { readonly page: ReviewPage | undefined; readonly chrome: FullChrome | undefined } {
+  // The full view's page is projected for the inspection popup it is drawn in (ADR-0148 §7); the card's for the terminal.
+  const size = reviewPageSize(snapshot.review, terminal);
   const review = snapshot.review;
   if (review === undefined) return { page: undefined, chrome: undefined };
   if (review.screen !== 'full')
@@ -260,11 +390,11 @@ export function reviewScreen(
   // do, so it is sized before the page exists and drawn after.
   const requiredTarget = reviewRequiredTarget(review, size.cols, size.rows);
   const pending = inspectionPending(review, requiredTarget);
-  const sizing = buildFullChrome(snapshot, review, size.cols, identity, canCopy, pending);
+  const sizing = buildFullChrome(snapshot, review, size.cols, identity, canCopy, pending, locked);
   const page = toolReviewPage(review, size.cols, size.rows, sizing.rows);
   return {
     page,
-    chrome: buildFullChrome(snapshot, review, size.cols, identity, canCopy, pending, page),
+    chrome: buildFullChrome(snapshot, review, size.cols, identity, canCopy, pending, locked, page),
   };
 }
 
@@ -291,6 +421,7 @@ function buildFullChrome(
   identity: Pick<ReviewPage, 'rows' | 'valid'> | undefined,
   canCopy: boolean,
   pending: InspectionPending,
+  locked: boolean,
   page?: ReviewPage,
 ): FullChrome {
   const document = review.document;
@@ -321,6 +452,8 @@ function buildFullChrome(
           scope: escaped(cardScopePhrase(snapshot.approval?.request.toolId ?? '')),
           confirmAlways: snapshot.alwaysConfirm && cacheable,
           ...commandKeys(snapshot, review, page),
+          locked,
+          columns: Math.max(1, columns - 2),
         }
       : undefined,
     searching: review.searching,
@@ -328,22 +461,33 @@ function buildFullChrome(
   });
 }
 
+/** `Ctrl+N` denies without ending the turn: the one answer a review that cannot be shown still takes. */
+const DENY_KEY: LegendItem = { keys: 'Ctrl+N', verb: 'Deny', role: 'danger' };
+/** The stop key, named where `Esc` is the exit and so does something else. */
+const STOP_KEY: LegendItem = { keys: 'Ctrl+C', verb: 'stops the turn', role: 'warn' };
+
 /**
- * What the keys do on a review that cannot be shown: `Ctrl+N` denies without ending the turn; on the card Esc stops it, on the
- * full view Esc steps back to the card and `Ctrl+C` stops it (ADR-0137 §4). Inside a modal sub-state (a typed denial reason, the
- * full view's search) an unseen frame leaves `Ctrl+N` inert — the model only lets those states act on a frame the person can
- * read — so only the two exits are true there: Esc closes the box and `Ctrl+C` stops the turn.
+ * What `explanation` (why the review is not shown) is followed by: what the keys do on a review that cannot be shown. `Ctrl+N` denies
+ * without ending the turn; on the card Esc stops it, on the full view Esc steps back to the card and `Ctrl+C` stops it (ADR-0137 §4).
+ * Inside a modal sub-state (a typed denial reason, the full view's search) an unseen frame leaves `Ctrl+N` inert — the model only lets
+ * those states act on a frame the person can read — so only the two exits are true there: Esc closes the box and `Ctrl+C` stops the turn.
+ * The explanation is the legend's first item, its closing full stop dropped (a legend has none).
  */
-function reviewExitHint(review: ToolReviewState): string {
-  if (review.kind !== 'approval') return 'Esc closes.';
+function reviewExitHint(review: ToolReviewState, explanation: string, columns: number): string {
+  const because: LegendItem = { text: explanation.replace(/\.$/u, '') };
+  // Drawn in rows cut between items, so a terminal too narrow for one row never splits `[Ctrl+C]` from what it does.
+  const rows = (items: readonly LegendItem[], exit: LegendExit): string =>
+    legendRows(items, exit, columns, displayWidth).join('\n');
+  if (review.kind !== 'approval') return rows([because], exitKey.close());
   const modal = review.denial !== undefined || review.searching;
-  if (modal) return 'Esc closes the box · Ctrl+C stops the turn.';
+  if (modal) return rows([because, STOP_KEY], exitKey.close('Esc', 'close the box'));
   return review.screen === 'card'
-    ? '[Ctrl+N] denies · Esc stops the turn.'
-    : '[Ctrl+N] denies · Esc back · Ctrl+C stops the turn.';
+    ? rows([because, DENY_KEY], exitKey.decide('stops the turn'))
+    : rows([because, DENY_KEY, STOP_KEY], exitKey.step());
 }
 
-const RULE_LABEL = ' Approval needed ';
+/** What the approval sheet's rule says it is (ADR-0147 §1): fixed host text. */
+const RULE_LABEL = 'Approval needed';
 
 /** What the card says in place of itself when it cannot be drawn: the identity, a command too large to show, or the screen. */
 export function reviewUnavailableText(why: {
@@ -355,10 +499,11 @@ export function reviewUnavailableText(why: {
     return 'Review unavailable — the tool identity does not fit; enlarge terminal.';
   if (why.commandTooLarge)
     return 'A command is waiting, but it is too large for this card to show (more than 63 arguments, or an argument or the whole line over 4,096 characters), so it cannot be approved here. Denying tells the model to run it as smaller commands.';
-  // `[v]` opens the full view from the card; on the full view it does nothing, so the sentence does not offer it.
+  // `[v]` opens the full view from the card; on the full view it does nothing, so the sentence does not offer it. `[p]` is the full view's key
+  // (it turns the Unicode code points on or off there) and does nothing on the card, so the card's sentence does not offer it.
   return why.onCard
-    ? 'Review unavailable — enlarge terminal, narrow change, or [v] full view / [p] code points.'
-    : 'Review unavailable — enlarge terminal, narrow change, or [p] code points.';
+    ? `Review unavailable — enlarge terminal, narrow change, or ${keyToken('v')} full view.`
+    : `Review unavailable — enlarge terminal, narrow change, or ${keyToken('p')} code points.`;
 }
 
 /** The card's title rows: a delivered saved result's, an unlabelled call's, or the verb and the target's rows. */
@@ -383,22 +528,99 @@ export function cardTitleRows(input: {
   return targetRows.map((row, index) => (index === 0 ? `${verb} ${row}` : `${indent}${row}`));
 }
 
-/** The thin rule that opens the card: it says the turn is waiting on the person, and is yellow where colour is on. */
-function approvalRule(columns: number): string {
-  return `\u2500${RULE_LABEL}${'\u2500'.repeat(Math.max(1, columns - 2 - RULE_LABEL.length))}`;
+/** The card's wait clock's origin: the moment the person's wait began, while the docked card is on screen (none on the popup or with no card). */
+function cardWaitOrigin(snapshot: ChatStoreSnapshot): number | undefined {
+  return snapshot.review?.screen === 'card' ? snapshot.state.approvalSinceMs : undefined;
 }
 
-/** Colour a key legend: the answers stand out (allow green, deny red, the rest cyan), the words stay dim. */
-export function keyTone(part: string, color: boolean): Record<string, unknown> {
+/** The card's title rows, bold; the first carries the numbers flush right when they fit beside it (`gap`, {@link titleStatsGap}). */
+function CardTitleRows(
+  props: Readonly<{
+    rows: readonly string[];
+    stats: string;
+    gap: number | undefined;
+    color: boolean;
+  }>,
+): ReactElement {
+  return (
+    <>
+      {keyed(props.rows, (row) => row).map(({ key, item: row, index }) =>
+        index === 0 && props.gap !== undefined ? (
+          <Box key={key}>
+            <EmphText emphasis="bold">{row}</EmphText>
+            <Text {...dimProps(props.color)}>{`${' '.repeat(props.gap)}${props.stats}`}</Text>
+          </Box>
+        ) : (
+          <EmphText key={key} emphasis="bold">
+            {row}
+          </EmphText>
+        ),
+      )}
+    </>
+  );
+}
+
+/** The summary row's words: the tool's identity, and the numbers when the title row could not hold them. */
+function summaryText(identity: string, stats: string, gap: number | undefined): string {
+  return [identity, gap === undefined ? stats : '']
+    .filter((part) => part.length > 0)
+    .join(' \u00b7 ');
+}
+
+/**
+ * The spaces between the card's first title row and its numbers (`+3 -1 · 214 bytes`), when both fit the card's drawable width with at least two
+ * columns between them (ADR-0147 §1: what it is on the left, the numbers on the right); `undefined` when they do not, and the numbers stay on the
+ * summary row. The title row is never shortened for them: the target's rows are fitted by the projection the Allow lock reads. A title row with a
+ * run of two or more spaces keeps them off too: the target is the model's text, and such a run is how it would imitate the gap and set its own
+ * numbers where the host's stand, so the host's never stand beside them (unit 8 fix wave, S-10).
+ */
+export function titleStatsGap(
+  first: string | undefined,
+  stats: string,
+  columns: number,
+): number | undefined {
+  if (first === undefined || stats === '' || first.includes('  ')) return undefined;
+  const gap = Math.max(1, columns - 2) - displayWidth(first) - displayWidth(stats);
+  return gap >= 2 ? gap : undefined;
+}
+
+/**
+ * The heavy rule that opens the approval sheet (ADR-0147 §1): it says the turn is waiting on the person and for how long (`clock`, the host's
+ * display value), and is amber where colour is on. As wide as the thin rule it replaced, so the card's rows do not move.
+ */
+function approvalRule(columns: number, clock: string): string {
+  return sheetRule(RULE_LABEL, clock, Math.max(1, columns - 1)).text;
+}
+
+/** The colour of a key stretch by the role its builder gave it: allow green, deny red, a stop yellow, other keys cyan, the words dim; nothing with colour off. */
+function keyColour(role: SheetRole, color: boolean): Record<string, unknown> {
   if (!color) return {};
-  if (part === '[Ctrl+Y]' || part === '[Ctrl+G]' || part === '[Ctrl+O]')
-    return { color: 'green', bold: true };
-  if (part === '[Ctrl+N]') return { color: 'red', bold: true };
-  // `Esc` and `Ctrl+C` are the exits (back, or stop): the stop key is as visible as any answer.
-  if (part === 'Esc' || part === 'Ctrl+C') return { color: 'yellow', bold: true };
-  // Every other key (`[v]`, `[Ctrl+R]`, `[PgUp/PgDn]`, `[p]`, …) is a cyan label.
-  if (part.startsWith('[') && part.endsWith(']')) return { color: 'cyan', bold: true };
-  return { dimColor: true };
+  switch (role) {
+    case 'ok':
+      return { color: 'green' };
+    case 'danger':
+      return { color: 'red' };
+    case 'warn':
+      return { color: 'yellow' };
+    case 'strong':
+      return { color: 'cyan' };
+    case 'dim':
+      return { dimColor: true };
+  }
+}
+
+/** The weight of a key stretch, with colour on and off alike: a key is bold, the words around it are not. */
+function keyEmphasis(role: SheetRole): EmphasisSet | undefined {
+  return role === 'dim' ? undefined : 'bold';
+}
+
+/**
+ * A key legend's stretch as a description: its colour (none with colour off) and its weight, which is there with colour off too. The view
+ * draws the colour as a prop and the weight with the one emphasis rule ({@link keyColour}, {@link keyEmphasis}); the description is what
+ * a test and the legend golden read.
+ */
+export function keyTone(role: SheetRole, color: boolean): Record<string, unknown> {
+  return { ...keyColour(role, color), ...emphasisDescription(keyEmphasis(role)) };
 }
 
 /**
@@ -422,19 +644,23 @@ function KeyRow({
   row,
   color,
   question = false,
-}: Readonly<{ row: string; color: boolean; question?: boolean }>): ReactElement {
+}: Readonly<{ row: LegendRender; color: boolean; question?: boolean }>): ReactElement {
   if (question)
     return (
-      <Text wrap="truncate-end" bold>
-        {row}
-      </Text>
+      <EmphText wrap="truncate-end" emphasis="bold">
+        {row.text}
+      </EmphText>
     );
   return (
     <Text wrap="truncate-end">
-      {keyed(keyLabelParts(row), (part) => part).map(({ key, item: part }) => (
-        <Text key={key} {...keyTone(part, color)}>
-          {part}
-        </Text>
+      {keyed(rowSegments(row), (segment) => segment.text).map(({ key, item: segment }) => (
+        <EmphText
+          key={key}
+          {...keyColour(segment.role, color)}
+          emphasis={keyEmphasis(segment.role)}
+        >
+          {segment.text}
+        </EmphText>
       ))}
     </Text>
   );
@@ -455,12 +681,9 @@ function cardRowText(
   if (label === 'field value') return `  ${withoutLabel(row, label) || '(empty)'}`;
   return cardBodyRow(row, kind);
 }
-function cardRowProps(
-  label: string | undefined,
-  kind: ReviewPage['kinds'][number],
-  color: boolean,
-): Record<string, unknown> {
-  return label === 'field name' ? { bold: true } : rowTone(kind, color);
+/** A call's field name is bold on the card, with colour on and off alike; every other row has only its colour. */
+function cardRowEmphasis(label: string | undefined): EmphasisSet | undefined {
+  return label === 'field name' ? 'bold' : undefined;
 }
 
 /** One diff row as drawn on the card: context rows lose the `=` framing mark and are dimmed. */
@@ -480,7 +703,28 @@ function rowTone(kind: ReviewPage['kinds'][number], color: boolean): Record<stri
  * Title, diff body, one summary row, only the warnings that apply, and two key rows. Everything it shows comes from
  * the same projected page the safety machinery acknowledges; this component only chooses the words and colours.
  */
-function ReviewCard({
+interface ReviewCardProps {
+  readonly snapshot: ChatStoreSnapshot;
+  readonly review: ToolReviewState;
+  readonly page: ReviewPage | undefined;
+  readonly identity: Pick<ReviewPage, 'rows' | 'valid'> | undefined;
+  readonly columns: number;
+  readonly rows: number;
+  readonly color: boolean;
+  /** The glyph table's plain forms: colour is explicitly off. */
+  readonly plain: boolean;
+  /** The wait clock's text (the host's display value, ADR-0147 §2): drawn in the rule, read by nothing else. */
+  readonly clock: string;
+  /** The answer lockout holds the grants (the store's `answerLock`, a display value): they read `(wait)`. */
+  readonly locked: boolean;
+}
+
+/** The card, its rows built in the glyph form the colour setting asks for. */
+function ReviewCard(props: Readonly<ReviewCardProps>): ReactElement {
+  return withGlyphForm(props.plain, () => ReviewCardBody(props));
+}
+
+function ReviewCardBody({
   snapshot,
   review,
   page,
@@ -488,15 +732,10 @@ function ReviewCard({
   columns,
   rows,
   color,
-}: Readonly<{
-  snapshot: ChatStoreSnapshot;
-  review: ToolReviewState;
-  page: ReviewPage | undefined;
-  identity: Pick<ReviewPage, 'rows' | 'valid'> | undefined;
-  columns: number;
-  rows: number;
-  color: boolean;
-}>): ReactElement {
+  plain,
+  clock,
+  locked,
+}: Readonly<ReviewCardProps>): ReactElement {
   const request = snapshot.approval?.request;
   const toolId = request?.toolId ?? '';
   const document = review.document;
@@ -537,33 +776,37 @@ function ReviewCard({
       snapshot.alwaysConfirm &&
       reviewOffersAlways(review, page, snapshot.approval?.cacheable === true),
     ...commandKeys(snapshot, review, page),
+    locked,
+    columns: Math.max(1, columns - 2),
   };
-  const keys = cardKeyRows(keyInput);
+  const keys = cardKeyLegend(keyInput);
   const questionOpen = keyInput.confirmAlways || keyInput.confirmRemember === true;
   const cut = (page?.hiddenLines ?? 0) > 0;
+  // The title line (ADR-0147 §1): what it is on the left, the numbers on the right, when the first title row has room for them beside it; else
+  // they stay on the summary row. The row count is the same either way (the summary row carries the tool's identity regardless).
+  const statsGap = titleStatsGap(titleRows[0], stats, columns);
   return (
     <>
       <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
-        {approvalRule(columns)}
+        {approvalRule(columns, clock)}
       </Text>
-      {keyed(titleRows, (row) => row).map(({ key, item: row }) => (
-        <Text key={key} bold>
-          {row}
-        </Text>
-      ))}
+      <CardTitleRows rows={titleRows} stats={stats} gap={statsGap} color={color} />
       {keyed(page?.rows ?? [], (row) => row).map(({ key, item: row, index }) => {
         const kind = page?.kinds[index] ?? 'meta';
+        const label = page?.labels[index];
         return (
-          <Text key={key} {...cardRowProps(page?.labels[index], kind, color)}>
-            {cardRowText(row, page?.labels[index], kind) || ' '}
-          </Text>
+          <EmphText
+            key={key}
+            {...(label === 'field name' ? {} : rowTone(kind, color))}
+            emphasis={cardRowEmphasis(label)}
+          >
+            {cardRowText(row, label, kind) || ' '}
+          </EmphText>
         );
       })}
       {review.facts === undefined && (
         <Box justifyContent="space-between">
-          <Text {...dimProps(color)}>
-            {[identityText, stats].filter((part) => part.length > 0).join(' \u00b7 ')}
-          </Text>
+          <Text {...dimProps(color)}>{summaryText(identityText, stats, statsGap)}</Text>
           {cut && (
             <Text {...dimProps(color)}>
               {`\u2026 ${page?.hiddenLines ?? 0} more line${page?.hiddenLines === 1 ? '' : 's'} (${page?.hiddenBytes ?? 0} bytes hidden)`}
@@ -576,7 +819,7 @@ function ReviewCard({
         <Text
           key={key}
           {...(review.facts !== undefined &&
-          !warning.startsWith('\u26a0') &&
+          !warning.startsWith(glyph('warning')) &&
           !warning.startsWith(' ')
             ? dimProps(color)
             : colorProps(color, 'yellow'))}
@@ -589,13 +832,24 @@ function ReviewCard({
           <Text {...dimProps(color)}>
             {denialReasonDisclosure(Math.max(1, columns - 2)).join('\n')}
           </Text>
-          <Text wrap="truncate-end">{`Reason to deny: ${inputDisplay(review.denial)}\u2588`}</Text>
           <Text wrap="truncate-end">
-            {'Enter denies and continues \u00b7 Esc closes this box \u00b7 Ctrl+C stops the turn'}
+            {
+              inkRows(
+                `Reason to deny: ${inputDisplay(review.denial)}${glyphOf('caret', plain)}`,
+                Math.max(1, columns - 2),
+                'truncate',
+              )[0]
+            }
+          </Text>
+          <Text wrap="truncate-end">
+            {legend(
+              [{ keys: 'Enter', verb: 'deny and continue' }, STOP_KEY],
+              exitKey.close('Esc', 'close this box'),
+            )}
           </Text>
         </Box>
       ) : (
-        keyed(keys, (row) => row).map(({ key, item: row, index }) => (
+        keyed(keys, (row) => row.text).map(({ key, item: row, index }) => (
           <KeyRow
             key={key}
             row={row}
@@ -645,29 +899,39 @@ function ReviewCallList({
   columns,
   rows,
   color,
+  plain,
 }: Readonly<{
   snapshot: ChatStoreSnapshot;
   review: ToolReviewState;
   columns: number;
   rows: number;
   color: boolean;
+  /** The glyph table's plain forms: colour is explicitly off. */
+  plain: boolean;
 }>): ReactElement {
-  const view = callListView({
-    calls: [...snapshot.toolDisplays.values()],
-    selected: review.selected,
-    columns,
-    terminalRows: rows,
-  });
+  const view = withGlyphForm(plain, () =>
+    callListView({
+      calls: [...snapshot.toolDisplays.values()],
+      selected: review.selected,
+      columns,
+      terminalRows: rows,
+    }),
+  );
   return (
     <>
-      <Text bold wrap="truncate-end">
+      <EmphText emphasis="bold" wrap="truncate-end">
         {view.title}
-      </Text>
+      </EmphText>
       {view.empty !== undefined && <Text wrap="truncate-end">{view.empty}</Text>}
       {keyed(view.rows, (row) => row.text).map(({ key, item: row }) => (
-        <Text key={key} wrap="truncate-end" {...callRowProps(row, color)}>
+        <EmphText
+          key={key}
+          wrap="truncate-end"
+          {...callToneProps(row.tone, color)}
+          emphasis={row.selected ? SELECTED_ROW : undefined}
+        >
           {row.text}
-        </Text>
+        </EmphText>
       ))}
       {view.status.length > 0 && (
         <Text wrap="truncate-end" {...dimProps(color)}>
@@ -688,11 +952,6 @@ function callToneProps(tone: CallListRow['tone'], color: boolean): Record<string
   return {};
 }
 
-function callRowProps(row: CallListRow, color: boolean): Record<string, unknown> {
-  const tone = callToneProps(row.tone, color);
-  return row.selected ? { ...tone, bold: true } : tone;
-}
-
 /** A body row of the full view: diff rows as the card draws them, a call's fields as a name and an indented value. */
 function bodyRow(
   row: string,
@@ -700,8 +959,13 @@ function bodyRow(
   label: string,
   color: boolean,
   continued = false,
-): { readonly text: string; readonly props: Record<string, unknown> } {
-  if (label === 'field name') return { text: withoutLabel(row, label), props: { bold: true } };
+): {
+  readonly text: string;
+  readonly props: Record<string, unknown>;
+  readonly emphasis?: EmphasisSet;
+} {
+  if (label === 'field name')
+    return { text: withoutLabel(row, label), props: {}, emphasis: 'bold' };
   if (label === 'field value') return { text: `  ${withoutLabel(row, label)}`, props: {} };
   // The rows of a wrapped target all start with its label; the later ones are indented under it, as the card does, so the
   // path does not read as several.
@@ -722,6 +986,7 @@ function ReviewScreen({
   columns,
   rows,
   color,
+  plain,
 }: Readonly<{
   review: ToolReviewState;
   page: ReviewPage | undefined;
@@ -729,6 +994,8 @@ function ReviewScreen({
   columns: number;
   rows: number;
   color: boolean;
+  /** The glyph table's plain forms: colour is explicitly off. */
+  plain: boolean;
 }>): ReactElement {
   const document = review.document;
   const target = chrome.hasTarget ? toolReviewTarget(review, columns, rows) : undefined;
@@ -739,9 +1006,9 @@ function ReviewScreen({
   return (
     <>
       {keyed(chrome.header, (row) => row).map(({ key, item: row, index }) => (
-        <Text key={key} bold={index === 0} wrap="truncate-end">
+        <EmphText key={key} emphasis={index === 0 ? 'bold' : undefined} wrap="truncate-end">
           {row}
-        </Text>
+        </EmphText>
       ))}
       {chrome.hasTarget && (
         <Text wrap="truncate-end" {...dimProps(color)}>
@@ -764,33 +1031,42 @@ function ReviewScreen({
         return (
           // Not cut by the renderer: a row is fitted to its page by the projection, and one that were wider would wrap, make the
           // frame taller than the terminal and be refused by the measured acknowledgement — never silently hide what it shows.
-          <Text key={key} {...drawnRow.props}>
+          <EmphText key={key} {...drawnRow.props} emphasis={drawnRow.emphasis}>
             {drawnRow.text || ' '}
-          </Text>
+          </EmphText>
         );
       })}
       {Array.from({ length: Math.max(0, body - drawn) }, (_, index) => (
         <Text key={`pad-${index}`}> </Text>
       ))}
       <Text wrap="truncate-end" {...dimProps(color)}>
-        {fullStatusRow({
-          page,
-          document,
-          revealed: review.reveal,
-          numeric: review.numeric,
-          columns,
-        })}
+        {withGlyphForm(plain, () =>
+          fullStatusRow({
+            page,
+            document,
+            revealed: review.reveal,
+            numeric: review.numeric,
+            columns,
+          }),
+        )}
       </Text>
       <Text wrap="truncate-end">{review.message === '' ? ' ' : escaped(review.message)}</Text>
       {review.searching && (
         <Text wrap="truncate-end">
-          Search visible source: {inputDisplay(review.query ?? '')}█ · Enter find
+          {
+            legendItems([
+              {
+                text: `Search visible source: ${inputDisplay(review.query ?? '')}${glyphOf('caret', plain)}`,
+              },
+              { keys: 'Enter', verb: 'find' },
+            ]).text
+          }
         </Text>
       )}
-      {keyed(chrome.nav, (row) => row).map(({ key, item: row }) => (
+      {keyed(chrome.legends.nav, (row) => row.text).map(({ key, item: row }) => (
         <KeyRow key={`nav-${key}`} row={row} color={color} />
       ))}
-      {keyed(chrome.answers, (row) => row).map(({ key, item: row }) => (
+      {keyed(chrome.legends.answers, (row) => row.text).map(({ key, item: row }) => (
         <KeyRow key={`answer-${key}`} row={row} color={color} />
       ))}
       {review.kind === 'approval' ? (
@@ -798,7 +1074,7 @@ function ReviewScreen({
           {chrome.note}
         </Text>
       ) : (
-        <KeyRow row={chrome.note} color={color} />
+        <KeyRow row={chrome.legends.note} color={color} />
       )}
     </>
   );

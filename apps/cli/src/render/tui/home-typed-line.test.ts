@@ -15,14 +15,14 @@ import { createHomeController, type HomeController } from './home-controller.js'
 function mount(): HomeController {
   return createHomeController({
     startChat: () => new Promise(() => {}),
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     homeStore: {
       read: () => ({
-        attention: { gates: [], failedRuns: [] },
+        failedRuns: [],
         recentSessions: [],
         recentRuns: [],
         recentAgents: [],
-        unreadableRunIds: [],
+        unreadableRuns: [],
+        totals: { attention: 0, sessions: 0, runs: 0 },
         isEmpty: true,
       }),
     },

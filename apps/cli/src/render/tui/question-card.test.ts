@@ -1,6 +1,7 @@
 import { ASK_USER_BOUNDS, plainTextRefusal, type AskUserRequest } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
+import { blankHostGlyphs, blankHostMarks, withGlyphForm } from './glyphs.js';
 import { cardRowBudget, CARD_KEY_ROWS, CARD_RULE_ROWS } from './tool-review-card.js';
 import {
   initialQuestionCard,
@@ -13,15 +14,53 @@ import {
   questionRule,
   QUESTION_CARD_MAX_BODY_ROWS,
 } from './question-card.js';
+import { escapeScreenText, screenText } from './screen-text.js';
 import { displayWidth } from './viewport.js';
+import { yieldBetweenTests, yieldToRunner } from '../event-loop.test-support.js';
+
+// this file's tests run for seconds back to back: the event loop turns between them (`../event-loop.test-support.ts`)
+yieldBetweenTests();
 
 /** The 80×24 floor: the card's twelve rows are a rule, two key rows and nine body rows. */
 const COLUMNS = 80;
+/**
+ * The card's title line at {@link COLUMNS} (ADR-0147 §1, unit 8): the header behind the gutter on the left and the question strip flush right
+ * across the card's width (two columns less than the terminal).
+ */
+const titleLine = (header: string, strip: string): string =>
+  `│ ${header}${' '.repeat(COLUMNS - 2 - displayWidth(`│ ${header}`) - displayWidth(strip))}${strip}`;
 const WIDTH = COLUMNS - 2;
 
 const clusterSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 const graphemes = (text: string): string[] =>
   [...clusterSegmenter.segment(text)].map((part) => part.segment);
+
+/** `text` with every `<U+XXXX>` token as its code point, a token cut at either end of a cut dropped (the oracle's own decoder). */
+function decodeTokens(text: string): string {
+  return text
+    .replace(/^[0-9A-F]*>/u, '')
+    .replace(/<U?\+?[0-9A-F]*$/u, '')
+    .replace(/<U\+([0-9A-F]{4,6})>/gu, (_token, hex: string) =>
+      String.fromCodePoint(Number.parseInt(hex, 16)),
+    );
+}
+
+/**
+ * Whether `part` (an option row with its prefix taken off) draws `label` (review round 5, R5-S-7): the label as the screen draws it (the filter's
+ * documented form with the card's marks blanked), or written one-to-one (its tokens decode to the label); whole, or cut with `…` at its end or in
+ * its middle, each kept side a start or an end of one of the two forms. A row that is any other text (a placeholder, another label) is not.
+ */
+function drawsLabel(part: string, label: string): boolean {
+  const drawn = blankHostMarks(screenText(label));
+  if (part === drawn || decodeTokens(part) === label) return true;
+  const cut = part.indexOf('…');
+  if (cut < 0) return false;
+  const start = part.slice(0, cut);
+  const end = part.slice(cut + 1);
+  const startOk = drawn.startsWith(start) || label.startsWith(decodeTokens(start));
+  const endOk = drawn.endsWith(end) || label.endsWith(decodeTokens(end));
+  return startOk && endOk && (start !== '' || end !== '');
+}
 
 /**
  * The UTF-16 offsets at which a row of `rows` ends or begins INSIDE a grapheme cluster of the rows' concatenation (none for a
@@ -270,10 +309,11 @@ describe('the worst admissible call fits the card at 80×24 (ADR-0132 §2, the c
     expect(clustered.length).toBeGreaterThanOrEqual(3);
   });
 
-  it('holds for 300 generated calls across alphabets, with every row within the card width and no model text lost', () => {
+  it('holds for 300 generated calls across alphabets, with every row within the card width and no model text lost', async () => {
     const random = mulberry32(20261116);
     let withClusters = 0;
     for (let n = 0; n < 300; n += 1) {
+      await yieldToRunner();
       const request = generate(random, 1 + Math.floor(random() * 4), random() < 0.5);
       if (
         request.questions.some((q) =>
@@ -296,7 +336,10 @@ describe('the worst admissible call fits the card at 80×24 (ADR-0132 §2, the c
           .map((row) => row.text);
         // Every row of model text starts with the host's gutter; strip it and the rows rejoin to exactly the question.
         expect(questionRows.every((row) => row.startsWith('│ '))).toBe(true);
-        expect(questionRows.map((row) => row.slice(2)).join('')).toBe(question.question);
+        // (as the screen draws it: the screen's filter runs on the question before the card lays it out, MVP-11 unit 9, review round 3)
+        expect(questionRows.map((row) => row.slice(2)).join('')).toBe(
+          screenText(question.question),
+        );
         // ...and no row of it begins or ends inside a grapheme cluster (Intl.Segmenter is the oracle). A question's rows do not
         // depend on the state, so each is checked once per call.
         if (!cutChecked.has(state.index)) {
@@ -304,12 +347,31 @@ describe('the worst admissible call fits the card at 80×24 (ADR-0132 §2, the c
           expect(cutsInsideClusters(questionRows.map((row) => row.slice(2)))).toEqual([]);
         }
         const text = view.body.map((row) => row.text);
-        for (const option of question.options)
-          expect(text.some((row) => row.endsWith(option.label))).toBe(true);
+        // every option row draws a label (never an empty one), and the rows of two labels that differ differ (review round 4, R4-S-3: the
+        // earlier `row.endsWith(screenText(label))` passed for a label that drew EMPTY; this oracle does not use the filter)
+        const options = view.body
+          .filter((row) => /^. \d [[(]/u.test(row.text))
+          .map((row) => row.text);
+        expect(options).toHaveLength(question.options.length);
+        for (const row of options) expect(row.slice(8).trim(), row).not.toBe('');
+        const labels = question.options.map((option) => option.label);
+        // FIDELITY (review round 5, R5-S-7): each row is ITS label, as the screen draws it (the filter's documented form, the card's marks
+        // blanked) or written one-to-one (its tokens decode to the label), whole or cut at the start or in the middle
+        options.forEach((row, index) => {
+          const label = labels[index] ?? '';
+          expect(drawsLabel(row.slice(8), label), `${row} for ${JSON.stringify(label)}`).toBe(true);
+        });
+        options.forEach((row, index) => {
+          for (let other = index + 1; other < options.length; other += 1)
+            if (labels[other] !== labels[index])
+              expect(row.slice(8), `${String(index)} and ${String(other)}`).not.toBe(
+                (options[other] ?? '').slice(8),
+              );
+        });
         const entry = state.entries[state.index];
         const highlighted = question.options[entry?.highlight ?? -1];
         if (highlighted !== undefined && state.hint === undefined)
-          expect(text.some((row) => row === `│ ${highlighted.description}`)).toBe(true);
+          expect(text.some((row) => row === `│ ${screenText(highlighted.description)}`)).toBe(true);
       }
     }
     // The generator really exercised clusters: a question with a multi-code-point cluster in it is most of the calls (174 of 300 at this seed).
@@ -347,7 +409,9 @@ describe('a grapheme cluster at the wrap boundary stays whole in the card (ADR-0
         const text = `${'a'.repeat(before)}${cluster}bc`;
         expect(plainTextRefusal(text, ASK_USER_BOUNDS.questionBytes), 'admissible').toBeUndefined();
         const rows = questionRowsOf(text);
-        expect(rows.join(''), `${JSON.stringify(cluster)} after ${String(before)}`).toBe(text);
+        expect(rows.join(''), `${JSON.stringify(cluster)} after ${String(before)}`).toBe(
+          screenText(text),
+        );
         expect(
           cutsInsideClusters(rows),
           `${JSON.stringify(cluster)} after ${String(before)}`,
@@ -363,7 +427,7 @@ describe('a grapheme cluster at the wrap boundary stays whole in the card (ADR-0
       const alphabet = EDGE_ALPHABETS[n % EDGE_ALPHABETS.length] ?? [];
       const text = longest(random, alphabet, ASK_USER_BOUNDS.questionBytes); // throws on a refusal
       const rows = questionRowsOf(text);
-      expect(rows.join('')).toBe(text);
+      expect(rows.join('')).toBe(screenText(text));
       expect(cutsInsideClusters(rows), JSON.stringify(text)).toEqual([]);
       if (rows.length > 1) wrapped += 1;
     }
@@ -371,9 +435,13 @@ describe('a grapheme cluster at the wrap boundary stays whole in the card (ADR-0
   });
 
   it('a wide cluster that does not fit the room left moves whole to the next row', () => {
-    for (const cluster of ['👍🏽', '🇯🇵']) {
+    // (the tone is not drawn: the screen's filter drops every skin tone, review round 3; the hand is still a wide cluster)
+    for (const [cluster, drawn] of [
+      ['👍🏽', '👍'],
+      ['🇯🇵', '🇯🇵'],
+    ] as const) {
       const rows = questionRowsOf(`${'a'.repeat(ROW_CELLS - 1)}${cluster}b`);
-      expect(rows).toEqual(['a'.repeat(ROW_CELLS - 1), `${cluster}b`]);
+      expect(rows).toEqual(['a'.repeat(ROW_CELLS - 1), `${drawn}b`]);
     }
   });
 });
@@ -414,10 +482,10 @@ describe('what the card says', () => {
 
   it('shows the header with the tab strip for several questions and without it for one', () => {
     expect(projectQuestionCard(initialQuestionCard(request), COLUMNS).body[0]?.text).toBe(
-      'Pick  [○] ○ · Review',
+      titleLine('Pick', '[○] ○ · Review'),
     );
     const one = initialQuestionCard({ questions: [request.questions[0] ?? request.questions[1]!] });
-    expect(projectQuestionCard(one, COLUMNS).body[0]?.text).toBe('Pick');
+    expect(projectQuestionCard(one, COLUMNS).body[0]?.text).toBe('│ Pick');
   });
 
   it('draws the numbers, the cursor and the ticks itself, and the own row with its own glyph and no number', () => {
@@ -492,25 +560,27 @@ describe('what the card says', () => {
     const state = initialQuestionCard(request);
     const first = projectQuestionCard(state, COLUMNS).keys;
     expect(first[0]).toBe(
-      '↑↓ move · Enter choose · type your own · ←→ questions · Ctrl+S skip all',
+      '↑/↓ move · Enter choose · type your own · ←/→ questions · [Ctrl+S] skip all',
     );
     expect(first[0]).not.toMatch(/\bs skip/); // no bare letter is a command
-    expect(first[1]).toBe('Esc or Ctrl+C stops the turn');
+    expect(first[1]).toBe('Esc / [Ctrl+C] stops the turn');
     const second = projectQuestionCard({ ...state, index: 1 }, COLUMNS).keys[0];
-    expect(second).toBe('↑↓ move · Space tick · Enter continue · ←→ questions · Ctrl+S skip all');
+    expect(second).toBe(
+      '↑/↓ move · Space tick · Enter continue · ←/→ questions · [Ctrl+S] skip all',
+    );
     const fieldKeys = projectQuestionCard(
       { ...state, field: { text: '', cursor: 0 } },
       COLUMNS,
     ).keys;
-    expect(fieldKeys[0]).toBe('Enter save · ↑ back to the list · Ctrl+S skip all');
+    expect(fieldKeys[0]).toBe('Enter save · ↑ back to the list · [Ctrl+S] skip all');
     // With the field open Esc closes it first (ADR-0115 §3), so the stop row stops promising that Esc stops the turn.
-    expect(fieldKeys[1]).toBe('Esc closes · Ctrl+C stops the turn');
+    expect(fieldKeys[1]).toBe('[Ctrl+C] stops the turn · Esc close');
     const review = projectQuestionCard({ ...state, index: 2 }, COLUMNS).keys[0];
-    expect(review).toBe('Enter send answers · ←→ questions · Ctrl+S skip all');
+    expect(review).toBe('Enter send answers · ←/→ questions · [Ctrl+S] skip all');
     // A one-question call has no tabs, so its legend does not mention them.
     const one = initialQuestionCard({ questions: [request.questions[0]!] });
     expect(projectQuestionCard(one, COLUMNS).keys[0]).toBe(
-      '↑↓ move · Enter choose · type your own · Ctrl+S skip all',
+      '↑/↓ move · Enter choose · type your own · [Ctrl+S] skip all',
     );
   });
 
@@ -586,9 +656,9 @@ describe('answers guide, they do not block (ADR-0132 §6, security sitting)', ()
 
   it('says so on the stop row only where a write needs no card (accept-edits, auto)', () => {
     const state = initialQuestionCard(request);
-    expect(projectQuestionCard(state, COLUMNS).keys[1]).toBe('Esc or Ctrl+C stops the turn');
+    expect(projectQuestionCard(state, COLUMNS).keys[1]).toBe('Esc / [Ctrl+C] stops the turn');
     const guided = projectQuestionCard(state, COLUMNS, { guideNote: true }).keys[1];
-    expect(guided).toBe('Esc or Ctrl+C stops the turn · an answer is guidance, not a veto');
+    expect(guided).toBe('an answer is guidance, not a veto · Esc / [Ctrl+C] stops the turn');
     expect(displayWidth(guided)).toBeLessThanOrEqual(COLUMNS - 2);
   });
 });
@@ -643,11 +713,15 @@ describe('the Review tab (ADR-0132 §3)', () => {
   it('lists every question with its answer, the way it will be sent', () => {
     const view = projectQuestionCard(answered(), COLUMNS);
     const rows = view.body.map((row) => row.text);
-    expect(rows[0]).toBe('Review your answers  ● ● ● · [Review]');
+    // The title line as on the question pages (ADR-0147 §1; unit 8 fix wave, O-14): behind the gutter, the strip flush right.
+    expect(rows[0]).toBe(titleLine('Review your answers', '● ● ● · [Review]'));
     expect(rows[1]).toBe('● 1 Pick → alpha.ts');
     expect(rows[2]).toBe('● 2 Also → two');
     expect(rows[3]).toBe('● 3 Last → “my own”');
-    expect(rows.at(-1)).toBe('Enter sends them · ←→ or 1-3 to change one');
+    // the keys are the key row's: a closing row that said them again in other words (`send them`, `[1-3] change one`) is not drawn
+    expect(rows).toHaveLength(4);
+    expect(rows.join('\n')).not.toMatch(/send them|change one|\[1-3\]/u);
+    expect(view.keys[0]).toBe('Enter send answers · ←/→ questions · [Ctrl+S] skip all');
   });
 
   it('marks an unanswered question and shows the note the reducer left', () => {
@@ -682,13 +756,17 @@ describe('the Review tab (ADR-0132 §3)', () => {
 
   it('the tab strip fills in as questions are answered and brackets the tab on screen', () => {
     const state = initialQuestionCard(request);
-    expect(projectQuestionCard(state, COLUMNS).body[0]?.text).toBe('Pick  [○] ○ ○ · Review');
+    expect(projectQuestionCard(state, COLUMNS).body[0]?.text).toBe(
+      titleLine('Pick', '[○] ○ ○ · Review'),
+    );
     const after = {
       ...state,
       index: 1,
       entries: state.entries.map((e, i) => (i === 0 ? { ...e, ticked: [0] } : e)),
     };
-    expect(projectQuestionCard(after, COLUMNS).body[0]?.text).toBe('Also  ● [○] ○ · Review');
+    expect(projectQuestionCard(after, COLUMNS).body[0]?.text).toBe(
+      titleLine('Also', '● [○] ○ · Review'),
+    );
   });
 
   it('colours a chosen option differently from a plain one and from the highlight', () => {
@@ -740,10 +818,10 @@ describe('the Review tab shows the whole answer, or says how much it hides (ADR-
   const fullLine = (index: number, text: string): string =>
     `● ${String(index + 1)} Notes${String(index + 1)} → “${text}”`;
 
-  /** The rows of the answers alone: the title above them and the note below are not part of any answer. */
+  /** The rows of the answers alone: the title above them is not part of any answer (the tab has no closing row unless a hint is up). */
   const answerRowsOf = (state: QuestionCardState): string[] =>
     projectQuestionCard(state, COLUMNS)
-      .body.slice(1, -1)
+      .body.slice(1)
       .map((row) => row.text);
 
   /** Group the answer rows by answer: a row that starts with a dot begins one, an indented row continues the last. */
@@ -783,18 +861,32 @@ describe('the Review tab shows the whole answer, or says how much it hides (ADR-
 
   it('an answer that cannot fit says exactly how many characters it hides, never a bare ellipsis', () => {
     const own = `${'abcdefghij'.repeat(50)}`; // 500 characters, the person's whole allowance
-    const rows = answerRowsOf(reviewOf([own, 'ok']));
+    const rows = answerRowsOf(reviewOf([own, own, 'ok'])); // two of them need more rows than the body has
     const [first] = grouped(rows);
     const { shown, hidden } = readGroup(first ?? []);
     expect(hidden).toBeGreaterThan(0);
     expect(fullLine(0, own).startsWith(shown)).toBe(true);
     expect([...fullLine(0, own)].length - [...shown].length).toBe(hidden);
-    expect(rows.filter((row) => row.includes('not shown'))).toHaveLength(1);
+    // both long answers are cut and say so; the short one is shown whole
+    expect(rows.filter((row) => row.includes('not shown'))).toHaveLength(2);
+    expect(rows.at(-1)).toBe(fullLine(2, 'ok'));
   });
 
   it('a short answer keeps one row and the long one takes the rows it leaves', () => {
     const rows = projectQuestionCard(reviewOf(['ok', 'fine', 'x'.repeat(500)]), COLUMNS).body;
     expect(rows).toHaveLength(QUESTION_CARD_MAX_BODY_ROWS);
+    const [a, b, c] = grouped(rows.slice(1).map((row) => row.text));
+    expect([a?.length, b?.length, c?.length]).toEqual([1, 1, 6]);
+  });
+
+  it('a hint gives its row back: the answers take one row fewer and the body still ends at the bound', () => {
+    const state = {
+      ...reviewOf(['ok', 'fine', 'x'.repeat(500)]),
+      hint: 'Question 1 is not answered yet.',
+    };
+    const rows = projectQuestionCard(state, COLUMNS).body;
+    expect(rows).toHaveLength(QUESTION_CARD_MAX_BODY_ROWS);
+    expect(rows.at(-1)).toMatchObject({ text: 'Question 1 is not answered yet.', tone: 'hint' });
     const [a, b, c] = grouped(rows.slice(1, -1).map((row) => row.text));
     expect([a?.length, b?.length, c?.length]).toEqual([1, 1, 5]);
   });
@@ -828,7 +920,7 @@ describe('the Review tab shows the whole answer, or says how much it hides (ADR-
         return text;
       });
       const rows = answerRowsOf(reviewOf(own));
-      expect(rows.length).toBeLessThanOrEqual(QUESTION_CARD_MAX_BODY_ROWS - 2);
+      expect(rows.length).toBeLessThanOrEqual(QUESTION_CARD_MAX_BODY_ROWS - 1);
       for (const row of rows) expect(displayWidth(row)).toBeLessThanOrEqual(COLUMNS - 2);
       const groups = grouped(rows);
       expect(groups).toHaveLength(count);
@@ -862,5 +954,360 @@ describe('the Review tab shows the whole answer, or says how much it hides (ADR-
     // Both outcomes really happened, or the property proves only one of them.
     expect(whole).toBeGreaterThan(100);
     expect(counted).toBeGreaterThan(30);
+  });
+});
+
+describe('the stop row gives up the note, never the key that leaves (round-1 fix)', () => {
+  const request: AskUserRequest = {
+    questions: [
+      {
+        header: 'Pick',
+        question: 'Which?',
+        multiSelect: false,
+        options: [
+          { label: 'a', description: 'first' },
+          { label: 'b', description: 'second' },
+        ],
+      },
+    ],
+  };
+  const NOTE = 'an answer is guidance, not a veto';
+  const state = initialQuestionCard(request);
+  const inField: QuestionCardState = { ...state, field: { text: '', cursor: 0 } };
+
+  it('keeps `stops the turn` whole at 50, 60 and 66 columns, where the note no longer fits, and keeps both at 67', () => {
+    for (const columns of [50, 60, 66]) {
+      const row = projectQuestionCard(state, columns, { guideNote: true }).keys[1];
+      expect(row, `${String(columns)} columns`).toBe('Esc / [Ctrl+C] stops the turn');
+      expect(row).not.toContain(NOTE);
+      expect(displayWidth(row)).toBeLessThanOrEqual(columns - 2);
+    }
+    const whole = projectQuestionCard(state, 67, { guideNote: true }).keys[1];
+    expect(whole).toBe(`${NOTE} · Esc / [Ctrl+C] stops the turn`);
+    expect(displayWidth(whole)).toBe(65);
+  });
+
+  it('the note goes first and the exit last, with the room to hold both', () => {
+    const row = projectQuestionCard(state, COLUMNS, { guideNote: true }).keys[1];
+    expect(row.startsWith(NOTE)).toBe(true);
+    expect(row.endsWith('stops the turn')).toBe(true);
+  });
+
+  it('the own-answer field row keeps `Esc close`, and `[Ctrl+C] stops the turn`, as the note gives way', () => {
+    for (const columns of [38, 40, 50, 60, 66, 67, 80]) {
+      const row = projectQuestionCard(inField, columns, { guideNote: true }).keys[1];
+      expect(row, `${String(columns)} columns`).toContain('Esc close');
+      expect(row, `${String(columns)} columns`).toContain('[Ctrl+C] stops the turn');
+      expect(displayWidth(row)).toBeLessThanOrEqual(columns - 2);
+    }
+    expect(projectQuestionCard(inField, 50, { guideNote: true }).keys[1]).toBe(
+      '[Ctrl+C] stops the turn · Esc close',
+    );
+    expect(projectQuestionCard(inField, 80, { guideNote: true }).keys[1]).toBe(
+      `[Ctrl+C] stops the turn · ${NOTE} · Esc close`,
+    );
+    // no note wanted: the row is what it was
+    expect(projectQuestionCard(inField, 50).keys[1]).toBe('[Ctrl+C] stops the turn · Esc close');
+  });
+});
+
+describe('what a model wrote cannot draw the host’s own marks, and ordinary text is left alone (round-2 fix)', () => {
+  interface Over {
+    header?: string;
+    question?: string;
+    labels?: readonly string[];
+    description?: string;
+  }
+  const ask = (over: Over): QuestionCardState =>
+    initialQuestionCard({
+      questions: [
+        {
+          header: over.header ?? 'Pick',
+          question: over.question ?? 'Which?',
+          multiSelect: false,
+          options: (over.labels ?? ['Keep it', 'Delete']).map((label) => ({
+            label,
+            description: over.description ?? 'first',
+          })),
+        },
+      ],
+    });
+  const rowsOf = (state: QuestionCardState, plain: boolean): string[] =>
+    withGlyphForm(plain, () => projectQuestionCard(state, COLUMNS).body.map((row) => row.text));
+  /** What follows the host's own `› 1 ( ) ` (or `> 1 ( ) `) on an option row: the label as drawn. */
+  const labelDrawn = (row: string): string => row.replace(/^[›> ] \d (?:\( \)|\((?:•|\*)\)) /u, '');
+
+  it('the probes the core accepts are the probes the card must neutralise (the premise)', () => {
+    expect(plainTextRefusal('>1 (*) Delete', 200)).toBeUndefined();
+    expect(plainTextRefusal('Keep (*) Delete the folder', 200)).toBeUndefined();
+    expect(plainTextRefusal('What should f(x) return when (o) is empty?', 200)).toBeUndefined();
+    expect(plainTextRefusal('Delete (x)', 200)).toBeUndefined();
+    expect(plainTextRefusal('❯ 1 (●) Delete all', 200)).toBeUndefined();
+  });
+
+  it('a `(*)` in a label loses its parentheses in the plain form, where the host draws that radio, and stays text in the Unicode form', () => {
+    const state = ask({ labels: ['Keep (*) Delete the folder', 'Delete'] });
+    const plain = rowsOf(state, true).find((row) => row.includes('Keep')) ?? '';
+    expect(plain).toBe('> 1 ( ) Keep  *  Delete the folder');
+    expect(labelDrawn(plain).match(/\(\*\)/gu)).toBeNull();
+    const unicode = rowsOf(state, false).find((row) => row.includes('Keep')) ?? '';
+    expect(unicode).toBe('› 1 ( ) Keep (*) Delete the folder');
+  });
+
+  it('the probes that were wrongly blanked: `f(x)` and `(o)` in a question and a header are text, in both forms', () => {
+    const state = ask({
+      header: 'Pick f(x)',
+      question: 'What should f(x) return when (o) is empty?',
+    });
+    for (const plain of [true, false]) {
+      const rows = rowsOf(state, plain);
+      expect(rows[0], `plain ${String(plain)}`).toBe('│ Pick f(x)');
+      expect(rows[1], `plain ${String(plain)}`).toBe(
+        '│ What should f(x) return when (o) is empty?',
+      );
+    }
+  });
+
+  it('labels that differ keep differing: `Delete (x)`, `Delete (o)`, `Delete (*)` and `Delete` draw four distinct rows, none with a radio of its own', () => {
+    const labels = ['Delete (x)', 'Delete (o)', 'Delete (*)', 'Delete'];
+    for (const plain of [true, false]) {
+      const rows = rowsOf(ask({ labels }), plain).slice(2, 6);
+      expect(new Set(rows).size, `plain ${String(plain)}`).toBe(4);
+      expect(labelDrawn(rows[3] ?? '')).toBe('Delete');
+      // the shapes the host draws in this form: `( )` always, the chosen radio `(*)` in the plain form and `(•)` in the Unicode one
+      const radio = plain ? /\(\*\)|\( \)/u : /\(•\)|\( \)/u;
+      for (const row of rows) expect(labelDrawn(row), row).not.toMatch(radio);
+    }
+    expect(rowsOf(ask({ labels }), true).slice(2, 6).map(labelDrawn)).toEqual([
+      'Delete (x)',
+      'Delete (o)',
+      'Delete  * ',
+      'Delete',
+    ]);
+  });
+
+  it('a lookalike of the host’s cursor row in the header is drawn behind the host’s gutter, never at column 0, with its host glyphs blanked', () => {
+    const headers = [
+      '˃ 1 (∗) Delete',
+      '❯ 1 (●) Delete all',
+      '＞1 （*） Delete',
+      '>1 (*) Delete',
+      '> 1 ( ) Keep it',
+    ];
+    for (const plain of [true, false])
+      for (const header of headers) {
+        const row = rowsOf(ask({ header }), plain)[0] ?? '';
+        expect(row.startsWith('│ '), `${header} (plain ${String(plain)})`).toBe(true);
+        expect(row, header).not.toMatch(/[❯●]/u);
+      }
+    expect(rowsOf(ask({ header: '❯ 1 (●) Delete all' }), true)[0]).toBe('│   1     Delete all');
+    expect(rowsOf(ask({ header: '❯ 1 (●) Delete all' }), false)[0]).toBe('│   1     Delete all');
+  });
+
+  it('every string a model wrote is held to the rule: the question, a label and the highlighted description', () => {
+    const state = ask({
+      question: 'Pick (*) or ❯ (●)',
+      labels: ['A (*) ❯', 'B'],
+      description: 'Why (*) ❯ (●)',
+    });
+    const plain = rowsOf(state, true);
+    const unicode = rowsOf(state, false);
+    // the question and the description (the highlighted option's) are behind the gutter, and say nothing the host says
+    expect(plain[1]?.trimEnd()).toBe('│ Pick  *  or');
+    expect(plain.at(-1)?.trimEnd()).toBe('│ Why  *');
+    expect(unicode[1]?.trimEnd()).toBe('│ Pick (*) or');
+    expect(unicode.at(-1)?.trimEnd()).toBe('│ Why (*)');
+    // the label is the third row of the card (header, question, then the options)
+    expect(labelDrawn(plain[2] ?? '').trimEnd()).toBe('A  *');
+    expect(labelDrawn(unicode[2] ?? '').trimEnd()).toBe('A (*)');
+  });
+
+  it('the host cursor `>` at the start of a header is blanked in the plain form only; a `>` elsewhere is text', () => {
+    expect(rowsOf(ask({ header: '>1 (*) Delete' }), true)[0]).toBe('│  1  *  Delete');
+    expect(rowsOf(ask({ header: '>1 (*) Delete' }), false)[0]).toBe('│ >1 (*) Delete');
+    const state = ask({ header: 'a > b', labels: ['>x then', 'y'], description: 'x > 1' });
+    const text = rowsOf(state, true).join('\n');
+    expect(text).toContain('a > b');
+    expect(text).toContain('>x then');
+    expect(text).toContain('x > 1');
+  });
+
+  it('the Review tab holds model text to the same rule: a header and a chosen label', () => {
+    const two = initialQuestionCard({
+      questions: [
+        {
+          header: 'Head (*)',
+          question: 'Which?',
+          multiSelect: false,
+          options: [
+            { label: 'Keep (x) (*) it', description: 'first' },
+            { label: 'Delete', description: 'second' },
+          ],
+        },
+        {
+          header: '❯ Also',
+          question: 'And?',
+          multiSelect: false,
+          options: [
+            { label: 'c', description: 'third' },
+            { label: 'd', description: 'fourth' },
+          ],
+        },
+      ],
+    });
+    const answered: QuestionCardState = {
+      ...two,
+      index: 2,
+      entries: two.entries.map((entry, index) => (index === 0 ? { ...entry, ticked: [0] } : entry)),
+    };
+    expect(rowsOf(answered, true).slice(1)).toEqual([
+      '+ 1 Head  *  → Keep (x)  *  it',
+      'o 2   Also → not answered yet',
+    ]);
+    expect(rowsOf(answered, false).slice(1)).toEqual([
+      '● 1 Head (*) → Keep (x) (*) it',
+      '○ 2   Also → not answered yet',
+    ]);
+  });
+});
+
+describe('the current dot of the tab strip is not a key token without colour (round-1 fix)', () => {
+  const request: AskUserRequest = {
+    questions: [
+      {
+        header: 'Pick',
+        question: 'Which?',
+        multiSelect: false,
+        options: [
+          { label: 'a', description: 'first' },
+          { label: 'b', description: 'second' },
+        ],
+      },
+      {
+        header: 'Also',
+        question: 'And?',
+        multiSelect: false,
+        options: [
+          { label: 'c', description: 'third' },
+          { label: 'd', description: 'fourth' },
+        ],
+      },
+    ],
+  };
+  const head = (state: QuestionCardState, plain: boolean): string =>
+    withGlyphForm(plain, () => projectQuestionCard(state, COLUMNS).body[0]?.text ?? '');
+
+  it('is `<o>` and `<+>` in the plain form and `[○]` and `[●]` with the Unicode form', () => {
+    const state = initialQuestionCard(request);
+    expect(head(state, true)).toBe(titleLine('Pick', '<o> o · Review'));
+    expect(head(state, false)).toBe(titleLine('Pick', '[○] ○ · Review'));
+    const answered: QuestionCardState = {
+      ...state,
+      entries: state.entries.map((entry, index) =>
+        index === 0 ? { ...entry, ticked: [0] } : entry,
+      ),
+    };
+    expect(head(answered, true)).toBe(titleLine('Pick', '<+> o · Review'));
+    expect(head(answered, false)).toBe(titleLine('Pick', '[●] ○ · Review'));
+    expect(head({ ...answered, index: 1 }, true)).toBe(titleLine('Also', '+ <o> · Review'));
+  });
+
+  it('the plain header holds no bracketed letter or sign that the legend would write as a key', () => {
+    const state = initialQuestionCard(request);
+    expect(head(state, true)).not.toMatch(/\[[a-z+]\]/u);
+    const review = withGlyphForm(
+      true,
+      () => projectQuestionCard({ ...state, index: 2 }, COLUMNS).body[0]?.text,
+    );
+    expect(review).not.toMatch(/\[[a-z+]\]/u);
+  });
+});
+
+describe('labels that would draw alike are written one-to-one (review round 4, R4-S-3; literal oracles, not the filter)', () => {
+  const c = (code: number): string => String.fromCodePoint(code);
+  const TONE = c(0x1f3fd);
+  /** The label part of each option row of a one-question card at 80 columns (the eight-column prefix `› 1 ( ) ` taken off). */
+  function drawn(labels: readonly string[], plain = false, columns = COLUMNS): string[] {
+    const request: AskUserRequest = {
+      questions: [
+        {
+          header: 'Pick',
+          question: 'Which one?',
+          multiSelect: false,
+          options: labels.map((label) => ({ label, description: 'An option' })),
+        },
+      ],
+    };
+    return withGlyphForm(plain, () => projectQuestionCard(initialQuestionCard(request), columns))
+      .body.filter((row) => /^. \d [[(]/u.test(row.text))
+      .map((row) => row.text.slice(8));
+  }
+
+  it.each([
+    ['a host glyph the card blanks', ['A●B', 'A B'], ['A<U+25CF>B', 'A B']],
+    ['a tick the card blanks', ['Keep ✓ all', 'Keep   all'], ['Keep <U+2713> all', 'Keep   all']],
+    [
+      'a narrow emoji base and its selector',
+      [c(0x261d), `${c(0x261d)}${c(0xfe0f)}`],
+      ['<U+261D>', '<U+261D><U+FE0F>'],
+    ],
+    ['the Thai AM and its decomposition', ['ทำ', 'ทํา'], ['ท<U+0E33>', 'ท<U+0E4D>า']],
+    ['the Lao AM and its decomposition', ['ທຳ', 'ທໍາ'], ['ທ<U+0EB3>', 'ທ<U+0ECD>າ']],
+    ['a tone the filter drops', ['Ok', `Ok${TONE}`], ['Ok', 'Ok<U+1F3FD>']],
+    // the chat's tool-call triangle is a host glyph the card blanks, so the two would draw alike: written one-to-one
+    ['the tool-call triangle the card blanks', ['A▸B', 'A B'], ['A<U+25B8>B', 'A B']],
+    // a triangle the host does not draw is ordinary text to the card (it blanks only its own glyphs and shapes): the two draw apart as they are
+    ['a triangle the host does not draw, not blanked', ['A▹B', 'A B'], ['A▹B', 'A B']],
+  ] as const)('%s', (_name, labels, expected) => {
+    expect(drawn(labels)).toEqual(expected);
+  });
+
+  it('the plain form’s radio shape: `A(*)B` and `A * B`', () => {
+    expect(drawn(['A(*)B', 'A * B'], true)).toEqual(['A<U+0028>*<U+0029>B', 'A * B']);
+  });
+
+  it('a label that draws empty is written, never an empty row', () => {
+    expect(drawn([TONE, 'Other'])).toEqual(['<U+1F3FD>', 'Other']);
+    expect(drawn([c(0x302e), 'Other'])).toEqual(['<U+302E>', 'Other']);
+  });
+
+  it('two labels alike up to the row’s cut: cut in the middle, so their ends tell them apart', () => {
+    const a = `Ok${`a${TONE}${TONE}${TONE}`.repeat(3)}a${TONE}${TONE}${c(0x1f3fb)}`;
+    const b = `Ok${`a${TONE}${TONE}${TONE}`.repeat(4)}`;
+    const [first, second] = drawn([a, b]);
+    expect(first).not.toBe(second);
+    expect(first?.endsWith('<U+1F3FB>')).toBe(true);
+    expect(second?.endsWith('<U+1F3FD>')).toBe(true);
+    expect(first?.startsWith('Oka<U+1F3FD>')).toBe(true);
+  });
+
+  it('a set with no two alike draws as every row does: filtered, no token', () => {
+    expect(drawn([`Yes${TONE}`, 'No'])).toEqual(['Yes', 'No']);
+  });
+
+  it('two labels that differ only past the row’s cut are judged as cut, not whole: cut in the middle (a 40-column card)', () => {
+    // a 60-byte label is at most 40 columns, so at 80 columns only an escaped form reaches the cut: a narrower card shows the rule
+    const [first, second] = drawn([`${'a'.repeat(35)}1`, `${'a'.repeat(35)}2`], false, 40);
+    expect(first).not.toBe(second);
+    expect(first?.endsWith('a1')).toBe(true);
+    expect(second?.endsWith('a2')).toBe(true);
+  });
+
+  it('every glyph the host draws, in either form, is written as a token by the escape itself (so the card names only its ASCII shapes)', () => {
+    for (const plain of [false, true]) {
+      let glyphs = 0;
+      withGlyphForm(plain, () => {
+        for (let code = 0; code <= 0x10ffff; code += 1) {
+          if (code >= 0xd800 && code <= 0xdfff) continue;
+          const character = c(code);
+          if (blankHostGlyphs(character) === character) continue;
+          glyphs += 1;
+          expect(escapeScreenText(character), character).toBe(
+            `<U+${code.toString(16).toUpperCase().padStart(4, '0')}>`,
+          );
+        }
+      });
+      expect(glyphs).toBeGreaterThan(100);
+    }
   });
 });

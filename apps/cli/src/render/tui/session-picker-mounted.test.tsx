@@ -37,15 +37,15 @@ describe.each(['home', 'standalone'] as const)('mounted searchable picker in %s'
           startChat: () => Promise.resolve(session),
           homeStore: {
             read: () => ({
-              attention: { gates: [], failedRuns: [] },
+              failedRuns: [],
               recentSessions: [],
               recentRuns: [],
               recentAgents: [],
-              unreadableRunIds: [],
+              unreadableRuns: [],
+              totals: { attention: 0, sessions: 0, runs: 0 },
               isEmpty: true,
             }),
           },
-          doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
           onExit: () => {},
           onError: () => {},
         });

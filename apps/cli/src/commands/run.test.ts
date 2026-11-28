@@ -3,7 +3,7 @@ import { workflowFinalizerControl } from './workflow-expired-cleanup.test-suppor
 import { createCliInvocation } from '../process/invocation.js';
 import { witnessNativeToolProcess } from './native-forwarding.test-support.js';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -693,7 +693,8 @@ describe('runCommand', () => {
       );
       expect(code).toBe(EXIT_CODES.success);
       expect(args).toHaveLength(1);
-      expect(args[0]?.[2]).toBe(root); // arg[2] = projectRoot = deps.global.cwd, persisted to runs.project_root
+      // arg[2] = projectRoot, persisted to runs.project_root: the canonical spelling of deps.global.cwd (MVP-11 unit 7, round 2).
+      expect(args[0]?.[2]).toBe(realpathSync.native(root));
     } finally {
       client.sqlite.close();
     }

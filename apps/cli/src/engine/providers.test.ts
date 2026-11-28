@@ -10,9 +10,12 @@ import {
   KNOWN_PROVIDER_IDS,
   KNOWN_PROVIDERS,
   neededProviderIds,
+  providerDisplayName,
   providerHasKey,
   providerKeyEnvVar,
+  providerRowHint,
   validateProviderKey,
+  type ProviderKeyAvailability,
 } from './providers.js';
 import type { FetchLike } from './validated-fetch.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
@@ -140,6 +143,90 @@ ${OUTPUT}`,
   });
 });
 
+describe('providerDisplayName (ADR-0145: a person reads a provider by its name, not its id)', () => {
+  it('is the display name of every known provider, and the id itself for one this build has no metadata for', () => {
+    expect(providerDisplayName('anthropic')).toBe('Anthropic');
+    expect(providerDisplayName('openai')).toBe('OpenAI');
+    expect(providerDisplayName('gemini')).toBe('Google Gemini');
+    expect(providerDisplayName('deepseek')).toBe('DeepSeek');
+    expect(providerDisplayName('my-gateway')).toBe('my-gateway'); // a registered custom provider
+    expect(providerDisplayName('toString')).toBe('toString'); // not a lookup into Object.prototype
+  });
+
+  it('covers every known provider id, so a new one cannot read as its id by omission', () => {
+    for (const id of KNOWN_PROVIDER_IDS) expect(providerDisplayName(id)).not.toBe(id);
+  });
+});
+
+describe('providerRowHint (MVP-11 Step 2.4: the hint inside the list that connects a provider)', () => {
+  const health = { keychainHealth: 'available' } as const;
+  const standard = (name: 'OPENAI_API_KEY' | 'ANTHROPIC_API_KEY'): ProviderKeyAvailability => ({
+    ...health,
+    status: 'present-standard-not-allowed',
+    source: { kind: 'standard-env', name },
+  });
+
+  it('says what Enter does on a row with no key, an environment key that is not allowed yet, a locked keychain and a custom endpoint', () => {
+    expect(providerRowHint({ ...health, status: 'missing' })).toBe('no key yet · Enter add one');
+    expect(providerRowHint(standard('ANTHROPIC_API_KEY'))).toBe(
+      'ANTHROPIC_API_KEY is set · Enter review it',
+    );
+    expect(providerRowHint({ ...health, status: 'unavailable' })).toBe(
+      'the OS keychain is unavailable · Enter show options',
+    );
+    expect(
+      providerRowHint({
+        ...health,
+        status: 'ineligible-custom-endpoint',
+        source: { kind: 'standard-env', name: 'OPENAI_API_KEY' },
+      }),
+    ).toBe('custom endpoint · Enter add a key');
+  });
+
+  it('names the source of a key that works, in the words the selected card repeats', () => {
+    expect(
+      providerRowHint({
+        ...health,
+        status: 'usable',
+        source: { kind: 'keychain', label: 'OS keychain' },
+      }),
+    ).toBe('An API key is available from OS keychain.');
+  });
+
+  it('never points at the screen it is shown on, and never names a provider by its id', () => {
+    const all: ProviderKeyAvailability[] = [
+      { ...health, status: 'missing' },
+      standard('OPENAI_API_KEY'),
+      { ...health, status: 'unavailable' },
+    ];
+    for (const availability of all) {
+      const hint = providerRowHint(availability);
+      expect(hint).not.toContain('/providers');
+      expect(hint).not.toContain('open `');
+      for (const id of KNOWN_PROVIDER_IDS) expect(hint.toLowerCase()).not.toContain(`'${id}'`);
+    }
+  });
+
+  it('keeps every row of the list on one row at 80 columns, so a wrapped row never starts with a stray space', () => {
+    const all: ProviderKeyAvailability[] = [
+      { ...health, status: 'missing' },
+      standard('ANTHROPIC_API_KEY'),
+      { ...health, status: 'unavailable' },
+      {
+        ...health,
+        status: 'ineligible-custom-endpoint',
+        source: { kind: 'standard-env', name: 'OPENAI_API_KEY' },
+      },
+    ];
+    for (const id of KNOWN_PROVIDER_IDS)
+      for (const availability of all) {
+        // The card draws `❯ <label> — <hint>`.
+        const row = `❯ ${KNOWN_PROVIDERS[id].displayName} — ${providerRowHint(availability)}`;
+        expect(row.length, row).toBeLessThanOrEqual(80);
+      }
+  });
+});
+
 describe('providerKeyEnvVar', () => {
   it('maps a lowercase provider id to its uppercase env var', () => {
     expect(providerKeyEnvVar('anthropic')).toBe('RELAVIUM_ANTHROPIC_API_KEY');
@@ -154,17 +241,17 @@ describe('KNOWN_PROVIDER_IDS ↔ LLM_PROVIDERS lock-step (2.5.G Step-A latent co
     // closed enum but MISSING from KNOWN_PROVIDER_IDS is silently mis-dimmed in the Home — the key-probe filters
     // KNOWN_PROVIDER_IDS, so the new provider is never in `keyedProviders`, and `mergeModelCatalog` marks its
     // model_catalog rows `available: false` + `unavailableReason: 'no-key'` even with a stored key. Adding a
-    // provider to LLM_PROVIDERS therefore REQUIRES a KNOWN_PROVIDERS entry (incl. a testModel); this red run is
+    // provider to LLM_PROVIDERS therefore REQUIRES a KNOWN_PROVIDERS entry (incl. a starterModel); this red run is
     // the reminder. `toEqual` compares Set membership structurally (order-independent).
     expect(new Set(KNOWN_PROVIDER_IDS)).toEqual(new Set(LLM_PROVIDERS));
   });
 
-  it('gives every known provider a non-empty testModel (so its key is live-validatable)', () => {
-    // The onboarding wizard + `provider test` + `/doctor --deep` all ping `KNOWN_PROVIDERS[id].testModel`; an empty
+  it('gives every known provider a non-empty starterModel (so its key is live-validatable)', () => {
+    // The onboarding wizard + `provider test` + `/doctor --deep` all ping `KNOWN_PROVIDERS[id].starterModel`; an empty
     // string would break the live key-check. The `Record<KNOWN_PROVIDER_IDS[number], ProviderMeta>` type guarantees
-    // a row per id, so this asserts the field's VALUE, not its presence.
+    // a row per id, so this asserts the field's VALUE, not its presence (the catalogue rows: `starter-models.test.ts`).
     for (const id of KNOWN_PROVIDER_IDS) {
-      expect(KNOWN_PROVIDERS[id].testModel.trim().length).toBeGreaterThan(0);
+      expect(KNOWN_PROVIDERS[id].starterModel.trim().length).toBeGreaterThan(0);
     }
   });
 });
@@ -286,6 +373,47 @@ describe('validateProviderKey', () => {
       'm-test',
     );
     expect(plain.reason).toBe('other'); // a non-LlmProviderError throw → other
+  });
+
+  it('says a transport failure in ONE sentence for every provider, whatever words its SDK used, and keeps the words of a failure that has a status or a code', async () => {
+    const transport = (
+      provider: 'openai' | 'anthropic' | 'gemini',
+      message: string,
+      extra: { status?: number; code?: string } = {},
+    ): LlmProviderError =>
+      new LlmProviderError({
+        kind: 'transport',
+        retryable: true,
+        provider,
+        message,
+        ...extra,
+      });
+    const detailOf = async (error: LlmProviderError): Promise<string> =>
+      (
+        await validateProviderKey(
+          fakeProvider(vi.fn().mockRejectedValue(error)),
+          TEST_KEY,
+          'm-test',
+        )
+      ).detail;
+    const same = 'key test failed — could not reach the provider';
+    // two SDKs, two sets of words for the same cause: one sentence
+    expect(await detailOf(transport('openai', 'Connection error.'))).toBe(same);
+    expect(await detailOf(transport('anthropic', 'fetch failed'))).toBe(same);
+    // the cause stays a network one (continue-anyway is offered), and the sentence names no key
+    const net = await validateProviderKey(
+      fakeProvider(vi.fn().mockRejectedValue(transport('openai', 'Connection error.'))),
+      TEST_KEY,
+      'm-test',
+    );
+    expect(net.reason).toBe('network');
+    // a failure that carries the provider's status or code is NOT hidden behind it
+    expect(await detailOf(transport('openai', '502 bad gateway', { status: 502 }))).toBe(
+      'key test failed — 502 bad gateway',
+    );
+    expect(await detailOf(transport('gemini', 'socket hang up', { code: 'ECONNRESET' }))).toBe(
+      'key test failed — socket hang up',
+    );
   });
 
   it('REDACTS the key from a failing-ping message (never the full key, keeps the last-4 hint)', async () => {

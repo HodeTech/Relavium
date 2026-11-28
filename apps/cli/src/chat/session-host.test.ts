@@ -302,6 +302,7 @@ describe('buildChatSession', () => {
       });
       applyChatMode(
         makeChatModeEnv({
+          commandPaths: undefined,
           session: built.session,
           tools: built.tools,
           workspaceDir: workspace,
@@ -1278,7 +1279,9 @@ describe('buildResumedChatSession (2.N)', () => {
         callWithArgs('c1', 'write_file', { path: 'x.txt', content: 'p' }),
       ]),
     });
-    createChatModeControl(built, createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND)); // ask regime, applied to the resumed session
+    createChatModeControl(built, createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND), {
+      commandPaths: undefined,
+    }); // ask regime, applied to the resumed session
     // A resumed session lands at idle and continues without start(); the next sendMessage runs a turn.
     await built.session.sendMessage('write a file');
     built.session.cancel();
@@ -1305,6 +1308,7 @@ describe('buildResumedChatSession (2.N)', () => {
       const remembered = new Set((options.remembered ?? []).map((argv) => JSON.stringify(argv)));
       const control = createChatModeControl(built, store, {
         commandGrants: { matches: (argv) => remembered.has(JSON.stringify(argv)) },
+        commandPaths: undefined,
       });
       control.onModeChange(mode);
       built.session.start();
@@ -1390,7 +1394,7 @@ describe('buildResumedChatSession (2.N)', () => {
     const control = createChatModeControl(
       built,
       createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND),
-      { interactive: false },
+      { interactive: false, commandPaths: undefined },
     );
     control.onModeChange('accept-edits'); // a prompting mode — but nothing can answer on this driver
     await built.session.sendMessage('write a file'); // MUST resolve (deny), never hang
@@ -1921,6 +1925,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     // `ask` denies every governed dispatch (two-layer — the advertise-filter also hides write_file, but the
     // scripted model calls it anyway, so the confirm floor is what denies it).
     const env = makeChatModeEnv({
+      commandPaths: undefined,
       session: built.session,
       tools: built.tools,
       workspaceDir: workspace,
@@ -1940,7 +1945,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
   });
 
   it('createChatModeControl (the LIVE wiring) gates a governed dispatch under the default ask regime: a declined card writes nothing and the turn continues (ADR-0117)', async () => {
-    // Prove the PRODUCTION seam — createChatModeControl(built, store) applies the initial ask mode via the real
+    // Prove the PRODUCTION seam — createChatModeControl(built, store, { commandPaths: undefined }) applies the initial ask mode via the real
     // store.requestApproval prompt. The write is gated on a published card; declining it writes nothing and the
     // REFUSAL RETURNS to the model, so the turn goes on and completes (it used to end with `tool_denied`).
     const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
@@ -1955,7 +1960,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
       ]),
     });
     const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    createChatModeControl(built, store); // applies ask → the fail-closed regime is now active
+    createChatModeControl(built, store, { commandPaths: undefined }); // applies ask → the fail-closed regime is now active
     built.session.start();
     const turn = built.session.sendMessage('write a file');
     await vi.waitFor(
@@ -1993,7 +1998,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
         providers,
       });
       const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-      createChatModeControl(built, store); // ask mode: the write waits on a real card
+      createChatModeControl(built, store, { commandPaths: undefined }); // ask mode: the write waits on a real card
       built.session.start();
       const turn = built.session.sendMessage('write a file');
       await vi.waitFor(
@@ -2029,7 +2034,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
       chat: { ...EMPTY_CHAT, defaultModel: 'claude-opus-4-8', reasoningEffort: 'medium' },
     });
     const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    const control = createChatModeControl(built, store);
+    const control = createChatModeControl(built, store, { commandPaths: undefined });
     // Seeded from the agent's effective tier — opus is reasoning-capable, so the footer shows it.
     expect(store.getSnapshot().reasoningEffort).toBe('medium');
     expect(built.session.reasoningEffort).toBe('medium');
@@ -2044,7 +2049,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
       chat: { ...EMPTY_CHAT, defaultModel: 'gpt-4o', reasoningEffort: 'high' },
     });
     const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    createChatModeControl(built, store);
+    createChatModeControl(built, store, { commandPaths: undefined });
     // The config default is baked onto the agent, but gpt-4o has no reasoning tier — the footer shows nothing
     // (the tier is gated off at send anyway), so a user is never shown an inert effort.
     expect(store.getSnapshot().reasoningEffort).toBeUndefined();
@@ -2062,7 +2067,9 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
         callWithArgs('c1', 'http_request', { url: 'https://example.test/x' }),
       ]),
     });
-    createChatModeControl(built, createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND)); // ask regime active
+    createChatModeControl(built, createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND), {
+      commandPaths: undefined,
+    }); // ask regime active
     built.session.start();
     await built.session.sendMessage('fetch a url');
     built.session.cancel();
@@ -2089,6 +2096,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     const control = createChatModeControl(
       built,
       createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND),
+      { commandPaths: undefined },
     );
     control.onModeChange('plan'); // the read-only regime
     built.session.start();
@@ -2118,7 +2126,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
       ]),
     });
     const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    const control = createChatModeControl(built, store);
+    const control = createChatModeControl(built, store, { commandPaths: undefined });
     control.onModeChange('ask'); // the default: a card for each governed write
     built.session.start();
     const turn = built.session.sendMessage('write a file');
@@ -2388,7 +2396,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
         });
         const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
         const prompt = vi.spyOn(store, 'requestApproval');
-        createChatModeControl(built, store).onModeChange('auto');
+        createChatModeControl(built, store, { commandPaths: undefined }).onModeChange('auto');
         built.session.start();
         await built.session.sendMessage('write a protected file');
         built.session.cancel();
@@ -3101,6 +3109,22 @@ describe('the default model follows the stored key (MVP-A4)', () => {
         }),
       ),
     ).toContain('set-key openai');
+  });
+
+  it('words the pre-flight refusal for the surface the resolver was built for, never a shell command inside the TUI (ADR-0146 §6)', async () => {
+    const keyless = (credentialSurface: 'home' | 'standalone-chat'): ProviderResolver => ({
+      ...keyedOnly([]),
+      credentialSurface,
+    });
+    const home = await refusalOf(build({ providers: keyless('home') }));
+    expect(home).toContain('open `/providers`');
+    const standalone = await refusalOf(build({ providers: keyless('standalone-chat') }));
+    // A restart opens setup only while NO provider is usable, so it is not the remedy; the Home is (ADR-0145 §7.4).
+    expect(standalone).toContain('from the Home (start Relavium without arguments)');
+    expect(standalone).not.toContain('restart this chat');
+    for (const text of [home, standalone]) expect(text).not.toMatch(/relavium|set-key/u);
+    // A resolver that names no surface (a scripting path, an injected stub) keeps the shell's own remedy.
+    expect(await refusalOf(build({ providers: keyedOnly([]) }))).toContain('set-key anthropic');
   });
 
   it('refuses a RESUMED keyless session BEFORE asking for MCP consent or starting a server (MVP-A4)', async () => {

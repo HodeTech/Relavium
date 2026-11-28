@@ -1,4 +1,5 @@
-import { Box, Text, useApp, useStdout, type DOMElement } from 'ink';
+import { Box, useApp, useStdout, type DOMElement } from 'ink';
+import { Text } from './text.js';
 import {
   useEffect,
   useLayoutEffect,
@@ -9,12 +10,17 @@ import {
 } from 'react';
 
 import type { ChatStoreController } from './chat-store.js';
-import { projectCheckpointCard } from './checkpoint-card.js';
+import { CHECKPOINT_STOP, checkpointRule, projectCheckpointCard } from './checkpoint-card.js';
+import { withGlyphForm } from './glyphs.js';
+import { legend, legendRows } from './legend.js';
+import { displayWidth } from './viewport.js';
 import {
   createMeasuredFrameAcknowledgement,
   reviewTerminalFits,
+  TERMINAL_TOO_SMALL_TEXT,
 } from './measured-frame-acknowledgement.js';
 import { colorProps, dimProps } from './projection.js';
+import { useWaitClock, type WaitClockForm } from './wait-clock.js';
 
 /**
  * The docked continue-checkpoint card ([ADR-0136](../../../../../docs/decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md)
@@ -30,10 +36,22 @@ export function CheckpointCardHost(
     hasCustody: () => boolean;
     /** Whether colour output is on. */
     color?: boolean | undefined;
+    /** How the sheet's wait clock is drawn (ADR-0147 §2): `ticking` in the alternate screen, static inline (the default: no timer). */
+    waitClock?: WaitClockForm | undefined;
   }>,
 ): ReactElement | null {
   const snapshot = useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
   const card = snapshot.checkpoint;
+  // The wait clock: this host's display value, in no snapshot and read by no guard (ADR-0147 §2).
+  const clock = useWaitClock(
+    card === undefined ? undefined : snapshot.state.approvalSinceMs,
+    props.waitClock,
+  );
+  // The lockout as the card draws it (`(wait)`): the store's display value, one repaint when it opens; the frame's identity does not change.
+  const locked = useSyncExternalStore(
+    props.store.answerLock.subscribe,
+    props.store.answerLock.read,
+  );
   const app = useApp();
   const { stdout } = useStdout();
   const ref = useRef<DOMElement | null>(null);
@@ -87,19 +105,28 @@ export function CheckpointCardHost(
   if (!reviewTerminalFits(props.size))
     return (
       <Text>
-        Checkpoint: terminal too small — resize to at least 80×24. Esc or Ctrl+C stops the turn.
+        {legendRows(
+          [{ text: TERMINAL_TOO_SMALL_TEXT }],
+          CHECKPOINT_STOP,
+          props.size.cols,
+          displayWidth,
+        ).join('\n')}
       </Text>
     );
   if (blocked === shown)
     return (
-      <Text>Checkpoint unavailable — enlarge the terminal. Esc or Ctrl+C stops the turn.</Text>
+      <Text>
+        {legend([{ text: 'Checkpoint unavailable — enlarge the terminal' }], CHECKPOINT_STOP)}
+      </Text>
     );
   const color = props.color === true;
-  const view = projectCheckpointCard(card, props.size.cols);
+  const view = withGlyphForm(props.color === false, () =>
+    projectCheckpointCard(card, props.size.cols, locked),
+  );
   return (
     <Box ref={ref} flexDirection="column" flexShrink={0}>
       <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
-        {view.rule}
+        {withGlyphForm(props.color === false, () => checkpointRule(props.size.cols, clock))}
       </Text>
       <Text wrap="truncate-end">{view.fact}</Text>
       {view.keys.map((row, index) => (

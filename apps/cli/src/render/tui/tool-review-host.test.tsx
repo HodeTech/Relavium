@@ -6,7 +6,7 @@ import { createElement } from 'react';
 import stringWidth from 'string-width';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApprovalRequest, ToolPreview } from '@relavium/core';
-import { OwnedTtyInput, OwnedTtyOutput } from '../../test-support.js';
+import { OwnedTtyInput, OwnedTtyOutput, PlainTtyOutput } from '../../test-support.js';
 import { createChatStore } from './chat-store.js';
 import { ChatApp } from './chat-ink.js';
 import { RootApp } from './home-app.js';
@@ -21,6 +21,7 @@ import {
   type ApprovalGuard,
 } from './tool-review-model.js';
 import { CARD_TYPEAHEAD_NOTE, cardRowBudget } from './tool-review-card.js';
+import { INSPECTION_EDGE_ROWS } from './tool-review-screen.js';
 import { bracketed } from './harness-util.js';
 import { editedFilePreview } from './fixtures/edit-diff.js';
 
@@ -66,7 +67,7 @@ const CTRL_G = '\x07'; // ask for the session-wide grant (ENTER confirms)
 const CTRL_N = '\x0e'; // deny
 const CTRL_R = '\x12'; // deny with a reason (opens the reason box on the card)
 /** The full view's refusals row (ADR-0134): the card's refusals minus the card-only keys, plus the way back. */
-const FULL_DENY_ROW = '[Ctrl+N] Deny   [b] Back to the card   Esc back   Ctrl+C stops the turn';
+const FULL_DENY_ROW = '[Ctrl+N] Deny · [b] back to the card · [Ctrl+C] stops the turn · Esc back';
 
 /**
  * The suite drives the approval card with keys pressed right after a frame, as fast as the harness can. The product's
@@ -87,7 +88,7 @@ function fixture(
   host: 'chat' | 'home',
   alternate: boolean,
   color: boolean,
-  output = new OwnedTtyOutput(),
+  output = new PlainTtyOutput(),
   ports: { suspendPort?: SuspendPort; reviewClipboard?: ClipboardWriter } = {},
   approvalGuard: ApprovalGuard = NO_APPROVAL_GUARD,
 ) {
@@ -120,15 +121,15 @@ function fixture(
     teardown: async () => {},
   };
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => Promise.resolve(session),
     homeStore: {
       read: () => ({
-        attention: { gates: [], failedRuns: [] },
+        failedRuns: [],
         recentSessions: [],
         recentRuns: [],
         recentAgents: [],
-        unreadableRunIds: [],
+        unreadableRuns: [],
+        totals: { attention: 0, sessions: 0, runs: 0 },
         isEmpty: true,
       }),
     },
@@ -211,8 +212,19 @@ function fixture(
     submitted,
     ready,
     text: () => output.frames.join(''),
-    /** The most recent complete frame (control sequences stripped) that contains `needle`. */
+    /**
+     * The most recent complete frame (control sequences stripped) that contains `needle`. A frame that draws the inspection popup (the full view
+     * and the call list, ADR-0148 §7) is read as the screen it frames: its two edges and its two-column inset are taken off ({@link unframe}), so
+     * every reading below is of the same rows the full screen drew before unit 8.
+     */
     lastFrameWith: (needle: string): string | undefined =>
+      output.frames
+        // eslint-disable-next-line no-control-regex -- stripping terminal control sequences from a captured frame
+        .map((frame) => unframe(frame.replace(/\u001b\[[0-9;?]*[A-Za-z]/gu, '')))
+        .filter((frame) => frame.includes(needle))
+        .at(-1),
+    /** The most recent frame that contains `needle` as the terminal shows it: the inspection popup's frame left on. */
+    rawFrameWith: (needle: string): string | undefined =>
       output.frames
         // eslint-disable-next-line no-control-regex -- stripping terminal control sequences from a captured frame
         .map((frame) => frame.replace(/\u001b\[[0-9;?]*[A-Za-z]/gu, ''))
@@ -225,6 +237,68 @@ function fixture(
     },
   };
 }
+
+/** The inspection popup's top edge without colour: the popup's name and where it came from (ADR-0148 §7). */
+const INSPECTION_TOP = /^ - (?:Full diff|Full view|\/details) -+ from (?:the approval|chat) - *$/u;
+/** Its bottom edge: the thin rule across the box. */
+const INSPECTION_BOTTOM = /^ -{20,} *$/u;
+/** The columns a row of the popup is inset by: the box's margin from the terminal's edge (the screen spans the box's whole width). */
+const INSPECTION_INSET = 1;
+
+/**
+ * `frame` with the inspection popup's frame taken off: the rows between its top and bottom edges, each without the popup's inset, so a test reads
+ * the screen the popup frames. A frame without the popup is returned as it is. The geometry itself (78 × 23 at 80×24, the edges, the inset) is
+ * pinned in its own block below ("the inspection popup").
+ */
+function unframe(frame: string): string {
+  const rows = frame.split('\n');
+  const top = rows.findIndex((row) => INSPECTION_TOP.test(row));
+  if (top < 0) return frame;
+  const bottom = rows.findIndex((row, index) => index > top && INSPECTION_BOTTOM.test(row));
+  return rows
+    .slice(top + 1, bottom < 0 ? undefined : bottom)
+    .map((row) => row.slice(INSPECTION_INSET))
+    .join('\n');
+}
+
+/**
+ * The rows of the screen the inspection popup frames on a terminal of `rows` (ADR-0148 §7, unit 8): the popup is `rows − 1` tall and its two
+ * edges take two of them. Where the suite pinned "rows − 1 lines and the empty last row" of the full screen, it pins this now.
+ */
+const framedRows = (rows: number): number => rows - 1 - INSPECTION_EDGE_ROWS;
+/**
+ * The taller of the two terminals the navigation tests run on: 80×26, where the popup's body is the 14 rows the full screen had at 80×24 and the
+ * page numbers were first written for; {@link NAV_CASES} runs them at 80×24 (a body of 12 rows) too.
+ */
+const NAV_SIZE = [80, 26] as const;
+/** A context row of the SIXTY fixture's diff, as the full view draws it. */
+const navLine = (n: number): string => ` ${String(n)} line ${String(n)}`;
+/**
+ * The five navigation tests run on both terminals (unit 8 fix wave, M-11): 80×24, where the popup's body is 12 rows, and {@link NAV_SIZE}, 14.
+ * SIXTY's page numbers follow from the body (60 lines, changes at 30 and 52, each a `-`/`+` pair, so 62 listed rows): the opening page is the first
+ * change with three lines of context (27); PgDn starts at the row after it (27 + 3 + 2 + 7 = 38 for 12 rows, 40 for 14); End is the last full page,
+ * the 12 or 14 rows that end at 60 (50, 48); Tab to the second change starts three lines above it (49) unless that page would end short of a full
+ * one (for 14 rows it would: 49..60 is 13 rows, so it is End's page, 48). The page after the opening one holds both changes' neighbours at 12 rows
+ * (`2 above, 2 below`) and reaches the second change at 14 (`2 above`).
+ */
+const NAV_CASES = [
+  {
+    label: '80×24, a body of 12 rows',
+    size: [80, 24] as const,
+    pageDown: 38,
+    pageDownRule: /changed lines off this page: 2 above, 2 below -+$/u,
+    end: 50,
+    lastChange: 49,
+  },
+  {
+    label: '80×26, a body of 14 rows',
+    size: NAV_SIZE,
+    pageDown: 40,
+    pageDownRule: /changed lines off this page: 2 above -+$/u,
+    end: 48,
+    lastChange: 48,
+  },
+] as const;
 
 /** An overwrite of `target`: the longest verb the card prints before the target (`Overwrite `). */
 function overwritePreview(target: string): ToolPreview {
@@ -598,14 +672,16 @@ describe.each(['chat', 'home'] as const)('docked approval card %s (ADR-0129)', (
     await settle();
     const frame = f.lastFrameWith('Esc stops the turn') ?? '';
     expect(frame).toContain('+1 line 1 of the new file');
-    expect(frame).toContain('write_file \u00b7 +3 \u22120');
+    // The title line (ADR-0147 §1): what it is on the left, the numbers on the right; the summary row keeps the tool's identity.
+    expect(frame).toMatch(/^Create \S+ {2,}\+3 -0 \u00b7 \d+ bytes$/mu);
+    expect(frame).toMatch(/^write_file$/mu);
     expect(frame).not.toMatch(/masked/u);
     expect(frame).not.toContain('<LF>');
     expect(frame).not.toContain('Inspection requirements met');
     expect(frame).not.toContain('hidden lines');
-    expect(frame).toContain('[Ctrl+Y] Allow   [Ctrl+G] Allow all file writes this session');
+    expect(frame).toContain('[Ctrl+Y] Allow · [Ctrl+G] Allow all file writes this session');
     expect(frame).toContain(
-      '[Ctrl+N] Deny   [Ctrl+R] Deny + reason   [v] Full diff   Esc stops the turn',
+      '[Ctrl+N] Deny · [Ctrl+R] Deny + reason · [v] full diff · Esc stops the turn',
     );
   });
 
@@ -653,7 +729,7 @@ describe.each(['chat', 'home'] as const)('docked approval card %s (ADR-0129)', (
     expect(frame).toMatch(/1 masked value in this change/u);
     expect(frame).toContain('(Allow is locked until you inspect the change)');
     expect(frame).toContain(
-      '[Ctrl+N] Deny [Ctrl+R] Deny + reason [v] Full diff Esc stops the turn',
+      '[Ctrl+N] Deny · [Ctrl+R] Deny + reason · [v] full diff · Esc stops the turn',
     );
     expect(frame).not.toContain('[Ctrl+Y] Allow');
     expect(frame).not.toContain('[Ctrl+G]');
@@ -821,7 +897,10 @@ describe.each(['chat', 'home'] as const)('docked approval card %s (ADR-0129)', (
     });
     await vi.waitFor(() => expect(f.text()).toContain('Esc stops the turn'));
     await settle();
-    expect(f.lastFrameWith('Esc stops the turn')).toMatch(/\u2500 Approval needed \u2500+/u);
+    // The sheet's heavy rule (ADR-0147 §1), `=` without colour, with the wait clock on its right.
+    expect(f.lastFrameWith('Esc stops the turn')).toMatch(
+      /^== Approval needed =+ waiting (?:0:\d\d|since \d\d:\d\d) ==$/mu,
+    );
   });
 
   it("starts the person's wait clock when the card opens and folds it into the turn when it closes", async () => {
@@ -901,7 +980,7 @@ describe.each(['chat', 'home'] as const)('docked approval card %s (ADR-0129)', (
       expect(frame()).toContain('+5 five');
       expect(frame()).not.toContain('EVIL');
       expect(frame().replace(/\s+/gu, ' ')).toContain(
-        '\u26a0 2 changed lines not shown \u2014 press [v] for the full diff.',
+        '! 2 changed lines not shown \u2014 press [v] for the full diff.',
       );
       expect(frame()).toContain('[Ctrl+Y] Allow');
       expect(frame()).toContain('[Ctrl+N] Deny');
@@ -931,7 +1010,7 @@ describe.each(['chat', 'home'] as const)('docked approval card %s (ADR-0129)', (
         .filter((row) => /^\+\d+ line /u.test(row)).length;
       expect(drawn).toBeGreaterThan(0);
       expect(frame().replace(/\s+/gu, ' ')).toContain(
-        `\u26a0 ${40 - drawn} changed lines not shown \u2014 press [v] for the full diff.`,
+        `! ${40 - drawn} changed lines not shown \u2014 press [v] for the full diff.`,
       );
       expect(frame()).toContain('[Ctrl+Y] Allow');
       expect(frame()).not.toContain('[Ctrl+G] Allow all');
@@ -988,7 +1067,7 @@ describe.each(['chat', 'home'] as const)('docked approval card %s (ADR-0129)', (
       expect(hidden, 'the card says its argument vector is cut').not.toBeNull();
       const lines = Number(hidden?.[1]);
       expect(shown.replace(/\s+/gu, ' ')).toContain(
-        `\u26a0 ${lines} line${lines === 1 ? '' : 's'} of this call ${lines === 1 ? 'is' : 'are'} not shown \u2014 press [v] for the full view.`,
+        `! ${lines} line${lines === 1 ? '' : 's'} of this call ${lines === 1 ? 'is' : 'are'} not shown \u2014 press [v] for the full view.`,
       );
       expect(shown).toContain('[Ctrl+Y] Allow');
       expect(shown).toContain('[Ctrl+N] Deny');
@@ -1038,9 +1117,9 @@ describe.each(['chat', 'home'] as const)('docked approval card %s (ADR-0129)', (
       const full = f.lastFrameWith('Review \u00b7 tool') ?? '';
       const rows = full.split('\n').map((row) => row.trimEnd());
       expect(
-        rows.find((row) => row.startsWith('\u2500')),
+        rows.find((row) => /^- /u.test(row)),
         'the full view says that changed lines are off the page',
-      ).toMatch(/^\u2500 \d+% \u00b7 changed lines off this page: 2 below \u2500+$/u);
+      ).toMatch(/^- \d+% \u00b7 changed lines off this page: 2 below -+$/u);
       expect(full).not.toContain('EVIL');
       expect(rows, 'Allow without the session-wide grant').toContain('[Ctrl+Y] Allow');
       expect(rows).toContain(FULL_DENY_ROW);
@@ -1061,10 +1140,10 @@ describe.each(['chat', 'home'] as const)('docked approval card %s (ADR-0129)', (
       await settle();
       const full = f.lastFrameWith('Review \u00b7 tool') ?? '';
       const rows = full.split('\n').map((row) => row.trimEnd());
-      expect(rows.find((row) => row.startsWith('\u2500'))).toMatch(
-        /^\u2500 \d+% \u00b7 every changed line is on this page \u2500+$/u,
+      expect(rows.find((row) => /^- /u.test(row))).toMatch(
+        /^- \d+% \u00b7 every changed line is on this page -+$/u,
       );
-      expect(rows).toContain('[Ctrl+Y] Allow   [Ctrl+G] Allow all file edits this session');
+      expect(rows).toContain('[Ctrl+Y] Allow · [Ctrl+G] Allow all file edits this session');
       expect(rows).toContain(FULL_DENY_ROW);
       f.input.push(CTRL_G);
       await vi.waitFor(() => expect(answered()).toBe(true));
@@ -1111,7 +1190,7 @@ describe.each(['chat', 'home'] as const)('shared review host %s', (host) => {
     const text = f.text().replace(/\s+/gu, ' ');
     expect(text).toContain('Your reason may appear in session and redirected output.');
     expect(text).toContain('This is not a private note.');
-    expect(f.text()).toContain('Enter denies and continues');
+    expect(f.text()).toContain('Enter deny and continue');
     expect(f.store.getSnapshot().review?.denial).toBe('');
     await new Promise<void>((resolve) => setTimeout(resolve, 40));
     f.input.push('\r');
@@ -1238,7 +1317,8 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
     });
     await vi.waitFor(() => expect(f.text()).toContain('Review unavailable'));
     const frame = (f.lastFrameWith('Review unavailable') ?? '').replace(/\s+/gu, ' ');
-    expect(frame).toContain('narrow change, or [v] full view / [p] code points.');
+    expect(frame).toContain('narrow change, or [v] full view');
+    expect(frame).not.toContain('[p] code points');
     expect(frame).not.toContain('A command is waiting');
     expect(f.errors).toEqual([]);
   });
@@ -1279,7 +1359,7 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
       await settle();
       f.resize(79, 23);
       await vi.waitFor(() => expect(f.text()).toContain('Terminal too small'));
-      expect(hint(f)).toContain('[Ctrl+N] denies \u00b7 Esc stops the turn.');
+      expect(hint(f)).toContain('[Ctrl+N] Deny \u00b7 Esc stops the turn');
       f.input.push(CTRL_N);
       expect(await answer).toEqual({ outcome: 'reject' });
     });
@@ -1304,8 +1384,8 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
       f.resize(79, 23);
       await vi.waitFor(() => expect(f.text()).toContain('Terminal too small'));
       // A box is open: Esc closes the box, and Ctrl+C is what stops the turn (ADR-0115 §3).
-      expect(hint(f)).toContain('Esc closes the box · Ctrl+C stops the turn.');
-      expect(hint(f)).not.toContain('[Ctrl+N] denies');
+      expect(hint(f)).toContain('[Ctrl+C] stops the turn · Esc close the box');
+      expect(hint(f)).not.toContain('[Ctrl+N] Deny');
       f.input.push(CTRL_N);
       await settle();
       expect(answered, 'what the hint does not promise, the key does not do').toBe(false);
@@ -1334,8 +1414,8 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
       f.resize(79, 23);
       await vi.waitFor(() => expect(f.text()).toContain('Terminal too small'));
       // A box is open: Esc closes the box, and Ctrl+C is what stops the turn (ADR-0115 §3).
-      expect(hint(f)).toContain('Esc closes the box · Ctrl+C stops the turn.');
-      expect(hint(f)).not.toContain('[Ctrl+N] denies');
+      expect(hint(f)).toContain('[Ctrl+C] stops the turn · Esc close the box');
+      expect(hint(f)).not.toContain('[Ctrl+N] Deny');
       f.input.push(CTRL_N);
       await settle();
       expect(answered).toBe(false);
@@ -1361,19 +1441,48 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
       f.resize(79, 23);
       await vi.waitFor(() => expect(f.text()).toContain('Terminal too small'));
       // The full view cannot be read, but Esc still leaves it without stopping the turn: no acknowledged frame is needed to step back.
-      expect(hint(f)).toContain('[Ctrl+N] denies \u00b7 Esc back \u00b7 Ctrl+C stops the turn.');
+      expect(hint(f)).toContain('[Ctrl+N] Deny \u00b7 [Ctrl+C] stops the turn \u00b7 Esc back');
       expect(hint(f)).not.toContain('Esc stops the turn');
       f.input.push('\x1b');
       await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('card'));
       await settle();
       expect(answered, 'stepping back stops nothing').toBe(false);
       // Now on the card, whose own hint is unchanged: Esc stops the turn here.
-      await vi.waitFor(() =>
-        expect(hint(f)).toContain('[Ctrl+N] denies \u00b7 Esc stops the turn.'),
-      );
+      await vi.waitFor(() => expect(hint(f)).toContain('[Ctrl+N] Deny \u00b7 Esc stops the turn'));
       f.input.push(CTRL_N);
       await settle();
       expect(answered).toBe(true);
+    });
+    // MVP-11 unit 7: below the floor the refusal is one sentence that names the size, and where the keys that leave do not fit its row the row
+    // is cut BETWEEN items: `[Ctrl+C]` is never on one terminal row and `stops the turn` on the next.
+    it('draws the refusal of a full view on a terminal below the floor with every key beside its effect, never wrapped between them', async () => {
+      const f = fixture(host, true, false);
+      await f.ready();
+      void f.store.requestApproval(request, true, undefined, {
+        callId: 'hint-rows',
+        preview: poemPreview(2),
+      });
+      await vi.waitFor(() => expect(f.lastFrameWith('Esc stops the turn')).toBeDefined());
+      await settle();
+      f.input.push('v');
+      await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('full'));
+      await settle();
+      f.resize(70, 23);
+      await vi.waitFor(() => expect(f.text()).toContain('Terminal too small'));
+      const rows = (f.lastFrameWith('Terminal too small') ?? '').split('\n');
+      const at = rows.findIndex((row) => row.includes('Terminal too small: enlarge to 80×24'));
+      expect(at, 'the one sentence, naming the size').toBeGreaterThanOrEqual(0);
+      const hintRows = rows.slice(at, at + 2).map((row) => row.trimEnd());
+      for (const row of hintRows) expect(row.length, row).toBeLessThanOrEqual(70);
+      for (const [key, effect] of [
+        ['[Ctrl+N]', 'Deny'],
+        ['[Ctrl+C]', 'stops the turn'],
+        ['Esc', 'back'],
+      ] as const) {
+        const row = hintRows.find((candidate) => candidate.includes(key));
+        expect(row, `${key} is drawn`).toBeDefined();
+        expect(row, `${key} is on one row with its effect`).toContain(`${key} ${effect}`);
+      }
     });
   });
 
@@ -1381,7 +1490,7 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
   // view's answer rows are the card's grants row and its own refusals row; since ADR-0137 §4 the second says `Esc back` (Esc steps
   // back to the card) and `Ctrl+C stops the turn`.
   it.each([
-    [true, '[Ctrl+Y] Allow   [Ctrl+G] Allow all file writes this session'],
+    [true, '[Ctrl+Y] Allow · [Ctrl+G] Allow all file writes this session'],
     [false, '[Ctrl+Y] Allow'],
   ])(
     'the full view says Esc goes back and Ctrl+C stops the turn, not "abort" (cacheable=%s)',
@@ -1431,7 +1540,7 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
     'copies masked review explicitly after reveal without selection clipboard, alternate=%s',
     async (alternate) => {
       const copied: string[] = [];
-      const f = fixture(host, alternate, false, new OwnedTtyOutput(), {
+      const f = fixture(host, alternate, false, new PlainTtyOutput(), {
         reviewClipboard: (text) => {
           copied.push(text);
           return { kind: 'written', characters: text.length };
@@ -1612,9 +1721,9 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
     f.store.openDetails();
     await vi.waitFor(() => expect(f.text()).toContain('Terminal too small'));
     const frame = (f.lastFrameWith('Terminal too small') ?? '').replace(/\s+/gu, ' ');
-    expect(frame).toContain('Esc closes.');
+    expect(frame).toContain('Esc close');
     expect(frame).not.toContain('stops the turn');
-    expect(frame).not.toContain('[Ctrl+N] denies');
+    expect(frame).not.toContain('[Ctrl+N] Deny');
   });
   it('opens retained summary-only details with selected identity and outcome', async () => {
     const f = fixture(host, true, false);
@@ -1650,7 +1759,7 @@ it('escapes controls and literal token delimiters in mandatory tool identity', (
   expect(toolReviewIdentity('界'.repeat(100), 'action', 'os', 80).valid).toBe(false);
 });
 
-class HeldOutput extends OwnedTtyOutput {
+class HeldOutput extends PlainTtyOutput {
   held = false;
   blockedWrite: (() => void) | undefined;
   override _write(
@@ -1938,7 +2047,7 @@ describe.each(['chat', 'home'] as const)('approval guard on the real host %s (E1
         expect(f.lastFrameWith('Press Enter to allow all file writes this session')).toBeDefined(),
       );
       const asking = f.lastFrameWith('Press Enter to allow') ?? '';
-      expect(asking, 'the card tells what any other key does').toContain('Any other key cancels');
+      expect(asking, 'the card tells what any other key does').toContain('any other key cancels');
       expect(asking, 'and that Esc still stops the turn').toContain('Esc stops the turn');
       expect(asking).not.toContain('[Ctrl+Y] Allow');
       expect(asking, 'a second Ctrl+G is no longer the confirmation').not.toContain(
@@ -2086,7 +2195,7 @@ describe.each(['chat', 'home'] as const)('approval guard on the real host %s (E1
         (frame ?? '').split('\n').map((row) => row.trimEnd());
       const before = rowsOf(f.lastFrameWith('Review \u00b7 tool'));
       const grantsAt = before.indexOf(
-        '[Ctrl+Y] Allow   [Ctrl+G] Allow all file writes this session',
+        '[Ctrl+Y] Allow · [Ctrl+G] Allow all file writes this session',
       );
       expect(grantsAt, 'the full view offers the session-wide grant').toBeGreaterThan(0);
       vi.advanceTimersByTime(1000);
@@ -2102,10 +2211,10 @@ describe.each(['chat', 'home'] as const)('approval guard on the real host %s (E1
       expect(
         asking[grantsAt + 1],
         'and says what any other key does, and what Esc and Ctrl+C do',
-      ).toBe('Any other key cancels \u00b7 Esc back \u00b7 Ctrl+C stops the turn');
+      ).toBe('any other key cancels \u00b7 [Ctrl+C] stops the turn \u00b7 Esc back');
       expect(asking.length, 'the screen has the same number of rows').toBe(before.length);
-      expect(asking.findIndex((row) => row.startsWith('\u2500'))).toBe(
-        before.findIndex((row) => row.startsWith('\u2500')),
+      expect(asking.findIndex((row) => /^- /u.test(row))).toBe(
+        before.findIndex((row) => /^- /u.test(row)),
       );
       expect(asking.indexOf('Approval cannot override protected-path or permission denials.')).toBe(
         before.indexOf('Approval cannot override protected-path or permission denials.'),
@@ -2205,7 +2314,7 @@ describe('answer chords in the real host', () => {
       return [rows[last - 1], rows[last]];
     };
     const KEYS_ROW_2 =
-      '[Ctrl+N] Deny   [Ctrl+R] Deny + reason   [v] Full diff   Esc stops the turn';
+      '[Ctrl+N] Deny · [Ctrl+R] Deny + reason · [v] full diff · Esc stops the turn';
     const editRequest = { ...request, toolId: 'edit_file' };
 
     describe('a bare letter answers nothing (typing at a card)', () => {
@@ -2227,7 +2336,7 @@ describe('answer chords in the real host', () => {
         // The frame the person is looking at is still the card, with its answers.
         const rows = cardRows(f);
         expect(rows.join('\n')).not.toContain('Reason to deny');
-        expect(rows).toContain('[Ctrl+Y] Allow   [Ctrl+G] Allow all file writes this session');
+        expect(rows).toContain('[Ctrl+Y] Allow · [Ctrl+G] Allow all file writes this session');
         expect(rows).toContain(KEYS_ROW_2);
         // The card is still answerable by the real key, once.
         f.input.push(CTRL_Y);
@@ -2270,7 +2379,7 @@ describe('answer chords in the real host', () => {
         await f.ready();
         await open(f, request, poemPreview(2), 'rows-write');
         const [grants, rest] = keyRows(f);
-        expect(grants).toBe('[Ctrl+Y] Allow   [Ctrl+G] Allow all file writes this session');
+        expect(grants).toBe('[Ctrl+Y] Allow · [Ctrl+G] Allow all file writes this session');
         expect(rest).toBe(KEYS_ROW_2);
       });
 
@@ -2283,9 +2392,9 @@ describe('answer chords in the real host', () => {
         await pause(30);
         await press(f, '/');
         await vi.waitFor(() => expect(f.store.getSnapshot().review?.searching).toBe(true));
-        await vi.waitFor(() => expect(f.lastFrameWith('Esc closes the search box')).toBeDefined());
-        const frame = f.lastFrameWith('Esc closes the search box') ?? '';
-        expect(frame).toContain('Ctrl+C stops the turn');
+        await vi.waitFor(() => expect(f.lastFrameWith('Esc close the search box')).toBeDefined());
+        const frame = f.lastFrameWith('Esc close the search box') ?? '';
+        expect(frame).toContain('[Ctrl+C] stops the turn');
         expect(frame, 'the card’s legend would name keys that do nothing in the box').not.toContain(
           'Esc stops the turn',
         );
@@ -2302,7 +2411,7 @@ describe('answer chords in the real host', () => {
                 // eslint-disable-next-line no-control-regex -- stripping terminal control sequences from a captured frame
                 .map((frame) => frame.replace(/\u001b\[[0-9;?]*[A-Za-z]/gu, ''))
                 .join(''),
-            ).toContain('Esc back   Ctrl+C stops the turn'), // the full view's own legend: the box is closed, Esc now steps back
+            ).toContain('[Ctrl+C] stops the turn · Esc back'), // the full view's own legend: the box is closed, Esc now steps back
         );
       });
 
@@ -2311,7 +2420,7 @@ describe('answer chords in the real host', () => {
         await f.ready();
         await open(f, editRequest, editedFilePreview(8, { 4: 'four' }), 'rows-edit');
         const [grants, rest] = keyRows(f);
-        expect(grants).toBe('[Ctrl+Y] Allow   [Ctrl+G] Allow all file edits this session');
+        expect(grants).toBe('[Ctrl+Y] Allow · [Ctrl+G] Allow all file edits this session');
         expect(rest).toBe(KEYS_ROW_2);
       });
 
@@ -2342,7 +2451,7 @@ describe('answer chords in the real host', () => {
           const { outcome } = await open(f, longRequest, poemPreview(2), 'rows-long');
           const [grants, rest] = keyRows(f);
           expect(grants).toBe(
-            '[Ctrl+Y] Allow   [Ctrl+G] Allow all run_remote_buil… calls this session',
+            '[Ctrl+Y] Allow · [Ctrl+G] Allow all run_remote_buil… calls this session',
           );
           expect(rest).toBe(KEYS_ROW_2);
           // The card draws in 78 columns at 80: every key row must fit it whole.
@@ -2357,7 +2466,7 @@ describe('answer chords in the real host', () => {
             ),
           );
           const [question, other] = keyRows(f);
-          expect(other).toBe('Any other key cancels · Esc stops the turn');
+          expect(other).toBe('any other key cancels · Esc stops the turn');
           expect((question ?? '').length).toBeLessThanOrEqual(78);
           for (const row of cardRows(f)) expect(row.length).toBeLessThanOrEqual(80);
           expect(outcome()).toBeUndefined();
@@ -2378,7 +2487,7 @@ describe('answer chords in the real host', () => {
           await vi.waitFor(() =>
             expect(keyRows(f)[0]).toBe('Press Enter to allow all file writes this session'),
           );
-          expect(keyRows(f)[1]).toBe('Any other key cancels · Esc stops the turn');
+          expect(keyRows(f)[1]).toBe('any other key cancels · Esc stops the turn');
           expect(outcome(), 'the first Ctrl+G only asks').toBeUndefined();
           // Long enough for an Enter to count as the confirmation: only the bare `a` stands in its way.
           vi.advanceTimersByTime(1000);
@@ -2387,7 +2496,7 @@ describe('answer chords in the real host', () => {
           expect(f.store.getSnapshot().alwaysConfirm, 'the key withdrew the question').toBe(false);
           await vi.waitFor(() =>
             expect(keyRows(f)[0]).toBe(
-              '[Ctrl+Y] Allow   [Ctrl+G] Allow all file writes this session',
+              '[Ctrl+Y] Allow · [Ctrl+G] Allow all file writes this session',
             ),
           );
           // The question is gone: an Enter now, well inside the confirmation window, grants nothing.
@@ -2433,7 +2542,7 @@ describe('answer chords in the real host', () => {
         await f.ready();
         f.resize(79, 23);
         const { outcome } = await open(f, request, poemPreview(2), 'tiny', 'Terminal too small');
-        expect(hint(f)).toContain('[Ctrl+N] denies · Esc stops the turn.');
+        expect(hint(f)).toContain('[Ctrl+N] Deny · Esc stops the turn');
         // Nothing to inspect, so only the unseen frame stands between these keys and an answer.
         for (const key of [CTRL_Y, CTRL_G, CTRL_R, 'n', 'y', 'a', 'c', '\r']) {
           await press(f, key);
@@ -2466,7 +2575,7 @@ describe('answer chords in the real host', () => {
           });
         await vi.waitFor(() => expect(f.text()).toContain('Review unavailable'));
         expect((f.lastFrameWith('Review unavailable') ?? '').replace(/\s+/gu, ' ')).toContain(
-          '[Ctrl+N] denies · Esc stops the turn.',
+          '[Ctrl+N] Deny · Esc stops the turn',
         );
         for (const key of ['n', 'y', CTRL_Y, CTRL_G]) {
           await press(f, key);
@@ -2521,7 +2630,7 @@ describe('answer chords in the real host', () => {
         await vi.waitFor(() => expect(f.lastFrameWith('Reason to deny:')).toBeDefined());
         const opened = f.lastFrameWith('Reason to deny:') ?? '';
         expect(opened).toContain('Approval needed');
-        expect(opened).toContain('Enter denies and continues');
+        expect(opened).toContain('Enter deny and continue');
         // Letters — the answer letters included — are text, and a chord is not an answer in here.
         for (const key of ['y', CTRL_Y, 'n', CTRL_N, 'a', CTRL_G, CTRL_R]) {
           await press(f, key);
@@ -2547,8 +2656,8 @@ describe('answer chords in the real host', () => {
         await vi.waitFor(() => expect(f.store.getSnapshot().review?.denial).toBe(''));
         await type(f, 'later');
         const boxed = f.lastFrameWith('Reason to deny:') ?? '';
-        expect(boxed, 'the box says what Esc does in it').toContain('Esc closes this box');
-        expect(boxed, '...and that Ctrl+C is the stop here').toContain('Ctrl+C stops the turn');
+        expect(boxed, 'the box says what Esc does in it').toContain('Esc close this box');
+        expect(boxed, '...and that Ctrl+C is the stop here').toContain('[Ctrl+C] stops the turn');
         expect(outcome()).toBeUndefined();
         await press(f, '\x1b');
         await vi.waitFor(() => expect(f.store.getSnapshot().review?.denial).toBeUndefined());
@@ -2606,7 +2715,7 @@ describe.each(['chat', 'home'] as const)(
     /** The note only the full view of an approval draws: it finds the frame whatever the header says. */
     const FULL_NOTE = 'Approval cannot override protected-path or permission denials.';
     /** The status rule is the one row of the screen that starts with a rule character. */
-    const isRule = (row: string): boolean => row.startsWith('─');
+    const isRule = (row: string): boolean => /^- /u.test(row); // the plain thin rule; a removed diff row is `-12 text`
     const DIFF_ROW = /^[ +-]\d+ /u;
     // Real keystrokes, as a terminal sends them.
     const KEY = {
@@ -2641,7 +2750,7 @@ describe.each(['chat', 'home'] as const)(
       const rule = rows.findIndex(isRule);
       const note = rows.findIndex((row) => row === closing);
       if (rule < 0 || note < 0) return undefined;
-      const percent = /^─ (\d+)%/u.exec(rows[rule] ?? '')?.[1];
+      const percent = /^- (\d+)%/u.exec(rows[rule] ?? '')?.[1];
       const under = rows[rule + 1];
       return {
         rows,
@@ -2666,7 +2775,8 @@ describe.each(['chat', 'home'] as const)(
       return match === null ? undefined : Number(match[1]);
     };
     /** The details screen's closing note: only that screen draws it, whatever its header looks like (the identity may sit on its own row). */
-    const DETAILS_NOTE = '[b] Back to the list   Esc closes \u00b7 viewing never executes a tool';
+    const DETAILS_NOTE =
+      '[b] back to the list \u00b7 viewing never executes a tool \u00b7 Esc back';
     const details = (f: Fixture): FullView | undefined =>
       read(f.lastFrameWith(DETAILS_NOTE), DETAILS_NOTE);
 
@@ -2746,11 +2856,18 @@ describe.each(['chat', 'home'] as const)(
         expect(screen?.diff[0], 'opened on the context of the first change, not on line 1').toBe(
           ' 27 line 27',
         );
-        expect(screen?.rows.length, 'the screen is never as tall as the terminal').toBe(rows);
+        // The popup is rows − 1 tall (the last row of the terminal left empty) and its two edges frame the screen (ADR-0148 §7).
+        expect(screen?.rows.length, 'the screen the popup frames').toBe(framedRows(rows));
+        const raw = f.rawFrameWith(FULL_NOTE)?.split('\n') ?? [];
+        expect(raw.length, 'the popup and the empty last row').toBe(rows);
+        expect(raw[0], 'the top edge: the popup’s name and where it came from').toMatch(
+          INSPECTION_TOP,
+        );
+        expect(raw.at(-2), 'the bottom edge').toMatch(INSPECTION_BOTTOM);
+        expect(raw.at(-1), 'the last row of the terminal is left empty').toBe('');
         const topmost = screen?.rows.findIndex((row) => row.startsWith('Review · tool'));
         expect(topmost).toBe(0);
-        expect(screen?.rows.at(-1), 'the last row of the terminal is left empty').toBe('');
-        expect(screen?.rows.at(-2)).toBe(FULL_NOTE);
+        expect(screen?.rows.at(-1)).toBe(FULL_NOTE);
         expect(f.text()).not.toContain('Review unavailable');
         expect(outcome(), 'viewing answers nothing').toBeUndefined();
         f.input.push(CTRL_Y);
@@ -2766,26 +2883,27 @@ describe.each(['chat', 'home'] as const)(
       const { rows } = screen;
       // The header carries the identity and the counts.
       expect(rows[0]).toContain('Review · tool edit_file · action fs_write');
-      expect(rows[0]).toMatch(/\+2 −2 · \d+ bytes · 0 masked values$/u);
+      expect(rows[0]).toMatch(/\+2 -2 · \d+ bytes · 0 masked values$/u);
       expect(rows[1], 'a target row').toBe('target src/app.ts');
       // The status rule says how far down the page reaches and which changed lines are not on it.
-      expect(rows[screen.rule]).toMatch(/^─ \d+% · changed lines off this page: \d+ below ─+$/u);
+      expect(rows[screen.rule]).toMatch(/^- \d+% · changed lines off this page: \d+ below -+$/u);
       // The legend is the card's `[key] words` style in two groups (movement, then inspection); `[b]` is not in it.
       // The message row is kept (blank here) under the rule, so the body's height never depends on whether there is a message.
       expect(rows[screen.rule + 1], 'the message row, kept blank').toBe('');
       expect(rows[screen.rule + 2], 'movement keys').toBe(
-        '[↑↓] scroll   [PgUp/PgDn] page   [Home/End] top/end   [Tab/Shift+Tab] changes',
+        '↑/↓ scroll · PgUp/PgDn page · Home/End top/end · Tab/Shift+Tab changes',
       );
       expect(rows[screen.rule + 3], 'inspection keys: no mask, no clipboard').toBe(
-        '[/] search   [p] Unicode codes',
+        '[/] search · [p] Unicode codes',
       );
       expect(rows.slice(screen.rule + 2, screen.rule + 4).join('\n')).not.toContain('[b]');
       // Two answer rows (the second names the way back), then the protected-path note, which is the last row of the screen.
       expect(rows[screen.note - 2], 'the grants row').toBe('[Ctrl+Y] Allow');
       expect(rows[screen.note - 1], 'the refusals row').toBe(FULL_DENY_ROW);
       expect(rows[screen.note]).toBe(FULL_NOTE);
-      // The body: the diff in the card's format, at least 14 rows at 80x24, and no unchanged line twice.
-      expect(screen.diff.length).toBeGreaterThanOrEqual(14);
+      // The body: the diff in the card's format, the 12 rows the inspection popup leaves at 80x24 (its two edges took two of the full screen's
+      // 14: ADR-0148 §7; every row of ADR-0134's chrome is kept), and no unchanged line twice.
+      expect(screen.diff.length).toBeGreaterThanOrEqual(12);
       expect(screen.diff).toEqual(expect.arrayContaining(['-30 line 30', '+30 thirty']));
       for (const row of rows) {
         expect(row, 'no `=before` copy of an unchanged line').not.toContain('=before');
@@ -2834,23 +2952,23 @@ describe.each(['chat', 'home'] as const)(
         rows.findIndex((row) => row.startsWith('target ')),
       );
       expect(header, 'the identity does not fit beside the title and takes its own rows').toEqual([
-        expect.stringMatching(/^Review +\+6 −6 /u),
+        expect.stringMatching(/^Review +\+6 -6 /u),
         `tool ${toolId}`,
         'action fs_write',
       ]);
       expect(rows.join('\n')).toContain('Allow is locked until the masked value has been revealed');
-      expect(rows.join('\n')).toContain('⚠ Line endings: CRLF → LF.');
+      expect(rows.join('\n')).toContain('! Line endings: CRLF → LF.');
       expect(
-        rows.filter((row) => row.startsWith('⚠')),
+        rows.filter((row) => row.startsWith('!')),
         'both warnings',
       ).toHaveLength(2);
       expect(rows[screen.rule + 1], 'the message').toBe('No earlier change');
-      expect(rows[screen.rule + 2], 'the search box').toMatch(/^Search visible source: a█/u);
-      // The frame is exactly as tall as with no extra chrome at all (one row under the terminal's 24): the body gave way.
-      expect(rows).toHaveLength(24);
+      expect(rows[screen.rule + 2], 'the search box').toMatch(/^Search visible source: a_/u);
+      // The frame is exactly as tall as with no extra chrome at all (the popup's screen at 80×24): the body gave way.
+      expect(rows).toHaveLength(framedRows(24));
       expect(rows[screen.rule - 1], 'and the body it was left is full, not padded').not.toBe('');
       expect(rows[screen.note]).toBe(FULL_NOTE);
-      expect(rows.at(-1)).toBe('');
+      expect(rows.at(-1)).toBe(FULL_NOTE);
       expect(
         f.output.frames.slice(mark).some((frame) => frame.includes('Review unavailable')),
         'no frame of the sequence was refused as too tall',
@@ -2873,22 +2991,22 @@ describe.each(['chat', 'home'] as const)(
       if (screen === undefined) throw new Error('no full view');
       const { rows } = screen;
       expect(rows[0], 'the title with the counts flush right, and no identity').toMatch(
-        /^Review {2,}\+2 −2 · \d+ bytes · 0 masked values$/u,
+        /^Review {2,}\+2 -2 · \d+ bytes · 0 masked values$/u,
       );
       expect(rows[0]?.length, 'flush to the right edge of the usable width').toBe(78);
       expect(rows[1], 'the whole identity on one row').toBe(`tool ${toolId} · action fs_write`);
       expect(rows[2]).toBe('target src/app.ts');
-      expect(rows).toHaveLength(24);
+      expect(rows).toHaveLength(framedRows(24));
       expect(f.text()).not.toContain('Review unavailable');
       f.input.push(CTRL_Y);
       await vi.waitFor(() => expect(outcome()).toEqual({ outcome: 'approve', scope: 'once' }));
     });
 
-    it('names [b] Back to the card in the answer row, and b goes back with the approval still pending', async () => {
+    it('names [b] back to the card in the answer row, and b goes back with the approval still pending', async () => {
       const { f, outcome } = await openFull(SIXTY());
       const screen = view(f);
       if (screen === undefined) throw new Error('no full view');
-      expect(screen.rows[screen.note - 1]).toContain('[b] Back to the card');
+      expect(screen.rows[screen.note - 1]).toContain('[b] back to the card');
       expect(
         screen.rows.slice(screen.rule + 2, screen.rule + 4).join('\n'),
         'it is an answer-row key, not a navigation key',
@@ -2949,7 +3067,7 @@ describe.each(['chat', 'home'] as const)(
       expect(codes.diff, 'ASCII text stays readable').toEqual(
         expect.arrayContaining([' 27 line 27', '-30 line 30', ' 31 line 31']),
       );
-      expect(codes.rows[codes.rule]).toMatch(/^─ \d+% · Unicode code points · /u);
+      expect(codes.rows[codes.rule]).toMatch(/^- \d+% · Unicode code points · /u);
       expect(legend(codes)).toContain('[p] back to text');
       expect(legend(codes)).not.toContain('[p] Unicode codes');
       const back = await move(f, 'p', (screen) => screen.diff.includes('+30 thirty ü'));
@@ -2961,95 +3079,118 @@ describe.each(['chat', 'home'] as const)(
       const bound = await openFull(SIXTY(), { clipboard: true });
       const withCopy = view(bound.f);
       expect(withCopy?.rows[(withCopy?.rule ?? 0) + 3]).toBe(
-        '[/] search   [p] Unicode codes   [c] copy page',
+        '[/] search · [p] Unicode codes · [c] copy page',
       );
       const unbound = await openFull(SIXTY());
       const without = view(unbound.f);
-      expect(without?.rows[(without?.rule ?? 0) + 3]).toBe('[/] search   [p] Unicode codes');
+      expect(without?.rows[(without?.rule ?? 0) + 3]).toBe('[/] search · [p] Unicode codes');
     });
 
     describe('keys (real stdin)', () => {
-      it('moves the page with every navigation key and keeps the status rule true', async () => {
-        const { f } = await openFull(SIXTY());
-        const first = view(f);
-        expect(first?.diff[0]).toBe(' 27 line 27');
-        expect(first?.rows[first.rule]).toMatch(/changed lines off this page: 2 below ─+$/u);
-        const percent0 = first?.percent ?? -1;
-        // Down and Up move one listed line.
-        const down = await move(f, KEY.down, (screen) => screen.diff[0] === ' 28 line 28');
-        expect(down.percent).toBeGreaterThan(percent0);
-        const up = await move(f, KEY.up, (screen) => screen.diff[0] === ' 27 line 27');
-        expect(up.percent).toBe(percent0);
-        // PgDn goes to the row after the page: 3 lines of context, the change, and nine more fill the 14 rows.
-        const pageDown = await move(f, KEY.pageDown, (screen) => screen.diff[0] === ' 40 line 40');
-        expect(pageDown.rows[pageDown.rule]).toMatch(/changed lines off this page: 2 above ─+$/u);
-        expect(pageDown.percent).toBeGreaterThan(percent0);
-        // PgUp goes back up a page.
-        const pageUp = await move(f, KEY.pageUp, (screen) => screen.diff[0] === ' 27 line 27');
-        expect(pageUp.percent).toBe(percent0);
-        // End is the last full page, so the screen never ends in blank rows.
-        const end = await move(f, KEY.end, (screen) => screen.diff[0] === ' 48 line 48');
-        expect(end.diff.at(-1)).toBe(' 60 line 60');
-        expect(end.percent).toBe(100);
-        expect(end.rows[end.rule]).toMatch(/changed lines off this page: 2 above ─+$/u);
-        // Home is the top.
-        const home = await move(f, KEY.home, (screen) => screen.diff[0] === ' 1 line 1');
-        expect(home.rows[home.rule]).toMatch(/changed lines off this page: 4 below ─+$/u);
-        expect(home.percent).toBeLessThan(percent0);
-        // Tab goes to the next change, with its context; Shift+Tab goes back.
-        const tab = await move(f, KEY.tab, (screen) => screen.diff[0] === ' 27 line 27');
-        expect(tab.percent).toBe(percent0);
-        const tab2 = await move(f, KEY.tab, (screen) => screen.diff[0] === ' 48 line 48');
-        expect(tab2.diff).toEqual(expect.arrayContaining(['-52 line 52', '+52 fifty two']));
-        expect(tab2.rows[tab2.rule]).toMatch(/changed lines off this page: 2 above ─+$/u);
-        // Shift+Tab lands a page up from just below the nearest changed line above the page it leaves, so that line (`+30`) is on the
-        // new page and the page lies strictly before the old one; no changed line is stepped over.
-        const back = await move(f, KEY.shiftTab, (screen) => screen.diff[0] !== ' 48 line 48');
-        expect(back.diff, 'the nearest changed line above is drawn').toContain('+30 thirty');
-        expect(firstLine(back) ?? Infinity, 'strictly backward').toBeLessThan(firstLine(tab2) ?? 0);
-        expect(back.percent ?? 100, 'and so the status moved up').toBeLessThan(tab2.percent ?? 0);
-        expect(back.rows[back.rule]).toMatch(/changed lines off this page: 2 below ─+$/u);
-        expect(back.percent, 'the whole first change is on this page, as at the opening').toBe(
-          percent0,
-        );
-        expect(f.errors).toEqual([]);
-      });
+      it.each(NAV_CASES)(
+        '$label: moves the page with every navigation key and keeps the status rule true',
+        async (c) => {
+          const { f } = await openFull(SIXTY(), { size: c.size });
+          const first = view(f);
+          expect(first?.diff[0]).toBe(' 27 line 27');
+          expect(first?.rows[first.rule]).toMatch(/changed lines off this page: 2 below -+$/u);
+          const percent0 = first?.percent ?? -1;
+          // Down and Up move one listed line.
+          const down = await move(f, KEY.down, (screen) => screen.diff[0] === ' 28 line 28');
+          expect(down.percent).toBeGreaterThan(percent0);
+          const up = await move(f, KEY.up, (screen) => screen.diff[0] === ' 27 line 27');
+          expect(up.percent).toBe(percent0);
+          // PgDn goes to the row after the page: 3 lines of context, the change, and the rest of the body.
+          const pageDown = await move(
+            f,
+            KEY.pageDown,
+            (screen) => screen.diff[0] === navLine(c.pageDown),
+          );
+          expect(pageDown.rows[pageDown.rule]).toMatch(c.pageDownRule);
+          expect(pageDown.percent).toBeGreaterThan(percent0);
+          // PgUp goes back up a page.
+          const pageUp = await move(f, KEY.pageUp, (screen) => screen.diff[0] === ' 27 line 27');
+          expect(pageUp.percent).toBe(percent0);
+          // End is the last full page, so the screen never ends in blank rows.
+          const end = await move(f, KEY.end, (screen) => screen.diff[0] === navLine(c.end));
+          expect(end.diff.at(-1)).toBe(' 60 line 60');
+          expect(end.percent).toBe(100);
+          expect(end.rows[end.rule]).toMatch(/changed lines off this page: 2 above -+$/u);
+          // Home is the top.
+          const home = await move(f, KEY.home, (screen) => screen.diff[0] === ' 1 line 1');
+          expect(home.rows[home.rule]).toMatch(/changed lines off this page: 4 below -+$/u);
+          expect(home.percent).toBeLessThan(percent0);
+          // Tab goes to the next change, with its context; Shift+Tab goes back.
+          const tab = await move(f, KEY.tab, (screen) => screen.diff[0] === ' 27 line 27');
+          expect(tab.percent).toBe(percent0);
+          const tab2 = await move(f, KEY.tab, (screen) => screen.diff[0] === navLine(c.lastChange));
+          expect(tab2.diff).toEqual(expect.arrayContaining(['-52 line 52', '+52 fifty two']));
+          expect(tab2.rows[tab2.rule]).toMatch(/changed lines off this page: 2 above -+$/u);
+          // Shift+Tab lands a page up from just below the nearest changed line above the page it leaves, so that line (`+30`) is on the
+          // new page and the page lies strictly before the old one; no changed line is stepped over.
+          const back = await move(
+            f,
+            KEY.shiftTab,
+            (screen) => screen.diff[0] !== navLine(c.lastChange),
+          );
+          expect(back.diff, 'the nearest changed line above is drawn').toContain('+30 thirty');
+          expect(firstLine(back) ?? Infinity, 'strictly backward').toBeLessThan(
+            firstLine(tab2) ?? 0,
+          );
+          expect(back.percent ?? 100, 'and so the status moved up').toBeLessThan(tab2.percent ?? 0);
+          expect(back.rows[back.rule]).toMatch(/changed lines off this page: 2 below -+$/u);
+          expect(back.percent, 'the whole first change is on this page, as at the opening').toBe(
+            percent0,
+          );
+          expect(f.errors).toEqual([]);
+        },
+      );
 
-      it('says there is no later (or earlier) change at the last (or first) one, and Ctrl+Y still answers afterwards', async () => {
-        const { f, outcome } = await openFull(SIXTY());
-        await move(f, KEY.tab, (screen) => screen.diff[0] === ' 48 line 48');
-        const none = await move(f, KEY.tab, (screen) => screen.message === 'No later change');
-        expect(none.diff[0], 'a key that goes nowhere moves nothing').toBe(' 48 line 48');
-        // Shift+Tab from the last page lands where the nearest changed line above it (`+30`) is drawn.
-        const earlier = await move(f, KEY.shiftTab, (screen) => screen.diff[0] !== ' 48 line 48');
-        expect(earlier.diff).toContain('+30 thirty');
-        expect(earlier.message, 'a move that happens clears the message').toBeUndefined();
-        // Nothing changed lies above that page: the note, and the page stays.
-        const noEarlier = await move(
-          f,
-          KEY.shiftTab,
-          (screen) => screen.message === 'No earlier change',
-        );
-        expect(noEarlier.diff, 'a key that goes nowhere moves nothing').toEqual(earlier.diff);
-        // Moving around changes what is on screen, never what is answered: the answer key works from the moved frame.
-        await move(f, KEY.home, (screen) => screen.diff[0] === ' 1 line 1');
-        expect(outcome()).toBeUndefined();
-        f.input.push(CTRL_Y);
-        await vi.waitFor(() => expect(outcome()).toEqual({ outcome: 'approve', scope: 'once' }));
-      });
+      it.each(NAV_CASES)(
+        '$label: says there is no later (or earlier) change at the last (or first) one, and Ctrl+Y still answers afterwards',
+        async (c) => {
+          const { f, outcome } = await openFull(SIXTY(), { size: c.size });
+          await move(f, KEY.tab, (screen) => screen.diff[0] === navLine(c.lastChange));
+          const none = await move(f, KEY.tab, (screen) => screen.message === 'No later change');
+          expect(none.diff[0], 'a key that goes nowhere moves nothing').toBe(navLine(c.lastChange));
+          // Shift+Tab from the last page lands where the nearest changed line above it (`+30`) is drawn.
+          const earlier = await move(
+            f,
+            KEY.shiftTab,
+            (screen) => screen.diff[0] !== navLine(c.lastChange),
+          );
+          expect(earlier.diff).toContain('+30 thirty');
+          expect(earlier.message, 'a move that happens clears the message').toBeUndefined();
+          // Nothing changed lies above that page: the note, and the page stays.
+          const noEarlier = await move(
+            f,
+            KEY.shiftTab,
+            (screen) => screen.message === 'No earlier change',
+          );
+          expect(noEarlier.diff, 'a key that goes nowhere moves nothing').toEqual(earlier.diff);
+          // Moving around changes what is on screen, never what is answered: the answer key works from the moved frame.
+          await move(f, KEY.home, (screen) => screen.diff[0] === ' 1 line 1');
+          expect(outcome()).toBeUndefined();
+          f.input.push(CTRL_Y);
+          await vi.waitFor(() => expect(outcome()).toEqual({ outcome: 'approve', scope: 'once' }));
+        },
+      );
 
-      it('scrolls on a bare j, k and Space but never answers', async () => {
-        const { f, outcome } = await openFull(SIXTY());
-        const down = await move(f, 'j', (screen) => screen.diff[0] === ' 28 line 28');
-        expect(down.diff.length).toBeGreaterThan(0);
-        await move(f, 'k', (screen) => screen.diff[0] === ' 27 line 27');
-        await move(f, ' ', (screen) => screen.diff[0] === ' 40 line 40');
-        expect(outcome(), 'a movement key is not an answer').toBeUndefined();
-        expect(f.store.getSnapshot().approval).toBeDefined();
-        expect(f.store.getSnapshot().review?.screen).toBe('full');
-        f.input.push(CTRL_Y);
-        await vi.waitFor(() => expect(outcome()).toEqual({ outcome: 'approve', scope: 'once' }));
-      });
+      it.each(NAV_CASES)(
+        '$label: scrolls on a bare j, k and Space but never answers',
+        async (c) => {
+          const { f, outcome } = await openFull(SIXTY(), { size: c.size });
+          const down = await move(f, 'j', (screen) => screen.diff[0] === ' 28 line 28');
+          expect(down.diff.length).toBeGreaterThan(0);
+          await move(f, 'k', (screen) => screen.diff[0] === ' 27 line 27');
+          await move(f, ' ', (screen) => screen.diff[0] === navLine(c.pageDown));
+          expect(outcome(), 'a movement key is not an answer').toBeUndefined();
+          expect(f.store.getSnapshot().approval).toBeDefined();
+          expect(f.store.getSnapshot().review?.screen).toBe('full');
+          f.input.push(CTRL_Y);
+          await vi.waitFor(() => expect(outcome()).toEqual({ outcome: 'approve', scope: 'once' }));
+        },
+      );
     });
 
     describe('the reveal hint', () => {
@@ -3070,7 +3211,7 @@ describe.each(['chat', 'home'] as const)(
           (screen) => screen.rows[screen.rule]?.includes('revealed') === true,
         );
         expect(shown.rows[shown.rule]).toMatch(
-          /^\u2500 \d+% \u00b7 masked values revealed \(view only\)/u,
+          /^- \d+% \u00b7 masked values revealed \(view only\)/u,
         );
         expect(legend(shown)).toContain('[r] hide masked');
         expect(legend(shown)).not.toContain('[r] reveal masked');
@@ -3158,13 +3299,13 @@ describe.each(['chat', 'home'] as const)(
         const rows = listRows(f) ?? [];
         expect(rows[0]).toBe('Tool calls');
         expect(rows[1], 'the edit: mark, tool, target, counts').toMatch(
-          /^ {2}\u2713 edit_file +src\/a\.ts +\+2 \u22122$/u,
+          /^ {2}ok edit_file +src\/a\.ts +\+2 -2$/u,
         );
         expect(rows[2], 'a call with no target and no preview says nothing more').toBe(
-          '  \u2713 git_status',
+          '  ok git_status',
         );
         expect(rows[3], 'the failed command is the newest, and selected').toMatch(
-          /^> \u2717 run_command +failed$/u,
+          /^> x {2}run_command +failed$/u,
         );
         expect(
           rows.filter((row) => row.startsWith('> ')),
@@ -3172,7 +3313,7 @@ describe.each(['chat', 'home'] as const)(
         ).toHaveLength(1);
         expect(rows[4]).toBe('call 3 of 3');
         expect(rows[5], 'the key hint').toBe(
-          '↑↓ PgUp/PgDn select · Enter open · Home/End oldest/newest · Esc closes',
+          '↑/↓, PgUp/PgDn select · Enter open · Home/End oldest/newest · Esc close',
         );
         expect(
           rows.join('\n'),
@@ -3183,17 +3324,17 @@ describe.each(['chat', 'home'] as const)(
       it('moves the selection with Up, Home and End', async () => {
         const f = await openList();
         const up = await select(f, KEY.up, 'call 2 of 3');
-        expect(up[2]).toMatch(/^> \u2713 git_status/u);
-        expect(up[3]).toMatch(/^ {2}\u2717 run_command/u);
+        expect(up[2]).toMatch(/^> ok git_status/u);
+        expect(up[3]).toMatch(/^ {2}x {2}run_command/u);
         const home = await select(f, KEY.home, 'call 1 of 3');
-        expect(home[1]).toMatch(/^> \u2713 edit_file/u);
+        expect(home[1]).toMatch(/^> ok edit_file/u);
         const end = await select(f, KEY.end, 'call 3 of 3');
-        expect(end[3]).toMatch(/^> \u2717 run_command/u);
+        expect(end[3]).toMatch(/^> x {2}run_command/u);
         await select(f, KEY.down, 'call 3 of 3'); // the end of the list holds
         expect(f.errors).toEqual([]);
       });
 
-      it('opens the selected call: counts for a preview, none for a call without one; b returns to the same call; Esc closes', async () => {
+      it('opens the selected call: counts for a preview, none for a call without one; b and Esc return to the same call; Esc on the list closes', async () => {
         const f = await openList();
         // The edit has a preview: counts in the header, the diff, a status rule about its changed lines.
         await select(f, KEY.home, 'call 1 of 3');
@@ -3203,7 +3344,7 @@ describe.each(['chat', 'home'] as const)(
         const edit = details(f);
         if (edit === undefined) throw new Error('no details');
         expect(edit.rows[0]).toMatch(
-          /^Details \u00b7 tool edit_file \u00b7 outcome success +\+2 \u22122 \u00b7 \d+ bytes \u00b7 0 masked values$/u,
+          /^Details \u00b7 tool edit_file \u00b7 outcome success +\+2 -2 \u00b7 \d+ bytes \u00b7 0 masked values$/u,
         );
         expect(edit.rows).toContain('target src/a.ts');
         expect(edit.diff).toEqual(
@@ -3213,7 +3354,7 @@ describe.each(['chat', 'home'] as const)(
         f.input.push('b');
         await vi.waitFor(() => expect(listRows(f)?.[4]).toBe('call 1 of 3'));
         await pause(80);
-        expect(listRows(f)?.[1], 'back on the call that was open').toMatch(/^> \u2713 edit_file/u);
+        expect(listRows(f)?.[1], 'back on the call that was open').toMatch(/^> ok edit_file/u);
         // A call that kept no preview: its header has no counts and the screen offers nothing that does not apply.
         await select(f, KEY.down, 'call 2 of 3');
         f.input.push('\r');
@@ -3230,7 +3371,7 @@ describe.each(['chat', 'home'] as const)(
         );
         const screen = plain.rows.join('\n');
         expect(screen).toContain('Clean worktree');
-        expect(screen).not.toMatch(/\+\d+ \u2212\d+/u);
+        expect(screen).not.toMatch(/\+\d+ -\d+/u);
         expect(screen).not.toMatch(/masked value/u);
         expect(screen).not.toContain('0 changed lines');
         expect(screen).not.toContain('[r]');
@@ -3240,8 +3381,9 @@ describe.each(['chat', 'home'] as const)(
         f.input.push('b');
         await vi.waitFor(() => expect(listRows(f)?.[4]).toBe('call 2 of 3'));
         await pause(80);
-        expect(listRows(f)?.[2], 'back on the same call').toMatch(/^> \u2713 git_status/u);
-        // Esc closes the details from the list, and from the screen of one call.
+        expect(listRows(f)?.[2], 'back on the same call').toMatch(/^> ok git_status/u);
+        // Esc closes the details from the list; from the screen of one call it steps back to the list first, on the same call (ADR-0148 §7;
+        // unit 8 fix wave, O-4).
         f.input.push('\x1b');
         await vi.waitFor(() => expect(f.store.getSnapshot().review).toBeUndefined());
         f.store.openDetails();
@@ -3250,6 +3392,10 @@ describe.each(['chat', 'home'] as const)(
         f.input.push('\r');
         await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('full'));
         await pause(80);
+        f.input.push('\x1b');
+        await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('list'));
+        await pause(80);
+        expect(listRows(f)?.[3], 'back on the call that was open').toMatch(/^> /u);
         f.input.push('\x1b');
         await vi.waitFor(() => expect(f.store.getSnapshot().review).toBeUndefined());
         expect(f.errors).toEqual([]);
@@ -3281,8 +3427,8 @@ describe.each(['chat', 'home'] as const)(
         await vi.waitFor(() => expect(listRows(f)).toBeDefined());
         await pause(80);
         const row = (listRows(f) ?? [])[1] ?? '';
-        expect(row, 'the call is listed').toMatch(/^> \u2713 /u);
-        expect(row).toMatch(/\+1 \u22121$/u);
+        expect(row, 'the call is listed').toMatch(/^> ok /u);
+        expect(row).toMatch(/\+1 -1$/u);
         for (const char of row) expect(char.codePointAt(0)).toBeGreaterThanOrEqual(0x20);
         f.input.push('\r');
         await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('full'));
@@ -3358,35 +3504,39 @@ describe.each(['chat', 'home'] as const)(
 
       // ADR-0134 §3: the chrome is constant, so the body is as tall with a message as without one (the message row is always
       // drawn, blank when there is none), and every motion limit agrees with the page that is drawn.
-      it('ends on a full page when End is pressed while a message is shown, and the body is as tall as without one', async () => {
-        const { f } = await openFull(SIXTY());
-        const plain = view(f);
-        if (plain === undefined) throw new Error('no full view');
-        const message = await move(
-          f,
-          KEY.shiftTab,
-          (screen) => screen.message === 'No earlier change',
-        );
-        expect(message.diff.length, 'the message does not take a row from the body').toBe(
-          plain.diff.length,
-        );
-        expect(message.rule, 'the status rule does not move').toBe(plain.rule);
-        expect(message.rows).toHaveLength(plain.rows.length);
-        const end = await move(f, KEY.end, (screen) => screen.message === undefined);
-        expect(end.diff[0]).toBe(' 48 line 48');
-        expect(end.diff.at(-1)).toBe(' 60 line 60');
-        expect(end.rows[end.rule - 1], 'the last row of the body is a line, not padding').not.toBe(
-          '',
-        );
-        expect(end.diff.length, 'End leaves the body as tall as it was').toBe(plain.diff.length);
-        expect(end.rule).toBe(plain.rule);
-        expect(end.percent).toBe(100);
-        // The same page without any message: End from the top gives the identical frame body.
-        await move(f, KEY.home, (screen) => screen.diff[0] === ' 1 line 1');
-        const again = await move(f, KEY.end, (screen) => screen.diff[0] === ' 48 line 48');
-        expect(again.diff).toEqual(end.diff);
-        expect(again.rule).toBe(end.rule);
-      });
+      it.each(NAV_CASES)(
+        '$label: ends on a full page when End is pressed while a message is shown, and the body is as tall as without one',
+        async (c) => {
+          const { f } = await openFull(SIXTY(), { size: c.size });
+          const plain = view(f);
+          if (plain === undefined) throw new Error('no full view');
+          const message = await move(
+            f,
+            KEY.shiftTab,
+            (screen) => screen.message === 'No earlier change',
+          );
+          expect(message.diff.length, 'the message does not take a row from the body').toBe(
+            plain.diff.length,
+          );
+          expect(message.rule, 'the status rule does not move').toBe(plain.rule);
+          expect(message.rows).toHaveLength(plain.rows.length);
+          const end = await move(f, KEY.end, (screen) => screen.message === undefined);
+          expect(end.diff[0]).toBe(navLine(c.end));
+          expect(end.diff.at(-1)).toBe(' 60 line 60');
+          expect(
+            end.rows[end.rule - 1],
+            'the last row of the body is a line, not padding',
+          ).not.toBe('');
+          expect(end.diff.length, 'End leaves the body as tall as it was').toBe(plain.diff.length);
+          expect(end.rule).toBe(plain.rule);
+          expect(end.percent).toBe(100);
+          // The same page without any message: End from the top gives the identical frame body.
+          await move(f, KEY.home, (screen) => screen.diff[0] === ' 1 line 1');
+          const again = await move(f, KEY.end, (screen) => screen.diff[0] === navLine(c.end));
+          expect(again.diff).toEqual(end.diff);
+          expect(again.rule).toBe(end.rule);
+        },
+      );
 
       it('draws the target once, however the full view is scrolled', async () => {
         const { f } = await openFull(SIXTY());
@@ -3442,7 +3592,8 @@ describe.each(['chat', 'home'] as const)(
        * joined text restores a line however the screen broke it.
        */
       const joined = (frame: string): string =>
-        strip(frame)
+        // A frame of the inspection popup is read as the screen it frames (its edges and its inset off): the rows the person reads.
+        unframe(strip(frame))
           .split('\n')
           // A diff row loses its `+12 ` label; a target loses `target ` on its first row and the 7-space indent (the label's width) on
           // the rows that continue it.
@@ -3688,22 +3839,33 @@ describe.each(['chat', 'home'] as const)(
         }
       });
 
-      it('pages down to the last row while a message lingers, and the body keeps its height', async () => {
-        const { f } = await openFull(SIXTY());
-        const open = view(f);
-        const lingering = await move(
-          f,
-          KEY.shiftTab,
-          (screen) => screen.message === 'No earlier change',
-        );
-        expect(lingering.diff).toHaveLength(open?.diff.length ?? -1);
-        const next = await move(f, KEY.pageDown, (screen) => screen.diff[0] === ' 40 line 40');
-        expect(next.diff).toHaveLength(open?.diff.length ?? -1);
-        const last = await move(f, KEY.pageDown, (screen) => screen.diff.at(-1) === ' 60 line 60');
-        expect(last.diff[0], 'the last page, clamped to a full page').toBe(' 48 line 48');
-        expect(last.diff).toHaveLength(open?.diff.length ?? -1);
-        expect(last.rows[last.rule - 1]).not.toBe('');
-      });
+      it.each(NAV_CASES)(
+        '$label: pages down to the last row while a message lingers, and the body keeps its height',
+        async (c) => {
+          const { f } = await openFull(SIXTY(), { size: c.size });
+          const open = view(f);
+          const lingering = await move(
+            f,
+            KEY.shiftTab,
+            (screen) => screen.message === 'No earlier change',
+          );
+          expect(lingering.diff).toHaveLength(open?.diff.length ?? -1);
+          const next = await move(
+            f,
+            KEY.pageDown,
+            (screen) => screen.diff[0] === navLine(c.pageDown),
+          );
+          expect(next.diff).toHaveLength(open?.diff.length ?? -1);
+          const last = await move(
+            f,
+            KEY.pageDown,
+            (screen) => screen.diff.at(-1) === ' 60 line 60',
+          );
+          expect(last.diff[0], 'the last page, clamped to a full page').toBe(navLine(c.end));
+          expect(last.diff).toHaveLength(open?.diff.length ?? -1);
+          expect(last.rows[last.rule - 1]).not.toBe('');
+        },
+      );
 
       it.each([
         [false, 'Clipboard unavailable.'],
@@ -3779,9 +3941,9 @@ describe.each(['chat', 'home'] as const)(
         expect(rule).toMatch(/code points/u);
         expect(rule, 'the changes off the page are still said').toMatch(/2 above/u);
         expect(rule).toMatch(/2 below/u);
-        expect(rule.startsWith('─ ')).toBe(true);
-        expect(rule.endsWith('─')).toBe(true);
-        expect(both.rows.length, 'the frame did not grow').toBe(24);
+        expect(rule.startsWith('- ')).toBe(true);
+        expect(rule.endsWith('-')).toBe(true);
+        expect(both.rows.length, 'the frame did not grow').toBe(framedRows(24));
       });
     });
 
@@ -3800,7 +3962,7 @@ describe.each(['chat', 'home'] as const)(
         expect(rows[1], 'the whole sentence, not cut').toBe(
           'No tool calls yet. Earlier sessions keep no previews.',
         );
-        expect(rows).toContain('Esc closes');
+        expect(rows).toContain('Esc close');
         for (const row of rows) expect(stringWidth(row)).toBeLessThanOrEqual(78);
       });
 
@@ -3835,12 +3997,12 @@ describe.each(['chat', 'home'] as const)(
         await pause(80);
         const rows = listRows(f);
         const [wide, wideEdit, plain] = [rows[1] ?? '', rows[2] ?? '', rows[3] ?? ''];
-        expect(wide, 'a denied command').toMatch(/^ {2}⊘ run_command /u);
+        expect(wide, 'a denied command').toMatch(/^ {2}\/ {2}run_command /u);
         expect(wide.endsWith('denied'), 'keeps its outcome word').toBe(true);
         expect(wide, 'the target is cut in the middle').toContain('…');
-        expect(wideEdit).toMatch(/^ {2}✗ write_file /u);
-        expect(wideEdit, 'keeps the counts and the outcome word').toMatch(/\+1 −1 · failed$/u);
-        expect(plain).toMatch(/^> ⊘ write_file +src\/ordinary\.ts +\+1 −1 · denied$/u);
+        expect(wideEdit).toMatch(/^ {2}x {2}write_file /u);
+        expect(wideEdit, 'keeps the counts and the outcome word').toMatch(/\+1 -1 · failed$/u);
+        expect(plain).toMatch(/^> \/ {2}write_file +src\/ordinary\.ts +\+1 -1 · denied$/u);
         for (const row of rows.slice(1, 4))
           expect(stringWidth(row), 'measured as the renderer does').toBeLessThanOrEqual(78);
       });
@@ -3995,19 +4157,19 @@ describe.each(['chat', 'home'] as const)(
         const short = view((await openFull(editedFilePreview(3, { 2: 'two' }))).f);
         if (tall === undefined || short === undefined) throw new Error('no full view');
         expect(short.diff.length, 'the document really is short').toBeLessThan(tall.diff.length);
-        expect(short.rows.length, 'rows-1 lines and the empty last row').toBe(24);
-        expect(tall.rows).toHaveLength(24);
+        expect(short.rows.length, 'the popup’s screen, whatever the document').toBe(framedRows(24));
+        expect(tall.rows).toHaveLength(framedRows(24));
         expect(short.rule, 'the status rule is where it is for a tall document').toBe(tall.rule);
         expect(short.note).toBe(tall.note);
-        expect(short.rows.at(-1)).toBe('');
+        expect(short.rows.at(-1)).toBe(FULL_NOTE);
       });
 
       it('details: a call with a one-line summary has the same frame height and status-rule row as one with a long summary', async () => {
         const short = details(await openDetailsOf('Clean worktree'));
         const tall = details(await openDetailsOf('a long result '.repeat(140)));
         if (tall === undefined || short === undefined) throw new Error('no details');
-        expect(short.rows).toHaveLength(24);
-        expect(tall.rows).toHaveLength(24);
+        expect(short.rows).toHaveLength(framedRows(24));
+        expect(tall.rows).toHaveLength(framedRows(24));
         expect(short.rule).toBe(tall.rule);
         expect(short.note).toBe(tall.note);
         expect(short.rows.slice(short.rule + 1).join('\n')).toBe(
@@ -4028,13 +4190,11 @@ describe.each(['chat', 'home'] as const)(
         expect(screen.rows[screen.rows.indexOf('Preview unavailable') + 1]).toBe(
           '  Not retained for this call.',
         );
-        expect(screen.rows[screen.rule + 2]).toBe(
-          '[↑↓] scroll   [PgUp/PgDn] page   [Home/End] top/end',
-        );
+        expect(screen.rows[screen.rule + 2]).toBe('↑/↓ scroll · PgUp/PgDn page · Home/End top/end');
         expect(
           screen.rows[screen.rule + 3],
           'no [r], no [c]: nothing is masked and no clipboard is bound',
-        ).toBe('[/] search   [p] Unicode codes');
+        ).toBe('[/] search · [p] Unicode codes');
       });
     });
 

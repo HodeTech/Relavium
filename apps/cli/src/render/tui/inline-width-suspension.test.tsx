@@ -129,15 +129,15 @@ describe.each([false, true])('inline transcript suspension (color %s)', (color) 
         }),
       homeStore: {
         read: () => ({
-          attention: { gates: [], failedRuns: [] },
+          failedRuns: [],
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],
-          unreadableRunIds: [],
+          unreadableRuns: [],
+          totals: { attention: 0, sessions: 0, runs: 0 },
           isEmpty: true,
         }),
       },
-      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
       onExit: () => {},
       onError: () => {
         throw new Error('Unexpected Home controller failure.');

@@ -344,8 +344,10 @@ describe('logsCommand', () => {
     expect(json.out()).not.toContain('newer version');
     const human = captureIo();
     expect(logsCommand({ runId: 'raw-accounting' }, deps(human.io))).toBe(EXIT_CODES.success);
-    expect(human.out()).toContain('~9876µ¢ estimated, possibly billed (~9876µ¢ total)');
-    expect(human.out()).not.toMatch(/123456|\$|free|realized|Session cost/);
+    expect(human.out()).toContain('~$0.00009876 estimated, possibly billed (~$0.00009876 total)');
+    expect(human.out()).not.toMatch(/123456|free|realized|Session cost|µ¢/);
+    // The only money on the human line is the estimate: no realized figure leaks in.
+    expect(human.out().match(/\$/g)).toHaveLength(2);
     expect(human.err()).toContain('seq 99');
   });
 });
@@ -828,7 +830,7 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
       // The allowance label first, as `status` prints it, then the one command a legacy gate takes.
       expect(out().trimEnd().split('\n').slice(-3)).toEqual([
         'run bud-1 is paused at a gate:',
-        '  pending budget gate b1 at g — legacy gate: no frozen allowance',
+        '  pending budget gate b1 at g — legacy gate: no budget allowance',
         '    reject: relavium budget resume bud-1 --gate b1 --abort',
       ]);
     });

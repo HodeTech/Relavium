@@ -31,7 +31,7 @@ afterEach(() => {
 const CTRL_C = '\x03';
 const LEFT_ARROW = '\x1b[D';
 const ESC = '\x1b';
-const HINT = 'Press Ctrl+C again to end the session';
+const HINT = '[Ctrl+C] end the session (again)';
 
 /**
  * Poll until `predicate` holds and FAIL if it never does. (`harness-util`'s `waitFor` returns silently on a timeout, so a bare `await
@@ -180,7 +180,7 @@ describe('Ctrl+C while a turn runs', () => {
     await until(() => m.frame().length > 0);
     m.store.apply(turnStarted);
     await press(m, CTRL_C);
-    await until(() => m.frame().includes('Interrupting · press Ctrl+C again to end the session'));
+    await until(() => m.frame().includes('Interrupting · [Ctrl+C] end the session (again)'));
     expect(m.onAbort).toHaveBeenCalledTimes(1);
     const calm = mount();
     await until(() => calm.frame().length > 0);
@@ -264,9 +264,9 @@ describe('the rows of the keymap the table drives through the standalone chat (A
     });
     await until(() => m.frame().length > 0);
     await press(m, '/'); // the palette opens on a literal `/` at an empty prompt
-    await until(() => m.frame().includes('/export')); // the palette lists the commands
+    await until(() => m.frame().includes('/models')); // the palette lists the commands (a window of them: /models, the first, is beside the prompt)
     await press(m, CTRL_C);
-    await until(() => !m.frame().includes('/export'));
+    await until(() => !m.frame().includes('/models'));
     expect(m.frame()).not.toContain(HINT);
     await press(m, '\x12'); // Ctrl+R: the reverse search
     await press(m, CTRL_C);

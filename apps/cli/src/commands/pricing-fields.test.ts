@@ -71,6 +71,14 @@ describe('the table and the command descriptor name the same flags, each way', (
     }
   });
 
+  it("every row's remedy flag is the option's PRIMARY spelling, so a remedy never names a deprecated one", () => {
+    for (const field of PRICING_FIELDS) {
+      const option = descriptor.options.find((candidate) => candidate.binding === field.id);
+      expect(option?.spellings[0], `${field.id} remedy flag`).toBe(field.canonicalFlag);
+      expect(option?.deprecatedSpellings ?? []).not.toContain(field.canonicalFlag);
+    }
+  });
+
   it('the descriptor still offers --provider and --clear, which the table does not own', () => {
     expect(descriptor.options.map((option) => option.binding)).toEqual(
       expect.arrayContaining(['provider', 'clear']),
@@ -153,13 +161,13 @@ describe('the table is well formed', () => {
   });
 
   it('echoes each price in the unit the table says', () => {
-    expect(PRICING_FIELDS.map((field) => field.suffix)).toEqual([
-      '/Mtok',
-      '/Mtok',
-      '/Mtok',
-      '/image',
-      '/s',
-      '/s',
+    expect(PRICING_FIELDS.map((field) => field.priceUnit)).toEqual([
+      'M',
+      'M',
+      'M',
+      'image',
+      'second',
+      'second',
     ]);
   });
 });
@@ -179,13 +187,13 @@ describe('the ceilings', () => {
   it('names the flag in the shell and the label in the form, with the same words', () => {
     const image = pricingField('image');
     expect(() => priceToMicrocents(image, 5000)).toThrow(
-      '--image ($5000) is implausibly large — the maximum is $1000 per unit',
+      '--image ($5000 per image) is implausibly large — the maximum is $1000 per image',
     );
     expect(() => priceToMicrocents(image, 5000, 'label')).toThrow(
-      'Image price ($5000) is implausibly large — the maximum is $1000 per unit',
+      'Image price ($5000 per image) is implausibly large — the maximum is $1000 per image',
     );
     expect(priceTextIssue(image, '5000')).toBe(
-      'Image price ($5000) is implausibly large — the maximum is $1000 per unit',
+      'Image price ($5000 per image) is implausibly large — the maximum is $1000 per image',
     );
   });
 
@@ -354,7 +362,7 @@ describe('a price is read as an exact decimal and stored as the whole micro-cent
 
   it('refuses a positive price below one micro-cent, whatever way it is written, with the smallest price in the sentence', () => {
     const sentence =
-      '--input is below the smallest price that can be stored, $0.00000001 per million tokens. Enter 0 to record it as free.';
+      '--input is below the smallest price that can be stored, $0.00000001 per M. Enter 0 to record it as free.';
     for (const text of [
       '0.000000005',
       '0.000000004',
@@ -371,7 +379,7 @@ describe('a price is read as an exact decimal and stored as the whole micro-cent
 
   it('refuses a price with more decimal places than a micro-cent, instead of rounding it', () => {
     const sentence =
-      '--input has more than 8 decimal places, and a price is stored in whole steps of $0.00000001 per million tokens. Enter it to the nearest step.';
+      '--input has more than 8 decimal places, and a price is stored in whole steps of $0.00000001 per M. Enter it to the nearest step.';
     for (const text of [
       '0.123456789',
       '.123456789',
@@ -387,10 +395,10 @@ describe('a price is read as an exact decimal and stored as the whole micro-cent
 
   it('names the unit of the field in the sentence: a media price is per billed unit', () => {
     expect(() => parsePriceText(pricingField('image'), '1e-9', 'label')).toThrow(
-      'Image price is below the smallest price that can be stored, $0.00000001 per billed unit. Enter 0 to record it as free.',
+      'Image price is below the smallest price that can be stored, $0.00000001 per image. Enter 0 to record it as free.',
     );
     expect(priceTextIssue(pricingField('video'), '0.123456789')).toBe(
-      'Video price has more than 8 decimal places, and a price is stored in whole steps of $0.00000001 per billed unit. Enter it to the nearest step.',
+      'Video price has more than 8 decimal places, and a price is stored in whole steps of $0.00000001 per second. Enter it to the nearest step.',
     );
     expect(priceTextIssue(input, '0.00000001')).toBeUndefined();
   });
@@ -437,7 +445,7 @@ describe('a price is read as an exact decimal and stored as the whole micro-cent
 
   it('refuses a value past the ceiling in the ceiling sentence, however large, and never converts it', () => {
     expect(() => microcentsOfText('1e30')).toThrow(
-      '--input ($1e+30/Mtok) is implausibly large — the maximum is $100000/Mtok',
+      '--input ($1e+30 per M) is implausibly large — the maximum is $100000 per M',
     );
     expect(() => microcentsOfText('100000.00000001')).toThrow(/implausibly large/);
     expect(() => priceToMicrocents(input, Number.MAX_VALUE)).toThrow(/implausibly large/);

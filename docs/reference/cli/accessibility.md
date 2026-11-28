@@ -25,7 +25,9 @@ not specific to Relavium.
 Full-screen mode also enables terminal **mouse reporting** (DECSET 1002 + 1006) so the wheel scrolls the
 transcript. The emulator then forwards clicks to Relavium instead of running its own selection — so Relavium
 runs the selection itself (2.6.F Step 6): **drag to select, release to copy**. The highlight shows exactly
-what will be copied, the selection extends past a screenful by auto-scrolling at the viewport's edges, and
+what will be copied, and that is the content a person sees: the speaker marker in the margin and the
+text form's leading `> ` are not part of it, and a press in the margin starts at the first column of the
+text ([the transcript grid](chat-session.md#selection-copy-and-the-documents)). The selection extends past a screenful by auto-scrolling at the viewport's edges, and
 the copy goes to the system clipboard over **OSC 52**, which works over SSH and inside a container.
 
 Copy-on-select is on by default. Turn it off with **`[preferences].copy_on_select = false`** and the highlight
@@ -55,8 +57,14 @@ Three in-app **copy-and-search hatches** exist, in a live chat on either surface
 **`/scrollback`** prints the whole transcript to the primary buffer — where the emulator's own scrollback,
 search, selection and copy all work — and waits for Enter before repainting; **`/edit`** opens the transcript
 read-only in `$EDITOR`; **`/copy`** puts the whole transcript on the system clipboard over OSC 52 (the unwrapped
-document, unlike a mouse selection's visual rows). None needs the mouse, and all restore every terminal mode on
+document, unlike a mouse selection's visual rows). The three carry the transcript's text form: the person's turn
+starts with `> `, and there is no margin and no blank row between turns. None needs the mouse, and all restore every terminal mode on
 the way back.
+
+**Caveat (found by the PR #103 review, 2026-11-28; not fixed):** "whole" means the whole of what the live view holds. On the inline
+renderer, after a `/models` reseat (an inline reseat does not reprint the earlier static entries), the three hatches see the entries
+from the reseat on; the earlier turns stay in the terminal's own scrollback and in the saved session (`relavium chat-export`). The full-screen
+renderer carries its current view across a reseat. Registered in [deferred-tasks.md](../../roadmap/deferred-tasks.md#mvp-11-pr-103-review-follow-ups-2026-11-28).
 
 ## The escape hatch — the inline renderer
 
@@ -71,10 +79,41 @@ The flag overrides the config key. A **non-TTY / `--json` / CI** path is **alway
 regardless (there is no interactive terminal to take over), so machine output is unaffected by the
 default.
 
+**The inline renderer says who spoke in words** ([the transcript grid](chat-session.md#the-inline-renderers-words)). Each row
+of the chat is a margin (6 columns from 80 to 99 columns, 8 from 100) and the content: `you` on the first row of the person's turn,
+`agent` on the first row of a reply, `tool` on each tool-call row and `note` on the model-switch notice, so a line reads
+`you Add the VAT …` and `agent total() now multiplies …`. The words are a closed set of plain ASCII, not a glyph and not
+colour, so they are the same with `NO_COLOR` and `--no-color`, under a non-UTF-8 code page and under `LC_ALL=C` (nothing in
+the CLI detects the locale; the plain glyph form follows colour, not locale). A wrapped row hangs, with a blank margin and the
+text where the first row's text started; it never begins with the space the line broke at; and one blank row separates
+the person's turns and the replies. A native selection in the terminal copies the margin with the content, so the words
+come with it.
+
+What the words do not do, said plainly:
+
+- A screen reader does not announce indentation, so a hanging row (its margin is blank) reads as the continuation of the
+  row above it. A row of a reply, a tool call or a notice that **begins with one of the four words** (any case, a whole
+  word) is therefore given its own entry's word: a reply row that begins `you should rerun …` reads `agent you should
+  rerun …`. The extra `agent` is a cost, paid so that no model row reads as the person's turn; the person's own turn is
+  never given another speaker's word.
+- With colour off the speaker is carried by position and bold: the full-screen margin shows a bold `>` for the person's
+  turn, and a model line that starts with `> ` stands in the content column, after the blank columns, never in the margin.
+- **The flat text forms keep the colour-off residual.** `/copy`, `/edit` and `/scrollback` have no margin and start the
+  person's turn with `> `, so a model line `> x` there looks like the person's turn. The grid does not close this: a flat
+  text has no place for a mark that the model cannot write ([ADR-0145](../../decisions/0145-the-cli-has-one-surface-language.md#6-the-speaker-marker) §6).
+
 ## Other accessibility properties (both renderers)
 
 - **Color is never required for meaning.** `NO_COLOR` / `--no-color` degrade to a legible,
   color-free rendering; status is carried by text, not color alone.
+- **The plain forms are drawn exactly when colour is off.** With `NO_COLOR`, `--no-color` or `FORCE_COLOR=0` every
+  status and marker glyph of the one glyph table is drawn in its ASCII form (`✓` as `ok`, `✗` as `x`, `‖` as `||`, `◐` as
+  `~`, `›` as `>`, `━` as `=`; each of the 30 roles has its own form of at most three columns), and nothing else switches
+  them: no code reads a locale. A status keeps the word that stands beside its glyph. Bold, inverse and underline are not
+  colour and stay (they are written as literal SGR sequences, so a colour level of 0 cannot strip them), so a selected row
+  is marked by `>` and inverse and the **prompt's cursor cell stays visible**; dim is not relied on, so the Home's dim example
+  reads `e.g. summarize the files in this folder`. (`TERM=dumb` shows no prompt cursor.) The table is
+  [surface-language.md](surface-language.md#3-the-glyph-table); the colour precedence is [commands.md](commands.md#output-modes).
 - **Syntax colour is decoration.** A highlighted code block ([ADR-0144](../../decisions/0144-fenced-code-is-highlighted-by-an-in-house-lexical-scanner.md))
   only classes text that is already shown, so `NO_COLOR` / `--no-color` draw the source unchanged. It uses five named ANSI
   colours, bold and dim, so the terminal's own theme sets the shades; a comment is dim, and a diff line also carries its
@@ -83,7 +122,9 @@ default.
   **Ctrl+Home/Ctrl+End** jump to the top/tail, and **auto-follow** re-pins to the newest output.
   Mouse-wheel scrolling is an optional convenience, not a requirement.
 - **Untrusted text is sanitized at the display boundary** (terminal-escape + bidi/Trojan-Source
-  stripping), so model / MCP / pasted content can neither forge the UI nor spoof the reading order.
+  stripping), so model / MCP / pasted content can neither forge the UI nor spoof the reading order. In the chat it is
+  also laid out in the content column only, so it cannot stand in the margin where the host draws who spoke
+  ([the transcript grid](chat-session.md#the-transcript-grid-mvp-11-unit-9-2026-11-27)).
 
 **MVP-3 Step 2 accepted on development (2026-11-12):** approval and tool details provide the
 same keyboard and color-independent inspection in inline and alternate-screen
@@ -105,17 +146,24 @@ when an Enter came outside its window, and a control character or an empty argum
 shows as an escape or `(empty)` instead of nothing. The contract is
 [command-permissions.md](command-permissions.md#the-command-card).
 
-**MVP-4 step 5 (2026-11-20): the `/permissions` sheet** ([ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §2) is docked under the conversation like the other overlays, so it works in the inline renderer, which is the accessible mode, and not only in the full-screen one. It reads the same with colour off: the selected row is marked `›`, the sections have headings, hidden rows are counted by `▲ n more` / `▼ n more`, and a withdrawal's question is the message row's text, not a colour. Below 80×24 it says so and arms nothing. `Esc` closes an idle sheet and, while a withdrawal's question is up, keeps the row instead (a second `Esc` then closes it); `Ctrl+C` closes it from either state; neither ever withdraws. The sheet's arming keys are `d`, `Delete` and `Backspace`, and the legend names `[d / Del]` (the Backspace key arms too and is not on the legend). The contract is [command-permissions.md](command-permissions.md#in-the-chat-permissions-a-sheet). Since MVP-4 step 7 the same sheet opens on the bare Home and from a bare `relavium permissions` on a terminal, docked under the Home the same way, with the same words and glyphs and below the same 80×24 floor.
+**MVP-4 step 5 (2026-11-20): the `/permissions` sheet, a popup since MVP-11 unit 8** ([ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §2, [ADR-0148](../../decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §10) works in the inline renderer, which is the accessible mode, and not only in the full-screen one: inline it is a framed block that replaces the body, drawn with rules and no side bars. It reads the same with colour off: the highlighted row is marked `›` (`>` in the plain glyph form), the sections have headings, hidden rows are counted by `▲ n more` / `▼ n more`, and a withdrawal's question is the popup's second step, in words, not a colour. Below 80×24 a note replaces it. `Esc` on the question keeps the row (a second `Esc` closes the popup); `Ctrl+C` closes it from either step; neither ever withdraws. The arming keys are `d`, `Delete` and `Backspace`, and the legend names `[d] / Del` (the Backspace key arms too and is not on the legend). The contract is [command-permissions.md](command-permissions.md#in-the-chat-permissions-a-popup). The same popup opens on the bare Home and from a bare `relavium permissions` on a terminal, with the same words and glyphs and below the same 80×24 floor.
 
 **MVP-4 step 6 (2026-11-21): `Esc` leaves the full view for the card** ([ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §4). The keys are named in words on the screen (`Esc back`, `Ctrl+C stops the turn`), not by colour, in the inline renderer as in the full-screen one; stepping back answers nothing and needs no visible frame, so a screen too small to read still says `[Ctrl+N] denies · Esc back · Ctrl+C stops the turn.` and `Esc` still leaves it.
 
-**MVP-8 (2026-11-23): the Home's new screens** (the run view and its cards, the tab host, `/agents`, the help sheet, the `/agent` sheet, and the `/import`, `/pricing` and export cards; see [home.md](home.md)) carry the properties above and add these, all in words and glyphs and none in colour alone:
+**MVP-8 (2026-11-23): the Home's new screens** (the run view and its cards, the Runs screen, the `/import`, `/pricing` and export cards and, since MVP-11 unit 8, the `/workflows`, `/agents`, `/help` and `/mode` popups; see [home.md](home.md)) carry the properties above and add these, all in words and glyphs and none in colour alone:
 
-- **Every screen names its keys.** A legend under each screen lists what it answers to, the way out last (`Esc back`, `Ctrl+Y writes`); a tab's legend adds `Ctrl+C close` just before the way out where the whole legend still fits 80 columns; nothing needs a mouse. A legend leaves out only keys it has no room for, and [home.md](home.md#the-tab-host-defined-active-history-and-permissions-mvp-8-step-4-2026-11-23) lists them.
-- **State is a glyph and a word.** A run, an agent file or a pin reads `✓ completed`, `✗ failed`, `‖ paused`, `✗ invalid`, `★ pinned`, `? other project`; colour only emphasises. An absence has a sentence, never a bare dash.
-- **Nothing is hidden without a marker, and every screen fits 80×24.** A list longer than its screen is windowed with `▲ N more` and `▼ N more` (the tab lists, the palette, a select prompt, the help sheet), the highlighted row is always on a drawn row, and below 80×24 a screen says to enlarge the terminal and answers only the keys that leave it.
-- **A card is answered only once it is on screen.** A card answered by a Ctrl chord (a gate, a budget abort, an MCP consent, and the `/import`, `/pricing` and export cards) counts its chord after the frame that shows the card has been painted, after its dwell and quiet gap, and a held key cannot answer the next card; a card that cannot be seen cannot be answered by accident. Two questions are lighter on purpose: the exit guard's `Ctrl+Y` needs the painted frame and the lockout but no dwell or gap, since a key opened it and it is read before it is answered, and the question whether to continue a run parked on media jobs is a Yes/No with No as its default, so an `Enter` typed ahead, `Esc` and `Ctrl+C` all answer No and nothing starts.
+- **Every screen names its keys.** A legend under each screen and popup lists what it answers to, the way out last (`Esc back to Home`, `Esc back`, `Ctrl+Y writes`); the Runs screen's list legend names `Esc / [Ctrl+C] back to Home` where both fit 80 columns; nothing needs a mouse. A legend leaves out only keys it has no room for, and [home.md](home.md#the-runs-screen-active-and-history-mvp-8-step-4-2026-11-23-narrowed-in-mvp-11-unit-8-2026-11-27) lists them.
+- **State is a glyph and a word.** A run reads `✓ completed`, `✗ failed`, `‖ paused` on the Runs screen and `✓ done 3h ago`, `‖ waiting 5m` in the `/workflows` popup; an agent file or a workflow file `✓ ready` or `✗ invalid`; a pin `★ pinned` or the word `pinned`, and `? other project`; colour only emphasises. An absence has a sentence, never a bare dash.
+- **Nothing is hidden without a marker, and every screen fits 80×24.** A list longer than its screen is windowed with `▲ N more` and `▼ N more` (the Runs screen's lists, the palette, a select prompt, the popups' lists), the highlighted row is always on a drawn row, and below 80×24 a screen says to enlarge the terminal and answers only the keys that leave it (a popup is replaced by a note).
+- **A card is answered only once it is on screen.** A card answered by a Ctrl chord (a gate, a budget abort, an MCP consent, and the `/import`, `/pricing` and export cards) counts its chord after the frame that shows the card has been painted, after its dwell and quiet gap, and a held key cannot answer the next card; a card that cannot be seen cannot be answered by accident. **The lockout of a card answered by a Ctrl chord runs from the moment the card appeared**, not only from the answer before it, so a key held through the card's opening never answers it at any repeat rate and each refused press restarts the wait; while it holds, the key row says so in words, the key dim and its verb followed by `(wait)` (`[Ctrl+Y] Create them (wait)`), and the row is whole again when the card opens. Two questions are lighter on purpose: the exit guard's `Ctrl+Y` needs the painted frame and the lockout but no dwell or gap, since a key opened it and it is read before it is answered, and the question whether to continue a run parked on media jobs is a Yes/No with No as its default, so an `Enter` typed ahead, `Esc` and `Ctrl+C` all answer No and nothing starts.
 - **Text from files and models stays inside its row.** A gate's message is drawn behind a gutter with host glyphs and answer-chord spellings replaced, an agent's prompt is shown as a scrubbed head, and every line passes the display-boundary sanitizer.
+
+**MVP-11 unit 8 (2026-11-27): sheets, the wait clock, the inspection popup and the Home's popups** ([ADR-0147](../../decisions/0147-a-system-started-question-is-a-sheet-with-a-frame-and-a-wait-clock.md), [ADR-0148](../../decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md); [chat-session.md](chat-session.md#the-sheet-frame-and-the-wait-clock-mvp-11-unit-8-2026-11-27), [home.md](home.md#the-homes-management-popups-mvp-11-unit-8-2026-11-27)) add these, in words and shapes and none in colour alone:
+
+- **A sheet's rule is told from a thin rule without colour.** The cards that ask for a decision (the approval, the agent's question, the checkpoint, and on the Home the gate and budget cards and the exit guard) open with a heavy rule, `━━ Approval needed ━━━ waiting 0:41 ━━`. With `NO_COLOR` or `--no-color` the heavy glyph is `=` and a thin rule is `-` (`== Approval needed ===== waiting 0:41 ==`), so the two stay apart by shape, and the label and the clock are words. The sides are open: no border glyph is read on every line.
+- **The wait clock is words, and it is still where the person reads.** In the full-screen renderer it reads `waiting 0:41`, then `waiting 2m`, `waiting 1h 07m` and `waiting 1d 03h`; **inline, the accessible mode, it is a static `waiting since 14:05`** (with the day, `Nov 25 14:05`, when the wait began on an earlier day) and **nothing repaints on a timer**, because a live region rewritten every second is hostile to assistive tools and costly over SSH. A locked key says `(wait)` in words, not only dim.
+- **A popup draws no more than the accessible mode can read.** Inline, a popup is a framed block that replaces the body, with rules and no side bars, no spinner and no ticking text, its lists windowed to ten rows or fewer, and never taller than `rows − 1` lines. With colour off its glyphs are their ASCII forms. The effect of a mode that approves without a card (`accept-edits`, `auto` in `/mode`) is amber, and where colour is off it leads with `! ` (the plain form of the warning glyph), so it reads as a warning before the key that applies it.
+- **The inspection popup names its keys and never answers by accident.** `[v]` and `/details` open one popup that fits the terminal's own size (`columns − 2` by `rows − 1`); `Esc` and `[b]` step back to the approval and never reject, a mashed `Esc` right after a step back is ignored for 400 ms, and the legend says `[Ctrl+C] stops the turn`. A page that did not fit its popup cannot be acknowledged, so Allow stays locked rather than unlock for content the person could not see.
 
 These properties do not add assistive-technology semantics to the full-screen renderer.
 

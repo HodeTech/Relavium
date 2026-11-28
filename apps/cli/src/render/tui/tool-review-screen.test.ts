@@ -36,7 +36,6 @@ import {
   fullNavLegend,
   fullStatusRow,
   fullWarnings,
-  keyLabelParts,
   type CallListEntry,
   type FullChromeInput,
   type InspectionPending,
@@ -44,6 +43,10 @@ import {
   type ScreenKind,
 } from './tool-review-screen.js';
 import { displayWidth } from './viewport.js';
+import { yieldBetweenTests } from '../event-loop.test-support.js';
+
+// The file's tests are one unbroken run of synchronous work; a turn of the event loop between them keeps a loaded runner's worker answering.
+yieldBetweenTests();
 
 /**
  * What the width measurer was asked, in calls and characters: `escapedFit` is bounded by counting what it measures, which is
@@ -137,7 +140,7 @@ function documentOf(preview: ToolPreview): ReviewDocument {
   return document;
 }
 
-const COUNTS = '+3 −2 · 205 bytes · 0 masked values';
+const COUNTS = '+3 -2 · 205 bytes · 0 masked values';
 /** Three lines added and two removed, 205 changed bytes (every changed line counts its newline), no secret anywhere. */
 const countedDocument = documentOf(
   opsPreview([
@@ -300,7 +303,7 @@ const NO_PENDING: InspectionPending = { target: false, masks: 0 };
 describe('fullCounts — the change, its bytes and its masked values, always (ADR-0134 §3)', () => {
   it('states the lines added and removed, the changed bytes and the masked values, in that order', () => {
     expect(countedDocument.changedBytes, 'the fixture sums to the bytes it claims').toBe(205);
-    expect(fullCounts(countedDocument)).toBe('+3 −2 · 205 bytes · 0 masked values');
+    expect(fullCounts(countedDocument)).toBe('+3 -2 · 205 bytes · 0 masked values');
   });
 
   it('says `1 masked value` in the singular and `N masked values` otherwise, a zero included', () => {
@@ -338,7 +341,7 @@ describe('fullHeaderRows — one row when it fits, stacked when it does not, the
       columns: 80,
     });
     expect(rows).toEqual([
-      'Review · tool edit_file · action fs_write  +3 −2 · 205 bytes · 0 masked values',
+      'Review · tool edit_file · action fs_write  +3 -2 · 205 bytes · 0 masked values',
     ]);
     expect(displayWidth(rows[0] ?? '')).toBe(usable(80));
   });
@@ -481,7 +484,7 @@ describe('fullHeaderRows — one row when it fits, stacked when it does not, the
     }
   });
 
-  describe('property: no header row is wider than columns − 2, except an identity row that cannot be shortened', () => {
+  describe('property: no header row is wider than columns - 2, except an identity row that cannot be shortened', () => {
     const identities: readonly (readonly string[])[] = [
       [],
       IDENTITY,
@@ -755,7 +758,7 @@ describe('fullWarnings — only the warnings that apply, each naming its cause a
     );
     const all = [TARGET_LOCK, MASK_LOCK_MANY, '⚠ Line endings: CRLF → LF.'];
 
-    it('keeps every row inside columns − 2 at 40..200 columns, and loses no word to the wrapping', () => {
+    it('keeps every row inside columns - 2 at 40..200 columns, and loses no word to the wrapping', () => {
       for (const columns of WIDTHS) {
         const rows = warnings({ document, pending: { target: true, masks: 2 }, columns });
         for (const row of rows)
@@ -920,7 +923,7 @@ describe('fullStatusRow — how far down the page reaches, which changes are off
       }
     });
 
-    it('is exactly columns − 2 wide when its words fit, with the words between rule glyphs', () => {
+    it('is exactly columns - 2 wide when its words fit, with the words between rule glyphs', () => {
       const row = status({
         page: placed({ above: 0, below: 33, total: 43 }, { above: 0, below: 4 }),
         columns: 80,
@@ -931,7 +934,7 @@ describe('fullStatusRow — how far down the page reaches, which changes are off
   });
 
   describe('the row is FITTED to the usable width, in tiers, never cut by the renderer', () => {
-    /** A status row of `words` on a rule exactly `columns − 2` wide. */
+    /** A status row of `words` on a rule exactly `columns - 2` wide. */
     const ruled = (words: string, columns: number): string =>
       `─ ${words} ${'─'.repeat(usable(columns) - displayWidth(words) - 3)}`;
     const placedAt = (above: number, below: number): ReviewPage =>
@@ -1026,7 +1029,7 @@ describe('fullStatusRow — how far down the page reaches, which changes are off
         [false, true],
         [false, false],
       ] as const)(
-        'is exactly columns − 2 wide for changes (above, below, none) × percent × document, from 80 columns up — revealed=%s numeric=%s',
+        'is exactly columns - 2 wide for changes (above, below, none) × percent × document, from 80 columns up — revealed=%s numeric=%s',
         (revealed, numeric) => {
           const { check, none } = collect();
           let cases = 0;
@@ -1056,7 +1059,7 @@ describe('fullStatusRow — how far down the page reaches, which changes are off
         },
       );
 
-      it('is exactly columns − 2 wide below the floor too, down to 40 columns', () => {
+      it('is exactly columns - 2 wide below the floor too, down to 40 columns', () => {
         const { check, none } = collect();
         for (const columns of WIDTHS.filter((width) => width < FLOOR))
           for (const revealed of [true, false])
@@ -1154,7 +1157,7 @@ describe('fullStatusRow — how far down the page reaches, which changes are off
 // fullNavLegend
 // Mutation: drop any `if (input.has…)` guard (an item appears that does nothing); swap `revealed ? … : …`; change `<=` in
 // `packRows` to `<`; pack `[...move, ...tools]` as one list (the groups share a row); push '[b] Back…' into the legend;
-// change KEY_GAP.
+// change the legend separator.
 // ---------------------------------------------------------------------------------------------------------------------
 describe('fullNavLegend — the card’s `[key] words` style, two groups, only the keys that do something here', () => {
   const ALL: NavLegendInput = {
@@ -1165,17 +1168,17 @@ describe('fullNavLegend — the card’s `[key] words` style, two groups, only t
     numeric: false,
     columns: 140,
   };
-  const GAP = '   ';
-  const MOVE_ROW = '[↑↓] scroll   [PgUp/PgDn] page   [Home/End] top/end   [Tab/Shift+Tab] changes';
-  const TOOLS_ROW = '[/] search   [r] reveal masked   [p] Unicode codes   [c] copy page';
+  const GAP = ' · ';
+  const MOVE_ROW = '↑/↓ scroll · PgUp/PgDn page · Home/End top/end · Tab/Shift+Tab changes';
+  const TOOLS_ROW = '[/] search · [r] reveal masked · [p] Unicode codes · [c] copy page';
   const items = (over: Partial<NavLegendInput> = {}): readonly string[] =>
     fullNavLegend({ ...ALL, ...over }).flatMap((row) => row.split(GAP));
   /** The movement group the contract spells out, built from the flags alone. */
   const moveItems = (flags: NavLegendInput): readonly string[] => [
-    '[↑↓] scroll',
-    '[PgUp/PgDn] page',
-    '[Home/End] top/end',
-    ...(flags.hasChanges ? ['[Tab/Shift+Tab] changes'] : []),
+    '↑/↓ scroll',
+    'PgUp/PgDn page',
+    'Home/End top/end',
+    ...(flags.hasChanges ? ['Tab/Shift+Tab changes'] : []),
   ];
   /** The inspection group, likewise. */
   const toolItems = (flags: NavLegendInput): readonly string[] => [
@@ -1198,10 +1201,10 @@ describe('fullNavLegend — the card’s `[key] words` style, two groups, only t
   });
 
   it('offers Tab only when there is a change to go to', () => {
-    expect(items({ hasChanges: false })).not.toContain('[Tab/Shift+Tab] changes');
-    expect(items({ hasChanges: true })).toContain('[Tab/Shift+Tab] changes');
+    expect(items({ hasChanges: false })).not.toContain('Tab/Shift+Tab changes');
+    expect(items({ hasChanges: true })).toContain('Tab/Shift+Tab changes');
     expect(fullNavLegend({ ...ALL, hasChanges: false })[0]).toBe(
-      '[↑↓] scroll   [PgUp/PgDn] page   [Home/End] top/end',
+      '↑/↓ scroll · PgUp/PgDn page · Home/End top/end',
     );
   });
 
@@ -1238,9 +1241,9 @@ describe('fullNavLegend — the card’s `[key] words` style, two groups, only t
 
   it('always offers scrolling, paging, the ends, search and the code-point switch', () => {
     expect(items({ hasChanges: false, hasMasks: false, canCopy: false })).toEqual([
-      '[↑↓] scroll',
-      '[PgUp/PgDn] page',
-      '[Home/End] top/end',
+      '↑/↓ scroll',
+      'PgUp/PgDn page',
+      'Home/End top/end',
       '[/] search',
       '[p] Unicode codes',
     ]);
@@ -1250,7 +1253,7 @@ describe('fullNavLegend — the card’s `[key] words` style, two groups, only t
     const rows = fullNavLegend({ ...ALL, columns: 400 });
     expect(rows).toHaveLength(2);
     expect(rows[0]).not.toContain('[/]');
-    expect(rows[1]).not.toContain('[↑↓]');
+    expect(rows[1]).not.toContain('↑/↓');
   });
 
   it('packs into more rows on a narrow terminal than on a wide one', () => {
@@ -1258,9 +1261,9 @@ describe('fullNavLegend — the card’s `[key] words` style, two groups, only t
       fullNavLegend({ ...ALL, columns: 140 }).length,
     );
     expect(fullNavLegend({ ...ALL, columns: 60 })).toEqual([
-      '[↑↓] scroll   [PgUp/PgDn] page   [Home/End] top/end',
-      '[Tab/Shift+Tab] changes',
-      '[/] search   [r] reveal masked   [p] Unicode codes',
+      '↑/↓ scroll · PgUp/PgDn page · Home/End top/end',
+      'Tab/Shift+Tab changes',
+      '[/] search · [r] reveal masked · [p] Unicode codes',
       '[c] copy page',
     ]);
   });
@@ -1276,7 +1279,7 @@ describe('fullNavLegend — the card’s `[key] words` style, two groups, only t
     const flagLabel = (flags: NavLegendInput, columns: number): string =>
       `@${columns} ${JSON.stringify({ ...flags, columns: undefined })}`;
 
-    it('no row is wider than columns − 2, no key is split, and each group keeps the legend’s own order', () => {
+    it('no row is wider than columns - 2, no key is split, and each group keeps the legend’s own order', () => {
       const { check, none } = collect();
       for (const columns of WIDTHS)
         for (const flags of flagSets) {
@@ -1351,7 +1354,7 @@ describe('fullNavLegend — the card’s `[key] words` style, two groups, only t
 // rows on the wrong flag; return one row; reword the second row; give the locked row the card's wording.
 // ---------------------------------------------------------------------------------------------------------------------
 describe('fullAnswerRows — the card’s two rows, without the keys only the card has', () => {
-  const DENY_ROW = '[Ctrl+N] Deny   [b] Back to the card   Esc back   Ctrl+C stops the turn';
+  const DENY_ROW = '[Ctrl+N] Deny · [b] back to the card · [Ctrl+C] stops the turn · Esc back';
   const scopes = [
     'file writes',
     'file edits',
@@ -1361,7 +1364,7 @@ describe('fullAnswerRows — the card’s two rows, without the keys only the ca
   it('keeps the card’s grants row and replaces the second row with the refusals and the way back that exist here', () => {
     const input: CardKeyInput = { inspected: true, cacheable: true, scope: 'file edits' };
     expect(fullAnswerRows(input)).toEqual([
-      '[Ctrl+Y] Allow   [Ctrl+G] Allow all file edits this session',
+      '[Ctrl+Y] Allow · [Ctrl+G] Allow all file edits this session',
       DENY_ROW,
     ]);
     expect(fullAnswerRows(input)[0]).toBe(cardKeyRows(input)[0]);
@@ -1410,15 +1413,15 @@ describe('fullAnswerRows — the card’s two rows, without the keys only the ca
         const second = fullAnswerRows({ inspected, cacheable, scope: 'file writes' })[1];
         expect(second).not.toContain('Ctrl+R');
         expect(second).not.toContain('[v]');
-        expect(second).not.toContain('Full diff');
+        expect(second).not.toContain('full diff');
       }
   });
 
-  it('names `[b] Back to the card` in the second row, whether or not Allow is offered: back is never locked', () => {
+  it('names `[b] back to the card` in the second row, whether or not Allow is offered: back is never locked', () => {
     for (const inspected of [true, false])
       for (const cacheable of [true, false])
         expect(fullAnswerRows({ inspected, cacheable, scope: 'file writes' })[1]).toContain(
-          '[b] Back to the card',
+          '[b] back to the card',
         );
   });
 
@@ -1467,7 +1470,7 @@ describe('fullAnswerRows — the card’s two rows, without the keys only the ca
         }),
       ).toEqual([
         'Press Enter to allow all file writes this session',
-        'Any other key cancels · Esc back · Ctrl+C stops the turn',
+        'any other key cancels · [Ctrl+C] stops the turn · Esc back',
       ]);
     });
 
@@ -1483,7 +1486,7 @@ describe('fullAnswerRows — the card’s two rows, without the keys only the ca
           });
           expect(rows[1], JSON.stringify({ confirm, command })).not.toContain('Esc stops');
           expect(rows[1]).toContain('Esc back');
-          expect(rows[1]).toContain('Ctrl+C stops the turn');
+          expect(rows[1]).toContain('[Ctrl+C] stops the turn');
         }
       // an Enter confirms a command's question, and any key a tool's
       expect(
@@ -1732,15 +1735,15 @@ describe('fullChrome — the rows the screen spends outside the body, counted on
     expect(approval.note).toBe(FULL_PROTECTED_NOTE);
     expect(approval.answers).toHaveLength(2);
     expect(approval.answers[1], 'the way back sits with the answers').toContain(
-      '[b] Back to the card',
+      '[b] back to the card',
     );
     expect(approval.nav.join('\n'), 'and not in the legend').not.toContain('[b]');
 
     const details = fullChrome({ ...base, kind: 'details', title: 'Details', keys: undefined });
-    expect(details.note).toBe('[b] Back to the list   Esc closes · viewing never executes a tool');
+    expect(details.note).toBe('[b] back to the list · viewing never executes a tool · Esc back');
     expect(details.note).toBe(DETAILS_CLOSE_NOTE);
     expect(details.answers).toEqual([]);
-    expect(details.note, 'the way back sits with the close note').toContain('[b] Back to the list');
+    expect(details.note, 'the way back sits with the close note').toContain('[b] back to the list');
     expect(details.nav.join('\n'), 'and not in the legend').not.toContain('[b]');
     expect(details.header[0]).toMatch(/^Details/u);
   });
@@ -1752,7 +1755,7 @@ describe('fullChrome — the rows the screen spends outside the body, counted on
     });
     expect(waiting.answers).toEqual([
       'Press Enter to allow all file edits this session',
-      'Any other key cancels · Esc back · Ctrl+C stops the turn',
+      'any other key cancels · [Ctrl+C] stops the turn · Esc back',
     ]);
     expect(waiting.rows).toBe(fullChrome(base).rows);
   });
@@ -1770,11 +1773,11 @@ describe('fullBodyRows — what a terminal leaves once the chrome and the spare 
     expect(fullBodyRows(40, 10)).toBe(29);
   });
 
-  it('is capped at FULL_BODY_ROWS_CAP rows on a tall terminal, and is rows − 1 − chrome below the cap', () => {
+  it('is capped at FULL_BODY_ROWS_CAP rows on a tall terminal, and is rows - 1 - chrome below the cap', () => {
     expect(FULL_BODY_ROWS_CAP).toBe(200);
     expect(fullBodyRows(400, 9)).toBe(200);
     expect(fullBodyRows(1000, 30)).toBe(200);
-    // Exactly at and around the cap: 210 rows − 1 spare − 9 chrome = 200.
+    // Exactly at and around the cap: 210 rows - 1 spare - 9 chrome = 200.
     expect(fullBodyRows(210, 9)).toBe(200);
     expect(fullBodyRows(209, 9)).toBe(199);
     expect(fullBodyRows(211, 9)).toBe(200);
@@ -2122,6 +2125,10 @@ describe('escapedFit is bounded: what it costs follows the width, not the length
     return performance.now() - start;
   };
 
+  // What the three tests below guard is the SHAPE of the cost (it follows the width, not the 512 characters: a quadratic version takes seconds), not a
+  // speed. They took 30 ms here and 209 ms against a 200 ms bound on the CI runner; a second keeps the teeth and leaves the runner its slowness.
+  const WIDTHS_BOUND_MS = 1_000;
+
   describe('a 512-character target of a base letter and 511 combining marks', () => {
     const MARKED = `a${MARK.repeat(511)}`;
     const SPREAD = `a${MARK}`.repeat(256);
@@ -2133,26 +2140,26 @@ describe('escapedFit is bounded: what it costs follows the width, not the length
       expect(displayWidth(SPREAD)).toBe(256);
     });
 
-    it('is returned whole when it is one cell wide, within the width, at 5..120 columns, in well under 200 ms', () => {
+    it('is returned whole when it is one cell wide, within the width, at 5..120 columns, in well under a second', () => {
       const widths = Array.from({ length: 116 }, (_, index) => 5 + index);
       const outs: string[] = [];
       const elapsed = timed(() => {
         for (const width of widths) outs.push(escapedFit(MARKED, width));
       });
-      expect(elapsed, 'all 116 widths, in total').toBeLessThan(200);
+      expect(elapsed, 'all 116 widths, in total').toBeLessThan(WIDTHS_BOUND_MS);
       for (const [index, out] of outs.entries()) {
         expect(displayWidth(out), `@${widths[index]}`).toBeLessThanOrEqual(widths[index] ?? 0);
         expect(out).toBe(MARKED);
       }
     });
 
-    it('is cut to the width, ending in an ellipsis, as a whole-token prefix, at 5..120 columns, in well under 200 ms', () => {
+    it('is cut to the width, ending in an ellipsis, as a whole-token prefix, at 5..120 columns, in well under a second', () => {
       const widths = Array.from({ length: 116 }, (_, index) => 5 + index);
       const outs: string[] = [];
       const elapsed = timed(() => {
         for (const width of widths) outs.push(escapedFit(SPREAD, width));
       });
-      expect(elapsed, 'all 116 widths, in total').toBeLessThan(200);
+      expect(elapsed, 'all 116 widths, in total').toBeLessThan(WIDTHS_BOUND_MS);
       const tokens = escapeTokens(SPREAD);
       for (const [index, out] of outs.entries()) {
         const width = widths[index] ?? 0;
@@ -2165,13 +2172,13 @@ describe('escapedFit is bounded: what it costs follows the width, not the length
       }
     });
 
-    it('in middle mode keeps a head and a tail, within the width, in well under 200 ms', () => {
+    it('in middle mode keeps a head and a tail, within the width, in well under a second', () => {
       const widths = Array.from({ length: 116 }, (_, index) => 5 + index);
       const outs: string[] = [];
       const elapsed = timed(() => {
         for (const width of widths) outs.push(escapedFit(SPREAD, width, 'middle'));
       });
-      expect(elapsed, 'all 116 widths, in total').toBeLessThan(200);
+      expect(elapsed, 'all 116 widths, in total').toBeLessThan(WIDTHS_BOUND_MS);
       const tokens = escapeTokens(SPREAD);
       for (const [index, out] of outs.entries()) {
         const width = widths[index] ?? 0;
@@ -2521,13 +2528,14 @@ describe('escapedFit never separates a base from the zero-width mark after it', 
 });
 
 describe('escapedFit verifies its estimate, in both directions: the whole decides, not the sum of the pieces', () => {
-  // `☝🏻` (a hand and a skin-tone modifier), a decomposed Hangul syllable and a keycap with a modifier: the pieces add up to
-  // MORE than the cluster is wide, where a keycap's pieces add up to LESS. Either way the cut must be measured as a whole.
+  // An emoji zero-width-joiner sequence, a decomposed Hangul syllable and a couple with a heart: the pieces add up to MORE than the cluster is
+  // wide, where a keycap's pieces add up to LESS. Either way the cut must be measured as a whole. (Review round 5, R5-S-4: a toned hand and a
+  // toned keycap, the samples before, are counted by their code points now, as tmux draws a toned emoji, so their pieces no longer add up to more.)
   const JAMO = '한';
   const samples: readonly (readonly [string, string])[] = [
-    ['a hand with a skin tone', '☝🏻'.repeat(40)],
+    ['a family', '\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}'.repeat(40)],
     ['decomposed Hangul', JAMO.repeat(30)],
-    ['a keycap with a skin tone', '1⃣🏻'.repeat(40)],
+    ['a couple with a heart', '\u{1F469}\u{200D}\u{2764}\u{FE0F}\u{200D}\u{1F468}'.repeat(40)],
   ];
 
   it.each(samples)(
@@ -2589,6 +2597,9 @@ describe('escapedFit verifies its estimate, in both directions: the whole decide
 // come out one cell WIDER than the width); the tail loop's guard `reversed.length > 0` back to `> 1` (a lone keycap mark opens
 // the tail and composes with the ellipsis: `a…⃣`).
 // ---------------------------------------------------------------------------------------------------------------------
+/** The two property loops below take about 1.5 s each here and several times that on a loaded CI runner (the 5 s default timed out there). */
+const SLOW_PROPERTY_TIMEOUT_MS = 60_000;
+
 describe('escapedFit gives the base back when the shorter cut would not fit (width is not monotone)', () => {
   // `1⃣` is two cells and `1⃣🏻` is one: a cut that drops a trailing base so as not to part it from its mark can be one cell
   // WIDER than the cut it was made from, so the rule only applies while the shorter cut and the ellipsis still fit.
@@ -2604,49 +2615,62 @@ describe('escapedFit gives the base back when the shorter cut would not fit (wid
     MARK +
     'TAIL';
 
-  it('has the premise: a keycap is two cells, and the same keycap with a modifier is one', () => {
+  it('has the premise: a keycap is two cells, a mark none, and the width of a prefix is not monotone', () => {
     expect(displayWidth(KEYCAP)).toBe(2);
-    expect(displayWidth(KEYCAP + MODIFIER)).toBe(1);
     expect(displayWidth(MARK)).toBe(0);
+    // review round 5 (R5-S-4): the same keycap with a modifier was ONE cell to `string-width`; the measure counts a toned cluster by its code
+    // points, as tmux draws it, so it is the keycap's one, the keycap's none and the tone's two. Width is still not monotone in a prefix: a
+    // family's first two members are two pictographs (four cells), the family one join (two)
+    expect(displayWidth(KEYCAP + MODIFIER)).toBe(3);
+    expect(displayWidth('\u{1F468}\u{200D}\u{1F469}')).toBe(4);
+    expect(displayWidth('\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}')).toBe(2);
   });
 
-  it('keeps a start cut within the width, ending in an ellipsis, for the security sitting’s input at widths 8..120, 1..6 keycaps and every mark count around the cap', () => {
-    const { check, none } = collect();
-    let cases = 0;
-    for (const width of [8, 13, 22, 40, 60, 77, 78, 120])
-      for (let keycaps = 1; keycaps <= 6; keycaps++) {
-        if (width - 3 - 2 * keycaps < 0) continue;
-        // The modifier is the last piece under the cap of 3 × width pieces when the marks number about 2 × width; every count
-        // from a little under that to a little past 3 × width is tried, so the cap falls on every piece of the tail in turn.
-        for (let marks = 2 * width - 8; marks <= 3 * width + 8; marks++) {
-          cases++;
-          const out = escapedFit(sittingInput(width, keycaps, marks), width);
-          check(
-            displayWidth(out) <= width,
-            () => `@${width} k=${keycaps} M=${marks}: ${displayWidth(out)} wide`,
-          );
-          check(out.endsWith('…'), () => `@${width} k=${keycaps} M=${marks}: no ellipsis`);
+  it(
+    'keeps a start cut within the width, ending in an ellipsis, for the security sitting’s input at widths 8..120, 1..6 keycaps and every mark count around the cap',
+    () => {
+      const { check, none } = collect();
+      let cases = 0;
+      for (const width of [8, 13, 22, 40, 60, 77, 78, 120])
+        for (let keycaps = 1; keycaps <= 6; keycaps++) {
+          if (width - 3 - 2 * keycaps < 0) continue;
+          // The modifier is the last piece under the cap of 3 × width pieces when the marks number about 2 × width; every count
+          // from a little under that to a little past 3 × width is tried, so the cap falls on every piece of the tail in turn.
+          for (let marks = 2 * width - 8; marks <= 3 * width + 8; marks++) {
+            cases++;
+            const out = escapedFit(sittingInput(width, keycaps, marks), width);
+            check(
+              displayWidth(out) <= width,
+              () => `@${width} k=${keycaps} M=${marks}: ${displayWidth(out)} wide`,
+            );
+            check(out.endsWith('…'), () => `@${width} k=${keycaps} M=${marks}: no ellipsis`);
+          }
         }
-      }
-    none();
-    expect(cases).toBeGreaterThan(1_500);
-  });
+      none();
+      expect(cases).toBeGreaterThan(1_500);
+    },
+    SLOW_PROPERTY_TIMEOUT_MS,
+  );
 
-  it('does the same in middle mode', () => {
-    const { check, none } = collect();
-    for (const width of [8, 13, 22, 40, 60, 77, 78, 120])
-      for (let keycaps = 1; keycaps <= 6; keycaps += 5) {
-        if (width - 3 - 2 * keycaps < 0) continue;
-        for (let marks = 2 * width - 6; marks <= 3 * width + 8; marks++) {
-          const out = escapedFit(sittingInput(width, keycaps, marks), width, 'middle');
-          check(
-            displayWidth(out) <= width,
-            () => `@${width} k=${keycaps} M=${marks}: ${displayWidth(out)} wide`,
-          );
+  it(
+    'does the same in middle mode',
+    () => {
+      const { check, none } = collect();
+      for (const width of [8, 13, 22, 40, 60, 77, 78, 120])
+        for (let keycaps = 1; keycaps <= 6; keycaps += 5) {
+          if (width - 3 - 2 * keycaps < 0) continue;
+          for (let marks = 2 * width - 6; marks <= 3 * width + 8; marks++) {
+            const out = escapedFit(sittingInput(width, keycaps, marks), width, 'middle');
+            check(
+              displayWidth(out) <= width,
+              () => `@${width} k=${keycaps} M=${marks}: ${displayWidth(out)} wide`,
+            );
+          }
         }
-      }
-    none();
-  });
+      none();
+    },
+    SLOW_PROPERTY_TIMEOUT_MS,
+  );
 });
 
 describe('escapedFit never opens a tail on a lone zero-width mark', () => {
@@ -2796,14 +2820,14 @@ describe('callListCapacity — how many calls fit', () => {
 
 describe('callListView — the list of a conversation’s tool calls (ADR-0134 §6)', () => {
   describe('an empty list', () => {
-    it('says why there is nothing, and that Esc closes', () => {
+    it('says why there is nothing, and that Esc closes it', () => {
       const empty = view([]);
       expect(empty.title).toBe('Tool calls');
       expect(empty.rows).toEqual([]);
       expect(empty.empty).toBe('No tool calls yet. Earlier sessions keep no previews.');
       expect(displayWidth(empty.empty ?? '')).toBeLessThanOrEqual(usable(FLOOR));
       expect(empty.status).toBe('');
-      expect(empty.hint).toBe('Esc closes');
+      expect(empty.hint).toBe('Esc close');
       expect(empty.height).toBe(3);
     });
     it('has no `empty` text once there is a call', () => {
@@ -2819,7 +2843,7 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
       expect(rows.map((row) => /tool_(\d)/u.exec(row.text)?.[1])).toEqual(['0', '1', '2', '3']);
     });
 
-    it('marks the selected row with `>` and no other, and flags it in the row data', () => {
+    it('marks the selected row with `›` and no other, and flags it in the row data', () => {
       const calls = [0, 1, 2].map((index) => call(index));
       for (const selected of [0, 1, 2]) {
         const rows = view(calls, selected).rows;
@@ -2827,7 +2851,7 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
           [0, 1, 2].map((index) => index === selected),
         );
         expect(rows.map((row) => row.text.slice(0, 2))).toEqual(
-          [0, 1, 2].map((index) => (index === selected ? '> ' : '  ')),
+          [0, 1, 2].map((index) => (index === selected ? '› ' : '  ')),
         );
       }
     });
@@ -2850,19 +2874,19 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
 
       it.each(cases)('%s reads `%s %s` and is toned %s', (outcome, mark, word, tone) => {
         const [bare] = view([call(0, { outcome })]).rows;
-        const left = `> ${mark} edit_file  src/file0.ts`;
+        const left = `› ${mark} edit_file  src/file0.ts`;
         expect(bare?.text).toBe(word === '' ? left : flushed(left, word, usable(80)));
         expect(bare?.tone).toBe(tone);
         const [counted] = view([call(0, { outcome, stats: stats(3, 2) })]).rows;
         expect(counted?.text).toBe(
-          flushed(left, word === '' ? '+3 −2' : `+3 −2 · ${word}`, usable(80)),
+          flushed(left, word === '' ? '+3 -2' : `+3 -2 · ${word}`, usable(80)),
         );
       });
     });
 
-    it('draws `+a −r` flush right for a call that changed a file, and nothing for one that did not', () => {
+    it('draws `+a -r` flush right for a call that changed a file, and nothing for one that did not', () => {
       const [changed, untouched] = view([call(0, { stats: stats(12, 0) }), call(1)], 0).rows;
-      expect(changed?.text).toBe(flushed('> ✓ edit_file  src/file0.ts', '+12 −0', usable(80)));
+      expect(changed?.text).toBe(flushed('› ✓ edit_file  src/file0.ts', '+12 -0', usable(80)));
       expect(displayWidth(changed?.text ?? '')).toBe(usable(80));
       expect(untouched?.text).toBe('  ✓ edit_file  src/file1.ts');
     });
@@ -2874,7 +2898,7 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
         summary: 'RESULT-BODY-WITH-A-SECRET',
       };
       const [row] = view([display]).rows;
-      expect(row?.text).toBe(flushed('> ✗ edit_file  src/file0.ts', '+1 −1 · failed', usable(80)));
+      expect(row?.text).toBe(flushed('› ✗ edit_file  src/file0.ts', '+1 -1 · failed', usable(80)));
       expect(row?.text).not.toContain('RESULT');
     });
   });
@@ -2885,7 +2909,7 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
         call(0, { toolId: 'edit_file', target: 'a.ts' }),
         call(1, { toolId: 'write_file', target: 'b.ts' }),
       ]).rows;
-      expect(rows.map((row) => row.text)).toEqual(['> ✓ edit_file   a.ts', '  ✓ write_file  b.ts']);
+      expect(rows.map((row) => row.text)).toEqual(['› ✓ edit_file   a.ts', '  ✓ write_file  b.ts']);
       expect(rows[0]?.text.indexOf('a.ts')).toBe(rows[1]?.text.indexOf('b.ts'));
     });
 
@@ -2897,14 +2921,14 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
       ]).rows;
       const cut = `${long.slice(0, 21)}…`;
       expect(displayWidth(cut)).toBe(22);
-      expect(rows[0]?.text).toBe(`> ✓ ${cut}  a.ts`);
+      expect(rows[0]?.text).toBe(`› ✓ ${cut}  a.ts`);
       expect(rows[1]?.text).toBe(`  ✓ edit_file${' '.repeat(22 - 'edit_file'.length)}  b.ts`);
       expect(rows[0]?.text.indexOf('a.ts')).toBe(rows[1]?.text.indexOf('b.ts'));
     });
 
     it('does not widen the column for a name of exactly 22 columns', () => {
       const exact = 'a'.repeat(22);
-      expect(view([call(0, { toolId: exact, target: 't' })]).rows[0]?.text).toBe(`> ✓ ${exact}  t`);
+      expect(view([call(0, { toolId: exact, target: 't' })]).rows[0]?.text).toBe(`› ✓ ${exact}  t`);
     });
   });
 
@@ -2914,21 +2938,21 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
       view([call(0, { target: wide })], 0, { columns }).rows[0]?.text;
 
     it('is left out at 7 columns of room and drawn, cut to its 8, at 8', () => {
-      // `> ✓ edit_file` is 13 columns; the target needs a two-column gap and then its room.
-      expect(lone(24)).toBe('> ✓ edit_file');
-      expect(lone(25)).toBe('> ✓ edit_file  sr…th.ts');
+      // `› ✓ edit_file` is 13 columns; the target needs a two-column gap and then its room.
+      expect(lone(24)).toBe('› ✓ edit_file');
+      expect(lone(25)).toBe('› ✓ edit_file  sr…th.ts');
       expect(displayWidth(lone(25) ?? '')).toBe(usable(25));
     });
 
     it('is shown whole when it fits the room exactly, and cut in the middle with one ellipsis when it is a column longer', () => {
-      // 80 columns: width 78, head 13, `+3 −2` 5 plus its 2-column gap, 2-column gap before the target: room 56.
+      // 80 columns: width 78, head 13, `+3 -2` 5 plus its 2-column gap, 2-column gap before the target: room 56.
       const fits = 'a'.repeat(56);
       const [exact] = view([call(0, { target: fits, stats: stats(3, 2) })]).rows;
-      expect(exact?.text).toBe(flushed(`> ✓ edit_file  ${fits}`, '+3 −2', usable(80)));
+      expect(exact?.text).toBe(flushed(`› ✓ edit_file  ${fits}`, '+3 -2', usable(80)));
       const [over] = view([call(0, { target: `${fits}b`, stats: stats(3, 2) })]).rows;
       // A third of the 55 columns that are not the ellipsis for the start, the rest for the end.
       expect(over?.text).toBe(
-        flushed(`> ✓ edit_file  ${'a'.repeat(18)}…${'a'.repeat(36)}b`, '+3 −2', usable(80)),
+        flushed(`› ✓ edit_file  ${'a'.repeat(18)}…${'a'.repeat(36)}b`, '+3 -2', usable(80)),
       );
       expect(displayWidth(over?.text ?? '')).toBe(usable(80));
     });
@@ -2939,13 +2963,13 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
       it('keeps its basename and its head, with one ellipsis between', () => {
         // 47 columns: width 45, head 13, no right text: room 30.
         const text = view([call(0, { target: path })], 0, { columns: 47 }).rows[0]?.text;
-        expect(text).toBe('> ✓ edit_file  src/compo…der/ReviewScreen.tsx');
+        expect(text).toBe('› ✓ edit_file  src/compo…der/ReviewScreen.tsx');
         expect(text?.endsWith('ReviewScreen.tsx')).toBe(true);
         expect(displayWidth(text ?? '')).toBe(usable(47));
       });
 
       it('shows the whole path when it fits', () => {
-        expect(view([call(0, { target: path })]).rows[0]?.text).toBe(`> ✓ edit_file  ${path}`);
+        expect(view([call(0, { target: path })]).rows[0]?.text).toBe(`› ✓ edit_file  ${path}`);
       });
 
       it('keeps the basename at every width that has room for it, beside the stats and the outcome word', () => {
@@ -2957,10 +2981,10 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
             { columns },
           ).rows;
           const text = row?.text ?? '';
-          // `> ✗ edit_file` (13) + gap + target + gap + `+3 −2 · failed` (14) + gap: the target's room.
+          // `> ✗ edit_file` (13) + gap + target + gap + `+3 -2 · failed` (14) + gap: the target's room.
           const room = usable(columns) - 13 - 14 - 2 - 2;
           check(displayWidth(text) <= usable(columns), () => `@${columns}: too wide: ${text}`);
-          check(text.endsWith('+3 −2 · failed'), () => `@${columns}: lost the outcome: ${text}`);
+          check(text.endsWith('+3 -2 · failed'), () => `@${columns}: lost the outcome: ${text}`);
           if (room >= 24)
             check(text.includes('ReviewScreen.tsx'), () => `@${columns}: lost the name: ${text}`);
         }
@@ -3015,13 +3039,13 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
 
     it('gives a call with no target no target column at all', () => {
       const [row] = view([{ callId: 'c0', toolId: 'edit_file', outcome: 'success' }]).rows;
-      expect(row?.text).toBe('> ✓ edit_file');
+      expect(row?.text).toBe('› ✓ edit_file');
     });
 
     it('keeps a call’s outcome word when there is no room left for a target', () => {
       // 28 columns: width 26, head 13, `failed` 6 plus its gap 2 and the target gap 2 leave 3: under the 8 a target needs.
       const [row] = view([call(0, { outcome: 'failure', target: wide })], 0, { columns: 28 }).rows;
-      expect(row?.text).toBe(flushed('> ✗ edit_file', 'failed', usable(28)));
+      expect(row?.text).toBe(flushed('› ✗ edit_file', 'failed', usable(28)));
     });
   });
 
@@ -3190,7 +3214,7 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
       const list = view([call(0)]);
       expect(list.title).toBe('Tool calls');
       expect(list.hint).toBe(
-        '↑↓ PgUp/PgDn select · Enter open · Home/End oldest/newest · Esc closes',
+        '↑/↓, PgUp/PgDn select · Enter open · Home/End oldest/newest · Esc close',
       );
     });
 
@@ -3203,7 +3227,7 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
     });
   });
 
-  describe('property: no row is wider than columns − 2', () => {
+  describe('property: no row is wider than columns - 2', () => {
     const fixtures: readonly (readonly CallListEntry[])[] = [
       [
         call(0),
@@ -3281,93 +3305,5 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
         none();
       },
     );
-  });
-});
-
-/**
- * `keyLabelParts` splits a key legend into its `[key]` labels, `Esc`, `Ctrl+C` and the words between, in one pass. The regular expression
- * it replaced (`/(\[[^\]]+\]|Esc|Ctrl\+C)/u`) is the oracle here, and a long run of `[` is the input that made it quadratic (100,000 of them took
- * 3.4 s). Mutation: put the oracle back, and the time bound fails; drop the `close > index + 1` test, and `[]` is a label.
- */
-describe('keyLabelParts — a key legend in labels and words, in one pass', () => {
-  const oracle = (row: string): string[] =>
-    row.split(/(\[[^\]]+\]|Esc|Ctrl\+C)/u).filter((part) => part.length > 0);
-
-  it('equals the regular expression on every string of up to six pieces', () => {
-    const pieces = ['[', ']', 'Esc', 'x', ' '];
-    let checked = 0;
-    const walk = (prefix: string, depth: number): void => {
-      expect(keyLabelParts(prefix)).toEqual(oracle(prefix));
-      checked++;
-      if (depth === 0) return;
-      for (const piece of pieces) walk(prefix + piece, depth - 1);
-    };
-    walk('', 6);
-    expect(checked).toBe(19_531);
-  });
-
-  it('equals the regular expression on every string of up to four pieces, `Ctrl+C` among them', () => {
-    const pieces = ['[', ']', 'Esc', 'Ctrl+C', 'Ctrl+', 'x', ' '];
-    let checked = 0;
-    const walk = (prefix: string, depth: number): void => {
-      expect(keyLabelParts(prefix)).toEqual(oracle(prefix));
-      checked++;
-      if (depth === 0) return;
-      for (const piece of pieces) walk(prefix + piece, depth - 1);
-    };
-    walk('', 4);
-    expect(checked).toBe(2_801);
-  });
-
-  it('finds the stop key at the start of a row, as a row of the search box begins with it', () => {
-    expect(keyLabelParts('Ctrl+C stops the turn')).toEqual(['Ctrl+C', ' stops the turn']);
-    expect(keyLabelParts('Ctrl+N is not the stop key')).toEqual(['Ctrl+N is not the stop key']);
-  });
-
-  it('is lossless: the parts put back together are the row, whatever the row holds', () => {
-    for (const row of [
-      '',
-      '[',
-      ']',
-      '[]',
-      '[[]',
-      '[a[b]c]',
-      'Esc',
-      'EscEsc',
-      '[Ctrl+Y] Allow  [Esc]',
-      'é[ü]ß',
-    ]) {
-      expect(keyLabelParts(row).join('')).toBe(row);
-    }
-  });
-
-  it('finds the labels the real legend rows hold', () => {
-    expect(
-      keyLabelParts('[Ctrl+N] Deny   [b] Back to the card   Esc back   Ctrl+C stops the turn'),
-    ).toEqual([
-      '[Ctrl+N]',
-      ' Deny   ',
-      '[b]',
-      ' Back to the card   ',
-      'Esc',
-      ' back   ',
-      'Ctrl+C',
-      ' stops the turn',
-    ]);
-  });
-
-  it('treats a `[` with no `]` after it, and an empty `[]`, as plain text', () => {
-    expect(keyLabelParts('a [ b')).toEqual(['a [ b']);
-    expect(keyLabelParts('[]')).toEqual(['[]']);
-    expect(keyLabelParts('[] [x]')).toEqual(['[] ', '[x]']);
-  });
-
-  it('takes a long run of `[` (and a run of `[a` closed late) in linear time', () => {
-    for (const row of ['['.repeat(150_000), '[a'.repeat(100_000) + ']', '[]'.repeat(100_000)]) {
-      const started = performance.now();
-      keyLabelParts(row);
-      // Linear takes a few milliseconds; the quadratic expression took 3.4 s at 100,000.
-      expect(performance.now() - started).toBeLessThan(1_000);
-    }
   });
 });

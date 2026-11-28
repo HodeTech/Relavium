@@ -1,490 +1,888 @@
 import {
-  NATIVE_PROMPT_CANCEL,
+  NATIVE_PROMPT_BACK,
+  type NativePromptEscape,
   type NativePromptFlow,
+  type NativePromptOption,
 } from '../render/tui/native-prompt-channel.js';
-import { intro, isCancel, note, outro, password, select, spinner } from '@clack/prompts';
+import { inertLegendText, keyToken } from '../render/tui/legend.js';
+import { authorLine } from '../render/tui/run-card-model.js';
+import { foldLineSeparators } from '../popups/frame-model.js';
 import type { ProviderStore } from '@relavium/db';
 import type { ProviderId } from '@relavium/llm';
 
 import { runProviderCommand } from '../commands/provider.js';
+import type { PreparedConfigWrite } from '../config/write.js';
 import {
   KNOWN_PROVIDERS,
   KNOWN_PROVIDER_IDS,
-  keyHint,
-  providerHasKey,
+  providerDisplayName,
+  providerEndpointOrigin,
   providerKeyEnvVar,
   validateProviderKey,
   type ProviderKeyValidation,
   type ProviderResolver,
 } from '../engine/providers.js';
+import type { FramedDone } from '../home/framed-flow.js';
 import { CliError } from '../process/errors.js';
 import type { CliIo } from '../process/io.js';
 import { KeychainUnavailableError, type KeychainStore } from '../secrets/keychain.js';
-import { nativePromptIo } from '../process/native-prompt-io.js';
-import { runSessionPrompt } from '../chat/session-prompt.js';
+import {
+  FIRST_RUN_NOTE_TITLE,
+  KEY_REQUIRED_TEXT,
+  SAVED_UNCONFIRMED,
+  SETUP_NEXT_STEP,
+  STARTER_SAVING_TEXT,
+  UNKNOWN_KEY_HOST,
+  keyCheckText,
+  keySavingText,
+  keyStepNote,
+  setupSkippedNotice,
+  type SetupSurface,
+} from './setup-notes.js';
 import type { SessionWorkOwner } from '../chat/session-work-owner.js';
 
 /**
- * The first-run onboarding wizard (workstream **2.5.G S8**) — a `@clack/prompts` flow that turns a KEY-LESS Home
- * into a working chat: pick a provider → paste a **hidden** API key → store it in the OS keychain, with a
- * keychain-write fallback that guides the user to the environment variable (the key is **NEVER** written to disk).
- * It reuses the two existing ink↔clack custody patterns: `@clack/prompts` is confined to THIS module behind an
- * injectable seam (mirroring the create wizard + the gate prompter), and the key-storage rides the **tested**
- * `providerSetKey` path (keychain.set + the provider row + the keychain-ref, secret-free by construction —
- * [provider.ts](../commands/provider.ts), ADR-0006/0019). Model selection is deliberately OUT of scope here — the
- * wizard's job is to store the key that lights up the S7 `/models` picker + chat; the user picks a model there.
+ * The first-run onboarding setup (workstream **2.5.G S8**): it turns a KEY-LESS Home into a working chat: pick a provider → paste a
+ * **hidden** API key → check it with the provider once → store it in the OS keychain, with a keychain-write fallback that names the environment
+ * variable (the key is **NEVER** written to disk), then choose the provider's starter model as the default.
+ *
+ * It runs on the host's native prompt channel ({@link runNativeSetup}). On the Home its steps are the steps of the `/providers` popup
+ * (`native.stages`, ADR-0148 §1, ADR-0146 §6): `Provider · Key · Done`; `Esc` on the first step skips (its legend says `Esc skip for now`), `Esc`
+ * steps back from the key, from the key's check (which it aborts, O6) and from the choices after a failed check, `Ctrl+C` leaves, and the result
+ * is a persistent Done step. In a stand-alone chat's pre-chat mount, which has
+ * no popup slot, they are the card they always were, and the result is the card's last note. (The `@clack/prompts` path it once had was the
+ * Home's injected test seam only, and was deleted in MVP-11 unit 6.)
  *
  * SECURITY (this captures a live API key):
- *  - The key is read via clack's masked `password` prompt (never an argv flag, never echoed) and held only in
- *    memory. Before it is stored, it is sent LIVE to the provider ONCE (the bounded, key-redacted
- *    {@link validateProviderKey} `maxTokens:1` ping) to verify it — the key crosses the network only to its own
- *    provider, over the adapter's own transport, and is never logged/persisted/echoed on that path.
- *  - It is then handed to the OS keychain. On a validation FAILURE the user may consciously "save it anyway" — the
- *    key is then stored UNVERIFIED and the note says so (never claiming a verification we didn't do).
- *  - The only key material ever surfaced is {@link keyHint} (the last 4); the redacted probe `detail` is the only
- *    failure text shown. Nothing is written to a file/log/error/report.
- *  - The keychain-unavailable fallback prints the env-var name to set — NEVER the key, and NEVER a plaintext file
- *    (the deliberate "no silent plaintext fallback" of `providerSetKey`).
+ *  - The key is read through a masked prompt (never an argv flag, never echoed) and held only in memory, in the channel's private editor, never
+ *    in a snapshot, cleared on `Esc`, on a step back and on any resize.
+ *  - Before it is stored, it is sent LIVE to the provider ONCE (the bounded, key-redacted {@link validateProviderKey} `maxTokens:1` ping against
+ *    the provider's STARTER model) to verify it; the setup says so before the key is pasted and while the request runs, naming the host of the
+ *    origin that receives it (G20). The key crosses the network only to its own provider, over the adapter's own transport. The pre-selected
+ *    `Retry the check` (which sends it again) is GUARDED, on the popup and on the card, so a held `Enter` does not re-send it at the key's
+ *    repeat rate.
+ *  - It is then handed to the OS keychain. On a validation FAILURE the user may consciously "save it anyway": the key is then stored UNVERIFIED
+ *    and the result says so (never claiming a verification we didn't do).
+ *  - No part of the key is ever shown. Nothing is written to a file, a log, an error or a report.
+ *  - The keychain-unavailable fallback names the env var to set (as a variable name, no shell command), NEVER the key, and NEVER a plaintext
+ *    file (the deliberate "no silent plaintext fallback" of `providerSetKey`).
  */
 
-/** The narrow slice of `@clack/prompts` the wizard uses — injectable so the flow unit-tests without a TTY. */
-export interface ClackOnboardingDeps {
-  readonly intro: (title: string) => void;
-  readonly outro: (message: string) => void;
-  readonly note: (message: string, title?: string) => void;
-  readonly select: (opts: {
-    message: string;
-    options: readonly { value: string; label: string; hint?: string }[];
-    /** Pre-highlight an option so a bare Enter takes it (2.5.G S8 — the "press Enter to continue" affordance). */
-    initialValue?: string;
-    signal?: AbortSignal;
-  }) => Promise<string | symbol>;
-  /** A MASKED key prompt (clack `password`) — the hidden interactive key input. */
-  readonly password: (opts: {
-    message: string;
-    validate?: (value: string | undefined) => string | undefined;
-    signal?: AbortSignal;
-  }) => Promise<string | symbol>;
-  /** Clack's cancel sentinel guard (Ctrl-C / ESC) — a real type guard so a non-cancel value narrows. */
-  readonly isCancel: (value: unknown) => value is symbol;
-  /** An optional progress spinner for the live key-check moment (2.5.G S8) — omit ⇒ no spinner (a test no-op). */
-  readonly spinner?: () => { start: (message?: string) => void; stop: (message?: string) => void };
+/** `an Anthropic`, `a Google Gemini`: the article a sentence needs before a provider's display name (the four known names). */
+function withArticle(name: string): string {
+  return /^[AEIOU]/u.test(name) ? `an ${name}` : `a ${name}`;
 }
 
-// The clack-boundary adapter (the one place the library's exact option shapes are met) — spread the optional
-// fields conditionally so no explicit `undefined` is passed (exactOptionalPropertyTypes), keeping the seam free
-// of clack's types and free of an unsafe cast. Mirrors `create-prompter.ts`'s `defaultDeps`.
-const defaultPrompter: ClackOnboardingDeps = {
-  intro: (title) => intro(title),
-  outro: (message) => outro(message),
-  note: (message, title) => note(message, title),
-  select: (opts) =>
-    select({
-      message: opts.message,
-      options: opts.options.map((option) => ({
-        value: option.value,
-        label: option.label,
-        ...(option.hint === undefined ? {} : { hint: option.hint }),
-      })),
-      ...(opts.initialValue === undefined ? {} : { initialValue: opts.initialValue }),
-    }),
-  password: (opts) =>
-    password({
-      message: opts.message,
-      ...(opts.validate === undefined ? {} : { validate: opts.validate }),
-    }),
-  isCancel,
-  spinner: () => {
-    const sp = spinner();
-    return { start: (message) => sp.start(message), stop: (message) => sp.stop(message) };
-  },
-};
-
-/** Native prompts use captured streams. Installed Clack spinner borrows ambient stdin, so omit it. */
-export function createBoundOnboardingPrompter(io: CliIo): ClackOnboardingDeps {
-  const streams = nativePromptIo(io);
-  return {
-    intro: (title) => intro(title, { output: streams.output }),
-    outro: (message) => outro(message, { output: streams.output }),
-    note: (message, title) => note(message, title, { output: streams.output }),
-    select: (options) => select({ ...options, ...streams, options: [...options.options] }),
-    password: (options) => password({ ...options, ...streams }),
-    isCancel,
-  };
+/**
+ * The full scrub of a surface with a chord step (ADR-0145 §5), for every string of the setup that a provider, an endpoint, a variable or a
+ * catalogue wrote (a display name, a destination, a host, a model): the run cards' author-text floor (secrets scrubbed, folded, host glyphs
+ * blanked, answer chords replaced), then key tokens and legend separators made inert, then the line separators folded to a space (every such
+ * string is one line of a step). The popups' `scrubPopupText` and the frame's fold, composed here because the popups' text module is loaded
+ * lazily and the setup is on the Home's first paint (`popups/lazy-load.test.ts`).
+ */
+export function scrubSetupText(text: string): string {
+  return foldLineSeparators(inertLegendText(authorLine(text)));
 }
 
-function ownedPrompter(deps: OnboardingDeps): ClackOnboardingDeps {
-  if (deps.native !== undefined) {
-    const flow = deps.native.flow;
-    return {
-      intro: () => {},
-      outro: () => {},
-      note: (message, title) => flow.note(message, title),
-      select: (options) => flow.select(options),
-      password: (options) =>
-        flow.password({
-          message: options.message,
-          ...(options.validate === undefined ? {} : { validate: options.validate }),
-        }),
-      isCancel: (value: unknown): value is symbol => value === NATIVE_PROMPT_CANCEL,
-    };
-  }
-  const owner = deps.workOwner;
-  const native =
-    deps.prompter ??
-    (owner === undefined ? defaultPrompter : createBoundOnboardingPrompter(deps.io));
-  if (owner === undefined) return native;
-  const guarded = <T>(operation: () => T): T => {
-    owner.assertAdmitting();
-    return operation();
-  };
-  return {
-    intro: (title) => guarded(() => native.intro(title)),
-    outro: (message) => guarded(() => native.outro(message)),
-    note: (message, title) => guarded(() => native.note(message, title)),
-    select: async (options) => {
-      const answer = await runSessionPrompt(
-        owner.invocation,
-        deps.io,
-        owner.assertAdmitting,
-        owner.failure,
-        (signal) => native.select({ ...options, signal }),
-        owner.signal,
-      );
-      owner.assertAdmitting();
-      return answer;
-    },
-    password: async (options) => {
-      const answer = await runSessionPrompt(
-        owner.invocation,
-        deps.io,
-        owner.assertAdmitting,
-        owner.failure,
-        (signal) => native.password({ ...options, signal }),
-        owner.signal,
-      );
-      owner.assertAdmitting();
-      return answer;
-    },
-    isCancel: native.isCancel,
-  };
-}
-
-/** The non-clack ports the wizard needs — the keychain-write path + the resolver (injected for tests). */
+/** What the default-model write came to, as the setup reads it. */
 export type OnboardingDefaultResult =
   | { readonly kind: 'saved'; readonly durability: 'confirmed' | 'unconfirmed' }
   | { readonly kind: 'ephemeral' }
   | { readonly kind: 'cancelled' };
 
+/** The prompts of one step of the setup popup (`framedFlow(…).at(i)`), or the card's own flow. */
+export type SetupPrompts = Pick<NativePromptFlow, 'busy' | 'select' | 'password'>;
+
+/**
+ * The steps of the Home's `/providers` popup (ADR-0148 §1, ADR-0146 §6), when the setup is drawn as one: the prompts of the `Provider` step,
+ * those of the `Key` step (the key, its check, the choices after a failed check) and the persistent Done step. Absent on a card (the stand-alone
+ * chat's pre-chat mount, which has no popup slot), where every prompt is the card's and the result is its last note.
+ */
+export interface SetupStages {
+  readonly provider: SetupPrompts;
+  readonly key: SetupPrompts;
+  /**
+   * The key prompt itself where its `Esc` is not the key step's step back to the provider: on the automatic first run whose FIRST prompt it
+   * is (a custom endpoint refused the environment key, so the setup asks for a key at once), its step back is the skip and its legend says so
+   * (`Esc skip for now`). Absent ⇒ {@link key}. The check and the choices after a failed check are always {@link key}'s.
+   */
+  readonly keyPrompt?: SetupPrompts;
+  readonly done: (done: FramedDone) => Promise<void>;
+}
+
+/** What the native setup did, for the coordinator that opened it. */
+export type NativeSetupResult =
+  /** `Esc` stepped back from the key step and the setup had no step before it (the caller chose the provider): the caller asks again. */
+  | { readonly kind: 'back' }
+  /**
+   * The person skipped the setup: in the popup `Esc` on `Which provider?` (its first step) or `Skip setup` after a failed check; on a card
+   * `Esc` anywhere, as it always was.
+   */
+  | { readonly kind: 'skipped' }
+  /** The flow was left (`Ctrl+C`, or the host stopped it) before anything was stored: in the popup, never a skip. */
+  | { readonly kind: 'cancelled' }
+  /**
+   * The setup reached its end and said so itself (the Done step, or the card's last note): a key `stored`, or a store that failed. `notice` is
+   * a line for the host when the popup's Done step could not be shown (the flow was cancelled after the key was stored).
+   */
+  | { readonly kind: 'finished'; readonly stored: boolean; readonly notice?: string };
+
+export interface NativeOnboarding {
+  readonly flow: NativePromptFlow;
+  readonly signal: AbortSignal;
+  readonly assertAdmitting: () => void;
+  readonly endpointContext: (id: ProviderId) => string;
+  /** Only a first usable-source setup chooses a starter; key maintenance preserves model preferences. */
+  readonly selectStarterDefault?: boolean;
+  readonly surface?: SetupSurface;
+  /** The popup's steps (the Home); absent ⇒ a card (a stand-alone chat). */
+  readonly stages?: SetupStages;
+}
+
+/** The setup's ports besides its prompts ({@link NativeOnboarding}): the keychain-write path, the resolver, the default-model writer. */
 export interface OnboardingDeps {
   readonly workOwner?: SessionWorkOwner;
   readonly initialProvider?: ProviderId;
-  /** In-tree custody is owned by the caller, not the Clack terminal lease. */
-  readonly native?: {
-    readonly flow: NativePromptFlow;
-    readonly signal: AbortSignal;
-    readonly assertAdmitting: () => void;
-    readonly endpointContext: (id: ProviderId) => string;
-    /** Only a first usable-source setup chooses a starter; key maintenance preserves model preferences. */
-    readonly selectStarterDefault?: boolean;
-    readonly surface?: 'home' | 'standalone-chat';
-  };
-  /** The clack slice — omit for the real prompts; a test injects a scripted one. */
-  readonly prompter?: ClackOnboardingDeps;
   readonly store: ProviderStore;
   readonly keychain: KeychainStore;
   readonly resolver: ProviderResolver;
   readonly io: CliIo;
   /** Persist the NEXT session's default model AND its `provider` (ADR-0059 — authoritative at pick time) via the
-   *  Home's config target. The wizard sets a starter model of the CHOSEN provider so the first chat binds a model
-   *  whose key was just stored — the built-in default (`claude-sonnet-4-6` → anthropic) would otherwise error for a
-   *  user who picked another provider — and persisting the provider means that first chat skips id inference. */
+   *  Home's config target. The setup sets the CHOSEN provider's starter model (`KNOWN_PROVIDERS[id].starterModel`) so the first chat binds a
+   *  model whose key was just stored, and persisting the provider means that first chat skips id inference. */
   readonly writeDefaultModel: (
     modelId: string,
     provider: ProviderId,
     assertAdmitting?: () => void,
+    /**
+     * The setup run's own view of the write the host prepares (MVP-11 unit 6, W7 item 5): a global config this run created a moment before
+     * and that nobody changed since loses nothing a person wrote, so its rewrite notice is not drawn. The host passes its prepared write
+     * through it before it publishes; absent ⇒ as prepared.
+     */
+    runWrite?: (prepared: PreparedConfigWrite) => PreparedConfigWrite,
   ) => unknown;
   /**
    * LIVE-validate a just-entered key (2.5.G S8) — injected for tests (no network). Absent ⇒ the real bounded,
-   * key-redacted {@link validateProviderKey} probe against the provider's cheap `testModel`. The wizard uses the
-   * result's `reason` to branch the retry UX (auth → re-enter; network → continue-anyway). A resolver with no
-   * adapter (a test stub) validates as `ok` so the flow never blocks on an un-probeable provider.
+   * key-redacted {@link validateProviderKey} probe against the provider's `starterModel`. The setup uses the
+   * result's `reason` to branch the retry UX (auth → re-enter; network → retry the check). A resolver with no
+   * adapter (a test stub) validates as `ok` so the flow never blocks on an un-probeable provider. `signal` aborts when the check is
+   * abandoned (the person stepped back out of it with `Esc`, or left the setup): the check should stop, and its answer is never read.
    */
-  readonly validate?: (id: ProviderId, key: string) => Promise<ProviderKeyValidation>;
+  readonly validate?: (
+    id: ProviderId,
+    key: string,
+    signal?: AbortSignal,
+  ) => Promise<ProviderKeyValidation>;
 }
 
 /**
- * Whether the run is truly KEY-LESS — no known provider has a resolvable key (the resolver checks the OS keychain
- * AND the `RELAVIUM_<PROVIDER>_API_KEY` env fallback). `true` ⇒ a chat turn would fail `provider_auth`, so the
- * bare Home offers the wizard. A run with EITHER a keychain key or an env key is NOT key-less (no wizard) — so a
- * working env-key user is never nagged, and the env fallback IS the resolver's built-in key import.
+ * The key prompt's validator: it rejects an empty or whitespace-only key, and nothing else. The masked field draws the key step's own fixed
+ * sentence for a rejected value ({@link KEY_REQUIRED_TEXT}: `Paste your key to continue.`, OB-5), never this reason, so it names no key.
  */
-export function isProviderKeyless(resolver: Pick<ProviderResolver, 'keyFor' | 'hasKey'>): boolean {
-  return !KNOWN_PROVIDER_IDS.some((id) => providerHasKey(resolver, id));
-}
-
-/** A clack `validate` that rejects an empty/whitespace key (Esc still cancels the whole flow). */
-const requireKey = (value: string | undefined): string | undefined =>
-  (value ?? '').trim() === '' ? 'An API key is required (or press Esc to skip setup).' : undefined;
+const keyRequired = (value: string): string | undefined =>
+  value.trim() === '' ? 'An API key is required.' : undefined;
 
 /**
- * Run the first-run wizard. Resolves when the user has stored a key OR skipped/failed — the caller (the Home) then
- * mounts as usual. Every STORAGE outcome ends cleanly (cancel → skip; keychain-unavailable → env-var guidance; any
- * other storage fault → a generic note) — none rethrow. Only a fault inside a clack prompt call itself
- * (`select`/`password`/`note`/`outro`) propagates, and that is caught by the Home's cleanup `finally`.
+ * The native setup (see the module header), with what it did. A cancellation that is the flow's own (its signal's reason) is `cancelled`; any
+ * other fault becomes the fixed `Provider setup failed.` (nothing of its cause reaches a host's words). Every STORAGE outcome ends cleanly
+ * (keychain-unavailable → env-var guidance; any other storage fault → a generic note); none rethrows.
  */
-export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
+export async function runNativeSetup(
+  deps: OnboardingDeps,
+  native: NativeOnboarding,
+): Promise<NativeSetupResult> {
   try {
-    await runWizard(deps);
+    return await runNative(deps, native);
   } catch (cause) {
-    if (nativeCancelled(deps) && cause === deps.native?.signal.reason) return;
-    if (deps.native !== undefined) throw new Error('Provider setup failed.');
-    throw cause;
+    if (native.signal.aborted && cause === native.signal.reason) return { kind: 'cancelled' };
+    throw new Error('Provider setup failed.');
   }
 }
-function nativeCancelled(deps: OnboardingDeps): boolean {
-  return deps.native?.signal.aborted === true;
-}
-function assertAdmitting(deps: OnboardingDeps): void {
-  deps.workOwner?.assertAdmitting();
-  deps.native?.assertAdmitting();
-  deps.native?.signal.throwIfAborted();
-}
-async function runWizard(deps: OnboardingDeps): Promise<void> {
-  assertAdmitting(deps);
-  const p = ownedPrompter(deps);
-  p.intro('Welcome to Relavium');
-  p.note(
-    'Connect a model provider to start chatting.\nYour key is stored in your OS keychain — never on disk.',
-    'First-run setup',
-  );
 
-  const providerValue =
-    deps.initialProvider ??
-    (await p.select({
-      message: 'Which provider?',
-      options: KNOWN_PROVIDER_IDS.map((id) => ({
-        value: id,
-        label: KNOWN_PROVIDERS[id].displayName,
-        hint: deps.native?.endpointContext(id) ?? KNOWN_PROVIDERS[id].baseUrl,
-      })),
-    }));
-  if (p.isCancel(providerValue)) return skip(p, deps);
-  // `select` only ever yields a listed option, so narrow to the closed set WITHOUT a cast (mirrors create-prompter).
-  const provider = KNOWN_PROVIDER_IDS.find((id) => id === providerValue);
-  if (provider === undefined) return skip(p, deps);
+/** `global` is read only by `provider list --json`; `set-key` never touches it — a throwaway (the setup is always interactive). */
+const THROWAWAY_GLOBAL = {
+  json: false,
+  color: false,
+  cwd: process.cwd(),
+  configPath: undefined,
+  verbosity: 'normal',
+} as const;
 
-  if (deps.native !== undefined)
-    p.note(deps.native.endpointContext(provider), 'Provider destination');
-  const rawKey = await p.password({
-    message: `Paste your ${KNOWN_PROVIDERS[provider].displayName} API key`,
-    validate: requireKey,
-  });
-  if (p.isCancel(rawKey)) return skip(p, deps);
-  // Trim incidental paste whitespace (a stray space from a dashboard copy) before storing — matching
-  // `readSecretFromStdin`'s `.trim()` so `provider set-key` and the wizard persist byte-identical credentials.
-  // `requireKey` already rejected a whitespace-only value, so the trimmed key is non-empty.
-  const key = rawKey.trim();
-
-  // LIVE-validate the key BEFORE storing it (2.5.G S8), with a retry-not-hard-fail UX so a fat-fingered paste is
-  // instantly recoverable and a bad key never lands in the keychain. `verified` is threaded into the note so the
-  // "connected" copy stays honest on the continue-anyway path. `keyToStore` is what we finally persist (the
-  // originally-typed or a re-entered key). A `null` return ⇒ the user skipped mid-retry.
-  const outcome = await validateWithRetry(p, deps, provider, key);
-  assertAdmitting(deps);
-  if (outcome === null) return; // skip already surfaced its note/outro
-  const { keyToStore, verified } = outcome;
-
-  // Store via the TESTED providerSetKey path (keychain.set + the provider row + the keychain-ref, secret-free). Its
-  // one stdout line is suppressed (a silent io) so the wizard's output stays uniformly clack-styled — the wizard
-  // surfaces the outcome through a clack note/outro instead.
-  const silentIo: CliIo = {
-    env: deps.io.env,
+/**
+ * Store via the TESTED providerSetKey path (keychain.set + the provider row + the keychain-ref, secret-free). Its one stdout line is
+ * suppressed (a silent io): the setup says what happened itself.
+ */
+function silentIo(io: CliIo): CliIo {
+  return {
+    env: io.env,
     stdoutIsTty: false,
-    stdinIsTty: deps.io.stdinIsTty,
-    stdin: deps.io.stdin,
+    stdinIsTty: io.stdinIsTty,
+    stdin: io.stdin,
     writeOut: () => undefined,
     writeErr: () => undefined,
     writeOutAcknowledged: () => Promise.resolve(),
     writeErrAcknowledged: () => Promise.resolve(),
   };
-  let keyStored = false;
-  const keychain: KeychainStore =
-    deps.native === undefined
-      ? deps.keychain
-      : {
-          get: (account) => deps.keychain.get(account),
-          set: (account, value) => {
-            deps.keychain.set(account, value);
-            keyStored = true;
-          },
-          delete: (account) => deps.keychain.delete(account),
-        };
-  const reportCommitted = (message: string): void => {
-    const flow = deps.native?.flow;
-    if (flow === undefined) return;
-    if (flow.committedNote !== undefined) flow.committedNote(message, 'Connected');
-    else flow.note(message, 'Connected');
+}
+
+/**
+ * Distinguish the EXPECTED keychain-unavailable failure (recoverable → env-var guidance) from an UNEXPECTED fault (e.g. a db write).
+ * `providerSetKey` writes to the keychain FIRST, so a keychain-unavailable failure persists NOTHING; mislabeling a *post*-`keychain.set` fault
+ * as "keychain unavailable, key not saved" would LIE. `runProviderCommand` wraps `KeychainUnavailableError` in a `CliError(cause)`; the bare
+ * `instanceof` is a DEFENSIVE fallback for a future direct caller. The raw error is never rendered.
+ */
+function isKeychainDown(err: unknown): boolean {
+  return (
+    err instanceof KeychainUnavailableError ||
+    (err instanceof CliError && err.cause instanceof KeychainUnavailableError)
+  );
+}
+
+/** The real key check: the bounded, key-redacted probe against the provider's starter model (a stub resolver with no adapter passes). */
+function defaultValidate(
+  deps: OnboardingDeps,
+): (id: ProviderId, key: string, signal?: AbortSignal) => Promise<ProviderKeyValidation> {
+  return async (id, k, signal) => {
+    const adapter = deps.resolver.resolveProvider(id);
+    // A NON-PRODUCTION path only: the real `createProviderResolver` returns an adapter for every `ProviderId`, so
+    // this `undefined` branch is reachable ONLY by a test stub (`resolveProvider: () => undefined`). There it
+    // can't probe, so it treats the key as ok to avoid blocking the scripted flow; in production every first-run
+    // key is genuinely probed, so the "Verified and stored" copy is never shown for an un-probed key.
+    if (adapter === undefined) return { ok: true, detail: 'skipped', reason: 'ok' };
+    const owner = deps.workOwner;
+    return validateProviderKey(
+      adapter,
+      k,
+      KNOWN_PROVIDERS[id].starterModel,
+      undefined,
+      checkLifecycle(owner, signal),
+    );
   };
-  const store: ProviderStore =
-    deps.native === undefined
-      ? deps.store
-      : {
-          list: () => deps.store.list(),
-          get: (name) => deps.store.get(name),
-          upsert: (input) => {
-            assertAdmitting(deps);
-            return deps.store.upsert(input);
-          },
-          setKeychainRef: (name, ref) => {
-            assertAdmitting(deps);
-            deps.store.setKeychainRef(name, ref);
-          },
-          clearKeychainRef: (name) => {
-            assertAdmitting(deps);
-            deps.store.clearKeychainRef(name);
-          },
-        };
+}
+
+/**
+ * The key check's lifecycle under the session's work owner: the request stops when the session's work does, and when the check is abandoned
+ * (`signal`: `Esc` stepped back out of it, or the setup was left). None without an owner (an ownerless embedding keeps its own contract).
+ */
+function checkLifecycle(
+  owner: SessionWorkOwner | undefined,
+  signal: AbortSignal | undefined,
+): Parameters<typeof validateProviderKey>[4] {
+  if (owner === undefined) return undefined;
+  return {
+    signal: signal === undefined ? owner.signal : AbortSignal.any([owner.signal, signal]),
+    work: owner.work,
+    assertAdmitting: owner.assertAdmitting,
+  };
+}
+
+/** The row after a failed check that keeps the key anyway ({@link SAVE_ANYWAY_HINT} says the rest). */
+export const SAVE_ANYWAY_LABEL = 'Save it anyway';
+/**
+ * The hint of {@link SAVE_ANYWAY_LABEL} (OB-4): the key is kept without a check, and how to check it later, on the surface where the doctor's
+ * deep tier is `[d]`. One short hint that says nothing the label says, so label and hint share one row of the popup at 80 columns.
+ */
+export const SAVE_ANYWAY_HINT = `unverified · /doctor, then ${keyToken('d')} checks it later`;
+/** What the Done step of a key saved without a check says about it: not verified, and how to verify it (the doctor's deep tier). */
+export const UNVERIFIED_KEY_LINE = `Not verified · check it later with /doctor, then ${keyToken('d')}`;
+
+/** The choices after a failed check (a select's payload). */
+interface RetryPrompt {
+  readonly message: string;
+  readonly options: readonly NativePromptOption[];
+  readonly initialValue: string;
+}
+
+/**
+ * Build the failed-key retry prompt. The options and the pre-highlighted (bare-Enter) one depend on the CAUSE, and a failed check is never
+ * answered by a reflex `Enter` into an unverified key (ADR-0146 §6):
+ *
+ * - a TRANSIENT (`network`: offline, a timeout, rate limit, overloaded) failure puts `Retry the check` first and pre-selected: the same key
+ *   is checked again, with nothing to paste, so a poor connection does not push toward saving it unverified. It SENDS the key again, so it is
+ *   GUARDED on every surface (S5 on the popup; SE-L3 on the stand-alone chat's card, whose host acknowledges its frames as the popup's does): a
+ *   held `Enter` (the one that submitted the key, still repeating) answers nothing, and a deliberate one counts after the lockout that runs
+ *   from the moment the select appeared;
+ * - any other failure (a rejected key, a billing or account issue, an unexpected fault) puts `Enter a different key` first and
+ *   pre-selected. It sends nothing (it opens the key step again, empty, whose `Enter` on an empty field is refused), so it is not guarded.
+ *   `detail` (the setup's fixed word) is the neutral evidence: we do NOT assert "the key is bad" for the non-network case, since a 402/400
+ *   may mean billing or a stale model rather than a wrong key.
+ *
+ * `Save it anyway` is never pre-selected and sits last but one, and `Skip setup` is last. Its hint says the key is kept unverified and names
+ * how to verify it later: the doctor's deep tier (`/doctor`, then `[d]`), which checks the stored key with the same request.
+ */
+function buildRetryPrompt(isTransient: boolean, displayName: string, detail: string): RetryPrompt {
+  const recheck: NativePromptOption = { value: 'recheck', label: 'Retry the check', guarded: true };
+  const enterDifferent = { value: 'retry', label: 'Enter a different key' };
+  const saveAnyway = { value: 'continue', label: SAVE_ANYWAY_LABEL, hint: SAVE_ANYWAY_HINT };
+  const skipSetup = { value: 'skip', label: 'Skip setup' };
+  return {
+    message: isTransient
+      ? `Couldn't reach ${displayName} to verify — you may be offline or it's busy (${detail}).`
+      : `Couldn't verify your ${displayName} key (${detail}).`,
+    options: isTransient
+      ? [recheck, enterDifferent, saveAnyway, skipSetup]
+      : [enterDifferent, saveAnyway, skipSetup],
+    initialValue: isTransient ? 'recheck' : 'retry',
+  };
+}
+
+/** The recovery after a setup that could not finish: a pointer to the way back in, in actions the host has. */
+function nativeSetupRemedy(surface: SetupSurface | undefined): string {
+  return surface === 'standalone-chat'
+    ? 'Restart this chat to open provider setup, or run /doctor to check your setup.'
+    : 'Open /providers to connect a key, or run /doctor to check your setup.';
+}
+
+/** The fixed words the setup shows for a failed check (never the provider's own text, which can echo the request). */
+function failureWord(reason: ProviderKeyValidation['reason']): string {
+  if (reason === 'auth') return 'authentication failed';
+  if (reason === 'network') return 'network unavailable';
+  return 'verification failed';
+}
+
+/**
+ * The first-run sentence (only on a genuine first run: no usable source before this setup). It says why the setup is there and nothing the
+ * popup's title (`Connect a provider`) says; where the key is kept is said once, by the key step, where the key is pasted (OB-5).
+ */
+export const FIRST_RUN_SENTENCE = 'A model provider is needed to start chatting.';
+
+/**
+ * Where the key step says the key goes (ADR-0146 §6, G20): the ORIGIN the resolver pinned for this provider's adapter (a stored custom endpoint
+ * changes it; `providerEndpointOrigin`: an `https:` origin exactly, scheme and port included, the same words the doctor's deep-tier consent
+ * uses), scrubbed, or a fixed phrase when the resolver cannot say (never the provider's known URL alone).
+ */
+export function keyDestinationHost(resolver: ProviderResolver, id: ProviderId): string {
+  const origin = providerEndpointOrigin(resolver, id);
+  const shown = origin === undefined ? '' : scrubSetupText(origin);
+  return shown === '' ? UNKNOWN_KEY_HOST : shown;
+}
+
+/** How the setup ends when the person leaves it or skips it before anything was stored. */
+type LeftSetup = Extract<NativeSetupResult, { readonly kind: 'back' | 'skipped' | 'cancelled' }>;
+
+/** What one turn of the key step came to. */
+type KeyOutcome =
+  | { readonly kind: 'key'; readonly key: string; readonly verified: boolean }
+  | { readonly kind: 'again' }
+  | LeftSetup;
+
+/** The parts of a native run every step reads. */
+interface NativeRun {
+  readonly deps: OnboardingDeps;
+  readonly native: NativeOnboarding;
+  /**
+   * `back` in the popup (`Esc` on the first step skips, and steps back from the key and from the choices after a failed check, so `Ctrl+C`
+   * alone leaves); `cancel` on a card (as it always was: `Esc` there skips).
+   */
+  readonly escape: NativePromptEscape;
+  readonly admit: () => void;
+}
+
+async function runNative(
+  deps: OnboardingDeps,
+  native: NativeOnboarding,
+): Promise<NativeSetupResult> {
+  const run: NativeRun = {
+    deps,
+    native,
+    escape: native.stages === undefined ? 'cancel' : 'back',
+    admit: () => {
+      deps.workOwner?.assertAdmitting();
+      native.assertAdmitting();
+      native.signal.throwIfAborted();
+    },
+  };
+  run.admit();
+  for (;;) {
+    noteProviderStep(run);
+    const provider = deps.initialProvider ?? (await chooseProvider(run));
+    if (typeof provider !== 'string') return provider;
+    const keyed = await keyStep(run, provider);
+    if (keyed.kind === 'key') return await storeKey(run, provider, keyed.key, keyed.verified);
+    // `Esc` on the key step goes back to the provider list, when the setup asked for the provider itself.
+    if (keyed.kind !== 'back' || deps.initialProvider !== undefined) return keyed;
+  }
+}
+
+/**
+ * The note above the `Provider` step: the first-run sentence belongs to a genuine first run (`selectStarterDefault` is exactly "no usable
+ * source before this setup"); a step back from the key step takes the key step's note away with it.
+ */
+function noteProviderStep(run: NativeRun): void {
+  if (run.native.selectStarterDefault !== false)
+    run.native.flow.note(FIRST_RUN_SENTENCE, FIRST_RUN_NOTE_TITLE);
+  else if (run.native.stages !== undefined) run.native.flow.note('');
+}
+
+/** On a card, a way out of the setup says it was a skip, in its one line (the popup's host says it instead, as a notification). */
+function cardSkip(run: NativeRun): Extract<NativeSetupResult, { readonly kind: 'skipped' }> {
+  if (run.native.stages === undefined) run.native.flow.note(setupSkippedNotice(run.native.surface));
+  return { kind: 'skipped' };
+}
+
+/** The way out of the setup that is not a skip: on a card it is one (`Esc` there always skipped); in the popup it is a cancel (`Ctrl+C`). */
+function leaveSetup(
+  run: NativeRun,
+): Extract<LeftSetup, { readonly kind: 'skipped' | 'cancelled' }> {
+  return run.native.stages === undefined ? cardSkip(run) : { kind: 'cancelled' };
+}
+
+/**
+ * The `Provider` step: `Which provider?`. In the popup it is opened to step back, so the channel tells the two ways out apart: `Esc` there is
+ * the skip of the setup (the first step's way back), and `Ctrl+C` leaves it with nothing skipped (S3). On a card `Esc` skips, as it always did.
+ */
+async function chooseProvider(
+  run: NativeRun,
+): Promise<ProviderId | Extract<LeftSetup, { readonly kind: 'skipped' | 'cancelled' }>> {
+  const prompts = run.native.stages?.provider ?? run.native.flow;
+  const picked = await prompts.select({
+    message: 'Which provider?',
+    options: KNOWN_PROVIDER_IDS.map((id) => ({
+      value: id,
+      label: KNOWN_PROVIDERS[id].displayName,
+      hint: scrubSetupText(run.native.endpointContext(id)),
+    })),
+    escape: run.escape,
+  });
+  const provider =
+    typeof picked === 'string' ? KNOWN_PROVIDER_IDS.find((id) => id === picked) : undefined;
+  if (provider !== undefined) return provider;
+  return picked === NATIVE_PROMPT_BACK ? { kind: 'skipped' } : leaveSetup(run);
+}
+
+/**
+ * The `Key` step: what happens to the key (stored in the OS keychain, sent once to one host to check it), the masked prompt, the check, and the
+ * choices after a failed check. `Esc` on the prompt steps back to the `Provider` step; on the choices it returns to the prompt.
+ */
+async function keyStep(
+  run: NativeRun,
+  provider: ProviderId,
+): Promise<Exclude<KeyOutcome, { readonly kind: 'again' }>> {
+  const prompts = run.native.stages?.key ?? run.native.flow;
+  const words = {
+    name: scrubSetupText(KNOWN_PROVIDERS[provider].displayName),
+    host: keyDestinationHost(run.deps.resolver, provider),
+  };
+  for (;;) {
+    run.admit();
+    run.native.flow.note(keyStepNote(words.host));
+    const raw = await (run.native.stages?.keyPrompt ?? prompts).password({
+      message: `Paste your ${words.name} API key`,
+      validate: keyRequired,
+      rejected: KEY_REQUIRED_TEXT,
+      escape: run.escape,
+    });
+    if (raw === NATIVE_PROMPT_BACK) return { kind: 'back' };
+    if (typeof raw === 'symbol') return leaveSetup(run);
+    // Trim incidental paste whitespace before storing, as `provider set-key` does; `keyRequired` rejected a whitespace-only value.
+    const checked = await checkKey(run, prompts, provider, raw.trim(), words);
+    if (checked.kind !== 'again') return checked;
+  }
+}
+
+/** What a check `Esc` stepped back out of came to (O6): the key step again, its field empty. */
+const STEPPED_BACK = Symbol('the key check was stepped back out of');
+
+/** The check of one key and the choices after it failed, until a key is kept, the person asks for the key step again, or leaves. */
+async function checkKey(
+  run: NativeRun,
+  prompts: SetupPrompts,
+  provider: ProviderId,
+  key: string,
+  words: { readonly name: string; readonly host: string },
+): Promise<KeyOutcome> {
+  for (;;) {
+    run.admit();
+    const result = await checkOnce(run, prompts, provider, key, words);
+    if (result === STEPPED_BACK) return { kind: 'again' };
+    run.admit();
+    if (result.ok) return { kind: 'key', key, verified: true };
+    const choice = await prompts.select({
+      ...buildRetryPrompt(result.reason === 'network', words.name, failureWord(result.reason)),
+      escape: run.escape,
+    });
+    const answered = afterFailedCheck(run, choice, key);
+    // `undefined` is `Retry the check` (offered after a network failure only): the same check again with the SAME key, which this loop holds.
+    if (answered !== undefined) return answered;
+  }
+}
+
+/**
+ * One check of `key`, drawn as the key step's wait (G20: the request is disclosed with its host). In the popup the wait steps back (O6): `Esc`
+ * aborts THIS check through its own controller (the flow's signal is untouched, so `Ctrl+C` still leaves the setup), the check is told to stop,
+ * and the result is {@link STEPPED_BACK}: whatever the aborted check answers later is never read, so it stores nothing. On a card `Esc` leaves
+ * the setup, as it always did.
+ */
+async function checkOnce(
+  run: NativeRun,
+  prompts: SetupPrompts,
+  provider: ProviderId,
+  key: string,
+  words: { readonly name: string; readonly host: string },
+): Promise<ProviderKeyValidation | typeof STEPPED_BACK> {
+  const stop = new AbortController();
+  const back = run.native.stages === undefined ? undefined : { onBack: () => stop.abort() };
+  prompts.busy(keyCheckText(words.name, words.host), back);
+  try {
+    return await runCheck(run, provider, key, stop.signal);
+  } catch (cause) {
+    if (stop.signal.aborted && !run.native.signal.aborted) return STEPPED_BACK;
+    throw cause;
+  }
+}
+
+/**
+ * One check of `key`: the injected or real validator, retained by the work owner when there is one, observed against the flow's signal and
+ * `stop` (the check abandoned), either of which also aborts the check itself.
+ */
+function runCheck(
+  run: NativeRun,
+  provider: ProviderId,
+  key: string,
+  stop: AbortSignal,
+): Promise<ProviderKeyValidation> {
+  const validate = run.deps.validate ?? defaultValidate(run.deps);
+  const owner = run.deps.workOwner;
+  const abandoned = AbortSignal.any([run.native.signal, stop]);
+  const operation = () => validate(provider, key, abandoned);
+  return observeValidation(
+    owner === undefined ? operation() : owner.work.retainWork(operation),
+    abandoned,
+  );
+}
+
+/** What an answer to the choices after a failed check comes to; `undefined` for `Retry the check`. */
+function afterFailedCheck(
+  run: NativeRun,
+  choice: string | symbol,
+  key: string,
+): KeyOutcome | undefined {
+  if (choice === NATIVE_PROMPT_BACK || choice === 'retry') return { kind: 'again' };
+  if (typeof choice === 'symbol') return leaveSetup(run);
+  if (choice === 'skip') return cardSkip(run);
+  if (choice === 'continue') return { kind: 'key', key, verified: false };
+  if (choice !== 'recheck') throw new Error(`unexpected wizard choice: ${choice}`);
+  return undefined;
+}
+
+/** What the setup reports at its end: the popup's Done step, or the card's last note (as it always was). */
+interface Report {
+  /** The card's note, under its title. */
+  readonly card: { readonly message: string; readonly title: string };
+  /** The popup's Done step. */
+  readonly done: FramedDone;
+  /** The popup host's line when the Done step could not be shown (the flow was already cancelled). */
+  readonly interrupted?: string;
+}
+
+/** Say what the setup did: the Done step in the popup (the host's line when it cannot be shown), or the card's committed note. */
+async function report(
+  run: NativeRun,
+  said: Report,
+  stored: boolean,
+): Promise<Extract<NativeSetupResult, { readonly kind: 'finished' }>> {
+  const stages = run.native.stages;
+  if (stages === undefined) {
+    const flow = run.native.flow;
+    if (flow.committedNote !== undefined) flow.committedNote(said.card.message, said.card.title);
+    else flow.note(said.card.message, said.card.title);
+    return { kind: 'finished', stored };
+  }
+  if (run.native.signal.aborted)
+    return {
+      kind: 'finished',
+      stored,
+      ...(said.interrupted === undefined ? {} : { notice: said.interrupted }),
+    };
+  await stages.done(said.done);
+  return { kind: 'finished', stored };
+}
+
+/** Store the key (the tested `provider set-key` path, unchanged), then choose the starter default and report. */
+async function storeKey(
+  run: NativeRun,
+  provider: ProviderId,
+  keyToStore: string,
+  verified: boolean,
+): Promise<NativeSetupResult> {
+  const { deps, native } = run;
+  const displayName = providerDisplayName(provider);
+  const name = scrubSetupText(displayName);
+  // The store phase starts here, after a check that answered or a key kept unchecked: its wait replaces the check's, so no step back out of
+  // a check that is over is left on screen (SE-L1: that stale `Esc back` swallowed an `Esc` while a config rewrite was disclosed). `Esc` on
+  // this wait cancels, as a wait's `Esc` always did, and the screen says what runs now.
+  (native.stages?.key ?? native.flow).busy(keySavingText(name));
+  let keyStored = false;
+  const keychain: KeychainStore = {
+    get: (account) => deps.keychain.get(account),
+    set: (account, value) => {
+      deps.keychain.set(account, value);
+      keyStored = true;
+    },
+    delete: (account) => deps.keychain.delete(account),
+  };
+  const store: ProviderStore = {
+    list: () => deps.store.list(),
+    get: (rowName) => deps.store.get(rowName),
+    upsert: (input) => {
+      run.admit();
+      return deps.store.upsert(input);
+    },
+    setKeychainRef: (rowName, ref) => {
+      run.admit();
+      deps.store.setKeychainRef(rowName, ref);
+    },
+    clearKeychainRef: (rowName) => {
+      run.admit();
+      deps.store.clearKeychainRef(rowName);
+    },
+  };
+  // A key that was checked and answered is CONNECTED; a key the person chose to keep after a failed check is only SAVED: nothing may say a
+  // connection that was never made (round 2, U3).
+  const title = verified ? 'Connected' : 'Saved';
+  const interrupted = `${name} key stored · setup was interrupted`;
   try {
     await runProviderCommand(
       { action: 'set-key', name: provider },
       {
-        io: silentIo,
+        io: silentIo(deps.io),
         store,
         keychain,
         resolver: deps.resolver,
         readSecret: () => Promise.resolve(keyToStore),
-        ...(deps.workOwner === undefined && deps.native === undefined
-          ? {}
-          : { assertAdmitting: () => assertAdmitting(deps) }),
-        // `global` is read only by `provider list --json`; `set-key` never touches it — a throwaway (the wizard is
-        // always interactive, never `--json`).
-        global: {
-          json: false,
-          color: false,
-          cwd: process.cwd(),
-          configPath: undefined,
-          verbosity: 'normal',
-        },
+        assertAdmitting: run.admit,
+        global: THROWAWAY_GLOBAL,
       },
     );
-    if (deps.native?.signal.aborted === true) {
-      reportCommitted(
-        `Your ${provider} key was stored in the OS keychain. The default model was not saved.`,
+    if (native.signal.aborted) {
+      const message = `Your ${displayName} key was stored in the OS keychain. The default model was not saved.`;
+      return await report(
+        run,
+        {
+          card: { message, title },
+          done: { message: `${title} · ${name}`, lines: ['The default model was not saved.'] },
+          interrupted,
+        },
+        true,
       );
-      return;
     }
-    assertAdmitting(deps);
+    run.admit();
   } catch (err) {
-    if (deps.native?.signal.aborted === true && err === deps.native.signal.reason) {
-      if (keyStored)
-        reportCommitted(
-          `Your ${provider} key was stored in the OS keychain, but setup was interrupted. The default model was not saved.`,
-        );
-      return;
+    if (native.signal.aborted && err === native.signal.reason) {
+      if (!keyStored) return { kind: 'cancelled' };
+      const message = `Your ${displayName} key was stored in the OS keychain, but setup was interrupted. The default model was not saved.`;
+      return await report(
+        run,
+        {
+          card: { message, title },
+          done: { message: `${title} · ${name}`, lines: ['The default model was not saved.'] },
+          interrupted,
+        },
+        true,
+      );
     }
-    if (deps.native?.signal.aborted === true) throw err;
+    if (native.signal.aborted) throw err;
     if (deps.workOwner !== undefined) {
       deps.workOwner.failure(err);
       deps.workOwner.assertAdmitting();
     }
-    // Distinguish the EXPECTED keychain-unavailable failure (recoverable → env-var guidance) from an UNEXPECTED
-    // fault (e.g. a db write). `providerSetKey` writes to the keychain FIRST, so a keychain-unavailable failure
-    // persists NOTHING; mislabeling a *post*-`keychain.set` fault (a later db upsert) as "keychain unavailable, key
-    // not saved" would LIE — the key IS in the keychain then. `runProviderCommand` wraps `KeychainUnavailableError`
-    // in a `CliError(cause)`; the bare-`instanceof KeychainUnavailableError` disjunct is a DEFENSIVE fallback for a
-    // future direct caller. Never render the raw error (it could carry context) — both branches use static text.
-    const keychainDown =
-      err instanceof KeychainUnavailableError ||
-      (err instanceof CliError && err.cause instanceof KeychainUnavailableError);
-    if (keychainDown) {
-      // The no-plaintext fallback: guide the user to the env var (the resolver imports it at call time). NEVER
-      // persist the key to disk.
-      p.note(
-        `Couldn't reach your OS keychain, so the key was NOT saved.\n` +
-          `Set it in your shell instead, then restart Relavium:\n\n` +
-          `  export ${providerKeyEnvVar(provider)}=<your ${provider} key>`,
-        'Keychain unavailable',
-      );
-    } else {
-      // An unexpected fault (e.g. a broken db) — do NOT claim a keychain failure. A generic pointer; the underlying
-      // issue resurfaces at the Home, which reads the same store.
-      p.note(
-        deps.native === undefined
-          ? 'Setup could not be completed. Add a provider anytime with `relavium provider add`.'
-          : `Setup could not be completed. ${nativeSetupRemedy(deps.native.surface)}`,
-        'Setup failed',
-      );
-    }
-    p.outro('Setup incomplete — see the note above.');
-    return;
+    return await reportStoreFault(run, provider, name, isKeychainDown(err));
   }
+  return await chooseStarter(run, provider, verified);
+}
 
-  // Set a working default model of the CHOSEN provider so the very NEXT chat binds a model whose key was just
-  // stored — the built-in default (`claude-sonnet-4-6` → anthropic) would otherwise error for a user who picked a
-  // different provider (breaking the "reach a working chat" promise). `testModel` is a cheap/fast, priced starter;
-  // the user upgrades via `/models`. Best-effort: a config-write fault still leaves a working key (fall back to the
-  // `/models` pointer) rather than undoing the store.
-  const starterModel = KNOWN_PROVIDERS[provider].testModel;
-  // Honest copy: a verified key is "Verified and stored"; a consciously-accepted (network/continue-anyway) key is
-  // "Saved … couldn't be verified" so the user knows to re-check — never claim verification we didn't do.
-  const storedLine =
-    deps.native !== undefined
-      ? verified
-        ? `Verified and stored your ${provider} key in the OS keychain.`
-        : `Saved your ${provider} key — it couldn't be verified now. Run /doctor to re-check.`
-      : verified
-        ? `Verified and stored your ${provider} key (${keyHint(keyToStore)}) in the OS keychain.`
-        : `Saved your ${provider} key (${keyHint(keyToStore)}) — it couldn't be verified now. Run /doctor to re-check.`;
-  if (deps.native?.selectStarterDefault === false) {
-    reportCommitted(
-      `${storedLine}\nYour model preference is unchanged. Choose a model with /models.`,
+/** The key could not be stored: the keychain was unreachable (the variable is the way to use it anyway), or the store failed otherwise. */
+async function reportStoreFault(
+  run: NativeRun,
+  provider: ProviderId,
+  name: string,
+  keychainDown: boolean,
+): Promise<NativeSetupResult> {
+  const variable = providerKeyEnvVar(provider);
+  if (keychainDown) {
+    const unreachable = "Couldn't reach your OS keychain, so the key was NOT saved.";
+    const anyway = `To use your ${name} key anyway, set ${variable} in the environment before starting Relavium.`;
+    if (run.native.stages === undefined) {
+      run.native.flow.note(`${unreachable}\n${anyway}`, 'Keychain unavailable');
+      return { kind: 'finished', stored: false };
+    }
+    return await report(
+      run,
+      {
+        card: { message: unreachable, title: 'Keychain unavailable' },
+        done: { message: 'The key was not saved', lines: [unreachable, anyway], tone: 'failed' },
+      },
+      false,
     );
-    return;
+  }
+  const remedy = nativeSetupRemedy(run.native.surface);
+  if (run.native.stages === undefined) {
+    run.native.flow.note(`Setup could not be completed. ${remedy}`, 'Setup failed');
+    return { kind: 'finished', stored: false };
+  }
+  return await report(
+    run,
+    {
+      card: { message: remedy, title: 'Setup failed' },
+      done: { message: 'Setup could not be completed', lines: [remedy], tone: 'failed' },
+    },
+    false,
+  );
+}
+
+/** The words of a stored key that every report of the starter default reuses. */
+interface StoredWords {
+  readonly displayName: string;
+  /** The display name, scrubbed. */
+  readonly name: string;
+  readonly starterModel: string;
+  /** The starter model, scrubbed. */
+  readonly model: string;
+  readonly title: 'Connected' | 'Saved';
+  /** The card's first line: what happened to the key. */
+  readonly storedLine: string;
+  /** The Done step's line for a key kept without a check (none for a checked key). */
+  readonly unchecked: readonly string[];
+  readonly interrupted: string;
+}
+
+function storedWords(provider: ProviderId, verified: boolean): StoredWords {
+  const displayName = providerDisplayName(provider);
+  const name = scrubSetupText(displayName);
+  const starterModel = KNOWN_PROVIDERS[provider].starterModel;
+  return {
+    displayName,
+    name,
+    starterModel,
+    model: scrubSetupText(starterModel),
+    title: verified ? 'Connected' : 'Saved',
+    // Honest copy: a verified key is "Verified and stored"; a consciously-accepted key is "couldn't be verified", with the way to check it
+    // that exists on both surfaces (the doctor's deep tier, as the `Save it anyway` hint says).
+    storedLine: verified
+      ? `Verified and stored your ${displayName} key in the OS keychain.`
+      : `Your ${displayName} key is in the OS keychain, but it couldn't be verified now. Check it later with /doctor, then ${keyToken('d')}.`,
+    unchecked: verified ? [] : [UNVERIFIED_KEY_LINE],
+    interrupted: `${name} key stored · the default was not saved`,
+  };
+}
+
+/** The Done step's sentence: the title, the provider and (when a default was chosen) the model. */
+function headline(words: StoredWords, withModel: boolean): string {
+  return `${words.title} · ${words.name}${withModel ? ` · ${words.model}` : ''}`;
+}
+
+/** What the default-model write came to, as one word the table below is keyed by. */
+type StarterOutcome = 'saved' | 'unconfirmed' | 'ephemeral' | 'unsaved';
+
+function starterOutcome(result: OnboardingDefaultResult | undefined): StarterOutcome {
+  if (result?.kind === 'saved') return result.durability === 'confirmed' ? 'saved' : 'unconfirmed';
+  return result?.kind === 'ephemeral' ? 'ephemeral' : 'unsaved';
+}
+
+/** What the card and the Done step say about the starter default, by what its write came to (`named`: the Done sentence names the model). */
+const STARTER_WORDS: Record<
+  StarterOutcome,
+  (
+    starterModel: string,
+    model: string,
+  ) => { readonly card: string; readonly done: readonly string[]; readonly named: boolean }
+> = {
+  saved: (starterModel) => ({
+    card: `Your default model is ${starterModel}.`,
+    done: [SETUP_NEXT_STEP],
+    named: true,
+  }),
+  unconfirmed: (starterModel) => ({
+    card: `Your default model is ${starterModel}; crash durability could not be confirmed.`,
+    done: [SAVED_UNCONFIRMED, SETUP_NEXT_STEP],
+    named: true,
+  }),
+  ephemeral: (starterModel, model) => ({
+    card: `${starterModel} is selected for this invocation only; the default was not saved.`,
+    done: [`${model} is selected for this invocation only; the default was not saved.`],
+    named: true,
+  }),
+  unsaved: () => ({
+    card: 'The default was not saved. Choose a model with /models.',
+    done: ['The default was not saved. Choose a model with /models.'],
+    named: false,
+  }),
+};
+
+/**
+ * Set a working default model of the CHOSEN provider (its STARTER model, the one starter table) so the very NEXT chat binds a model whose key
+ * was just stored; the person changes it with `/models`. Best-effort: a config-write fault still leaves a working key (the result points at
+ * `/models`) rather than undoing the store. Key maintenance (a source already worked before this setup) leaves the model preference alone.
+ */
+async function chooseStarter(
+  run: NativeRun,
+  provider: ProviderId,
+  verified: boolean,
+): Promise<NativeSetupResult> {
+  const words = storedWords(provider, verified);
+  const said = (card: string, withModel: boolean, lines: readonly string[]): Report => ({
+    card: { message: `${words.storedLine}\n${card}`, title: words.title },
+    done: { message: headline(words, withModel), lines: [...words.unchecked, ...lines] },
+    interrupted: words.interrupted,
+  });
+  if (run.native.selectStarterDefault === false) {
+    const kept = 'Your model preference is unchanged. Choose a model with /models.';
+    return await report(run, said(kept, false, [kept]), true);
   }
   try {
-    assertAdmitting(deps);
-    const written =
-      deps.native === undefined
-        ? await deps.writeDefaultModel(starterModel, provider)
-        : await deps.writeDefaultModel(starterModel, provider, () => assertAdmitting(deps));
-    if (deps.native !== undefined) {
-      const result = nativeDefaultResult(written);
-      const detail =
-        result?.kind === 'saved'
-          ? result.durability === 'confirmed'
-            ? `Your default model is ${starterModel}.`
-            : `Your default model is ${starterModel}; crash durability could not be confirmed.`
-          : result?.kind === 'ephemeral'
-            ? `${starterModel} is selected for this invocation only; the default was not saved.`
-            : 'The default was not saved. Choose a model with /models.';
-      reportCommitted(`${storedLine}\n${detail}`);
-      return;
-    }
-    assertAdmitting(deps);
-    p.note(
-      `${storedLine}\nYour default model is ${starterModel} — change it anytime with /models.`,
-      'Connected',
+    run.admit();
+    // The key is stored: the wait says what runs now (a host that rewrites a config draws its disclosure above it), and `Esc` cancels it.
+    (run.native.stages?.key ?? run.native.flow).busy(STARTER_SAVING_TEXT);
+    const result = nativeDefaultResult(
+      await run.deps.writeDefaultModel(words.starterModel, provider, run.admit),
     );
+    const starter = STARTER_WORDS[starterOutcome(result)](words.starterModel, words.model);
+    return await report(run, said(starter.card, starter.named, starter.done), true);
   } catch (cause) {
-    if (nativeCancelled(deps) && cause === deps.native?.signal.reason) {
-      reportCommitted(`${storedLine}\nThe default model was not saved.`);
-      return;
-    }
-    if (nativeCancelled(deps)) throw cause;
-    if (deps.workOwner !== undefined) {
-      deps.workOwner.failure(cause);
-      deps.workOwner.assertAdmitting();
-    }
-    p.note(
-      deps.native === undefined
-        ? `${storedLine}\nPick a ${provider} model with /models to start chatting.`
-        : `${storedLine}\nThe default was not saved. Pick a ${provider} model with /models.`,
-      'Connected',
-    );
-    if (deps.native !== undefined) return;
+    return await starterFault(run, words, cause);
   }
-  p.outro("You're all set — starting Relavium.");
+}
+
+/** The starter default's write threw: a cancellation keeps the stored key's fact; any other fault points at `/models`. */
+async function starterFault(
+  run: NativeRun,
+  words: StoredWords,
+  cause: unknown,
+): Promise<NativeSetupResult> {
+  const { deps, native } = run;
+  if (native.signal.aborted && cause === native.signal.reason)
+    return await report(
+      run,
+      {
+        card: {
+          message: `${words.storedLine}\nThe default model was not saved.`,
+          title: words.title,
+        },
+        done: { message: headline(words, false), lines: ['The default model was not saved.'] },
+        interrupted: words.interrupted,
+      },
+      true,
+    );
+  if (native.signal.aborted) throw cause;
+  if (deps.workOwner !== undefined) {
+    deps.workOwner.failure(cause);
+    deps.workOwner.assertAdmitting();
+  }
+  const pick = `The default was not saved. Pick ${withArticle(words.displayName)} model with /models.`;
+  // On a card this is the note it always was (not a committed fact: the host keeps it as what the setup left).
+  if (native.stages === undefined) {
+    native.flow.note(`${words.storedLine}\n${pick}`, words.title);
+    return { kind: 'finished', stored: true };
+  }
+  return await report(
+    run,
+    {
+      card: { message: `${words.storedLine}\n${pick}`, title: words.title },
+      done: { message: headline(words, false), lines: [...words.unchecked, scrubSetupText(pick)] },
+      interrupted: words.interrupted,
+    },
+    true,
+  );
 }
 
 function nativeDefaultResult(value: unknown): OnboardingDefaultResult | undefined {
@@ -493,152 +891,6 @@ function nativeDefaultResult(value: unknown): OnboardingDefaultResult | undefine
   if (value.kind !== 'saved' || !('durability' in value)) return undefined;
   if (value.durability !== 'confirmed' && value.durability !== 'unconfirmed') return undefined;
   return { kind: 'saved', durability: value.durability };
-}
-
-/**
- * Live-validate a key with a retry loop (2.5.G S8). Returns `{ keyToStore, verified }` once the user has a key to
- * persist — verified (probe ok), or consciously accepted despite a failure ("save it anyway"). Returns `null` when
- * the user skips (a note/outro is already shown, mirroring the top-level flow). Rejected keys produce retry
- * choices; prompt, lifecycle and unexpected probe faults can propagate through Home cleanup. The key is never
- * echoed, only redacted `detail`. Storage follows this result and its explicit verification/continue decision.
- */
-async function validateWithRetry(
-  p: ClackOnboardingDeps,
-  deps: OnboardingDeps,
-  provider: ProviderId,
-  key: string,
-): Promise<{ keyToStore: string; verified: boolean } | null> {
-  const validate =
-    deps.validate ??
-    (async (id: ProviderId, k: string): Promise<ProviderKeyValidation> => {
-      const adapter = deps.resolver.resolveProvider(id);
-      // A NON-PRODUCTION path only: the real `createProviderResolver` returns an adapter for every `ProviderId`, so
-      // this `undefined` branch is reachable ONLY by a test stub (`resolveProvider: () => undefined`). There it
-      // can't probe, so it treats the key as ok to avoid blocking the scripted flow; in production every first-run
-      // key is genuinely probed, so the "Verified and stored" copy is never shown for an un-probed key.
-      if (adapter === undefined) return { ok: true, detail: 'skipped', reason: 'ok' };
-      const owner = deps.workOwner;
-      return validateProviderKey(
-        adapter,
-        k,
-        KNOWN_PROVIDERS[id].testModel,
-        undefined,
-        owner === undefined
-          ? undefined
-          : { signal: owner.signal, work: owner.work, assertAdmitting: owner.assertAdmitting },
-      );
-    });
-
-  let keyToStore = key;
-  for (;;) {
-    assertAdmitting(deps);
-    if (deps.workOwner !== undefined)
-      p.note(`Checking your ${KNOWN_PROVIDERS[provider].displayName} key…`, 'Verification');
-    deps.native?.flow.busy(`Checking your ${KNOWN_PROVIDERS[provider].displayName} key…`);
-    const sp = p.spinner?.();
-    sp?.start(`Checking your ${KNOWN_PROVIDERS[provider].displayName} key…`);
-    // Always stop the spinner before a probe, lifecycle or injected-validator fault propagates
-    // through Home cleanup; an unresolved presentation interval does not own the real probe.
-    let res: ProviderKeyValidation;
-    try {
-      const operation = () => validate(provider, keyToStore);
-      const pending =
-        deps.native !== undefined && deps.workOwner !== undefined
-          ? deps.workOwner.work.retainWork(operation)
-          : operation();
-      res =
-        deps.native === undefined
-          ? await pending
-          : await observeValidation(pending, deps.native.signal);
-      assertAdmitting(deps);
-    } finally {
-      sp?.stop('Key check finished.');
-    }
-    if (res.ok) return { keyToStore, verified: true };
-
-    const isTransient = res.reason === 'network';
-    const displayName = KNOWN_PROVIDERS[provider].displayName;
-    const choice = await p.select(
-      buildRetryPrompt(
-        isTransient,
-        displayName,
-        deps.native === undefined
-          ? res.detail
-          : res.reason === 'auth'
-            ? 'authentication failed'
-            : res.reason === 'network'
-              ? 'network unavailable'
-              : 'verification failed',
-      ),
-    );
-    if (p.isCancel(choice) || choice === 'skip') {
-      skip(p, deps);
-      return null;
-    }
-    if (choice === 'continue') return { keyToStore, verified: false };
-    // clack's `select` only ever yields a listed value; fail loud if a future option is added without a handler.
-    if (choice !== 'retry') throw new Error(`unexpected wizard choice: ${String(choice)}`);
-
-    // 'retry' — re-prompt for a key; Esc here also skips. The new key loops back through validation.
-    const again = await p.password({
-      message: `Paste your ${displayName} API key`,
-      validate: requireKey,
-    });
-    if (p.isCancel(again)) {
-      skip(p, deps);
-      return null;
-    }
-    keyToStore = again.trim();
-  }
-}
-
-/**
- * Build the failed-key retry prompt (the `p.select` payload). The order + the pre-highlighted (bare-Enter) option
- * depend on the CAUSE: a TRANSIENT (`network` — offline / timeout / rate-limit / overloaded) failure defaults to
- * "save it anyway" (don't block an offline first-run); a non-transient failure (a rejected key, a billing/account
- * issue, or an unexpected fault) defaults to "re-enter". `detail` (already key-redacted, and it names the specific
- * reason, e.g. `invalid_api_key`) is the neutral evidence — we do NOT assert "the key is bad" for the non-network
- * case, since a 402/400 may mean billing or a stale test model rather than a wrong key.
- */
-function buildRetryPrompt(
-  isTransient: boolean,
-  displayName: string,
-  detail: string,
-): Parameters<ClackOnboardingDeps['select']>[0] {
-  return {
-    message: isTransient
-      ? `Couldn't reach ${displayName} to verify — you may be offline or it's busy (${detail}).`
-      : `Couldn't verify your ${displayName} key (${detail}).`,
-    options: isTransient
-      ? [
-          { value: 'continue', label: 'Save it anyway', hint: 'verify later with /doctor' },
-          { value: 'retry', label: 'Enter a different key' },
-          { value: 'skip', label: 'Skip setup' },
-        ]
-      : [
-          { value: 'retry', label: 'Enter a new key' },
-          { value: 'continue', label: 'Save it anyway', hint: 'fix it later with /doctor' },
-          { value: 'skip', label: 'Skip setup' },
-        ],
-    initialValue: isTransient ? 'continue' : 'retry',
-  };
-}
-
-/** The cancel/skip exit: a friendly pointer to the manual path, then hand off to the Home. */
-function nativeSetupRemedy(surface: 'home' | 'standalone-chat' | undefined): string {
-  return surface === 'standalone-chat'
-    ? 'Restart `relavium chat` to open provider setup, or run `/doctor` to check your setup.'
-    : 'Open `/providers` to connect a key, or run `/doctor` to check your setup.';
-}
-
-function skip(p: ClackOnboardingDeps, deps: OnboardingDeps): void {
-  p.note(
-    deps.native === undefined
-      ? 'Skipped. Add a provider anytime with `relavium provider add`, or run `/doctor` to check your setup.'
-      : `Skipped. ${nativeSetupRemedy(deps.native.surface)}`,
-    'Setup skipped',
-  );
-  p.outro('Starting Relavium.');
 }
 
 /** Cancel observation without mistaking it for settlement of the retained producer. */

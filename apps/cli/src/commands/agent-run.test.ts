@@ -597,9 +597,9 @@ describe('agentRunCommand (2.Q)', () => {
         },
       );
       expect(result).toBe(0);
-      expect(f.err()).toContain('finish with Ctrl-D');
+      expect(f.err()).toContain('finish with [Ctrl+D]');
       expect(f.err()).toContain('for an interactive session run `relavium`');
-      expect(f.out()).not.toContain('finish with Ctrl-D');
+      expect(f.out()).not.toContain('finish with [Ctrl+D]');
       if (json) expect(() => parseNdjson(f.out())).not.toThrow();
     },
   );
@@ -609,7 +609,7 @@ describe('agentRunCommand (2.Q)', () => {
     expect(
       await agentRunCommand({ agent: agentPath(), input: [], allowMcpStdio: [] }, piped.d),
     ).toBe(0);
-    expect(piped.err()).not.toContain('finish with Ctrl-D');
+    expect(piped.err()).not.toContain('finish with [Ctrl+D]');
     const tty = deps('prompt');
     await expect(
       agentRunCommand(
@@ -617,7 +617,7 @@ describe('agentRunCommand (2.Q)', () => {
         { ...tty.d, io: { ...tty.d.io, stdinIsTty: true } },
       ),
     ).rejects.toMatchObject({ code: 'invalid_invocation' });
-    expect(tty.err()).not.toContain('finish with Ctrl-D');
+    expect(tty.err()).not.toContain('finish with [Ctrl+D]');
   });
 
   it.each([

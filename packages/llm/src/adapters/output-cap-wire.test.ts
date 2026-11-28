@@ -390,7 +390,7 @@ describe('wire/admission parity through actual adapter paths (ADR-0101)', () => 
       const { adapter, bodies } = captureAdapter('deepseek');
       let reserved: number | undefined;
       const chain = new FallbackChain(
-        [{ provider: adapter, model: 'deepseek-chat', maxAttempts: 1 }],
+        [{ provider: adapter, model: 'deepseek-v4-flash', maxAttempts: 1 }],
         {
           keyFor: () => 'test-key',
           sleep: () => Promise.resolve(),
@@ -401,7 +401,11 @@ describe('wire/admission parity through actual adapter paths (ADR-0101)', () => 
       );
       await call(
         chain,
-        { model: 'deepseek-chat', messages, providerOptions: { max_completion_tokens: 200_000 } },
+        {
+          model: 'deepseek-v4-flash',
+          messages,
+          providerOptions: { max_completion_tokens: 200_000 },
+        },
         path,
       );
       expect(bodies[0]?.['max_completion_tokens']).toBe(200_000);

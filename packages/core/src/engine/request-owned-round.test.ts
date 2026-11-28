@@ -22,7 +22,7 @@ import { MoneyDurability } from './money-durability.js';
 
 const cases = [
   { provider: 'openai', model: 'gpt-5.4-mini', path: 'stream' },
-  { provider: 'deepseek', model: 'deepseek-chat', path: 'stream' },
+  { provider: 'deepseek', model: 'deepseek-v4-flash', path: 'stream' },
   { provider: 'anthropic', model: 'claude-haiku-4-5', path: 'stream' },
   { provider: 'gemini', model: 'gemini-2.5-flash', path: 'stream' },
   { provider: 'gemini', model: 'gemini-2.5-flash', path: 'generate' },

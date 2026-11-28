@@ -2,6 +2,7 @@ import {
   agentSessions,
   createClient,
   createRunHistoryReader,
+  createSessionStore,
   runMigrations,
   runs,
   sessionMessages,
@@ -9,6 +10,16 @@ import {
 } from '@relavium/db';
 import { asc, desc, eq, isNull, type SQL } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { buildHomeSnapshot } from '../home/home-store.js';
+import { readProjectRunGates } from '../home/run-gates.js';
+
+/**
+ * How much slower one Home refresh may be over a 20× longer history of a directory with the same paused runs. The paused runs and the
+ * counts read no row per run of the history, so the two cost about the same (the count of every run walks the index alone); a read that
+ * checks the status on each run of the project's range makes the long one several times slower.
+ */
+const HOME_REFRESH_HISTORY_RATIO = 2;
 
 /**
  * 2.5.I S5 — query-shape perf budgets for the CLI's hot read paths (the 2.5.B Home "recent sessions/runs"
@@ -189,8 +200,9 @@ describe('query-shape perf budgets (2.5.I S5) — the hot reads stay index-serve
       'runs',
       'idx_runs_project_created',
     );
-    // A status filter inside a project rides the same index with a residual filter; if this ever needs a second
-    // index, this is the plan that says so (ADR-0140 §4).
+    // A terminal status filter inside a project (the History browser's) rides the same index with a residual filter; if
+    // this ever needs a second index, this is the plan that says so (ADR-0140 §4). A status of a run in flight reads the
+    // status index instead (pinned below).
     expectIndexServedNoFilesort(
       planOfRead(() =>
         reader.listRunSummaries({ limit: 20, projectRoot: '/work/p1', status: 'failed' }),
@@ -225,6 +237,225 @@ describe('query-shape perf budgets (2.5.I S5) — the hot reads stay index-serve
     const plan = planOfRead(() => reader.loadRunLeases(['run-1', 'run-2', 'run-3']));
     expect(plan.join('\n')).toContain('USING INDEX sqlite_autoindex_run_leases_1 (run_id=?)');
     expect(plan.join('\n')).not.toMatch(/SCAN run_leases/u);
+  });
+
+  // --- the Home reads THIS directory, with true totals (MVP-11 unit 7) -------------------------------------------------------
+  // The real reader's and the real session store's statements, planned as issued (as the browsers' reads above are).
+
+  it('the Home’s lists of this directory are served off the directory indexes with no filesort', () => {
+    const reader = createRunHistoryReader(client.db);
+    // The Runs section: this project's runs that are not under Attention (no paused run, no failed run inside the window). The two
+    // exclusions are residual filters on the project's own ordered range, so the newest rows come first without a sort.
+    expectIndexServedNoFilesort(
+      planOfRead(() =>
+        reader.listRunSummaries({
+          limit: 16,
+          projectRoot: '/work/p1',
+          exceptStatus: 'paused',
+          failedOnlyBefore: 1_000,
+        }),
+      ),
+      'runs',
+      'idx_runs_project_created',
+    );
+    // The failed runs inside the window: the lower bound is a RANGE on the same index, not a filter after it.
+    const failed = planOfRead(() =>
+      reader.listRunSummaries({
+        limit: 16,
+        projectRoot: '/work/p1',
+        status: 'failed',
+        since: 1_000,
+      }),
+    );
+    expectIndexServedNoFilesort(failed, 'runs', 'idx_runs_project_created');
+    expect(failed.join('\n')).toContain('created_at>?');
+    const sessions = createSessionStore(client.db);
+    expectIndexServedNoFilesort(
+      planOfRead(() => sessions.listSessions({ limit: 8, workingDir: '/work/p1' })),
+      'agent_sessions',
+      'idx_agent_sessions_working_dir_updated',
+    );
+  });
+
+  /**
+   * The columns an index CONSTRAINS in a plan (`SEARCH runs USING INDEX idx_runs_status (status=? AND created_at>?)` → `status`,
+   * `created_at`): what bounds the range read. A filter column that is not among them is checked on every row of the range, which is work
+   * that grows with the range, not with the answer.
+   */
+  function constrainedColumns(plan: readonly string[]): string[] {
+    return plan.flatMap((line) => {
+      const terms = /USING (?:COVERING )?INDEX \S+ \(([^)]*)\)/u.exec(line)?.[1];
+      return terms === undefined
+        ? []
+        : terms.split(' AND ').map((term) => term.split(/[=<>]/u)[0] ?? '');
+    });
+  }
+
+  /** A plan that is no full-table scan and no sort of the whole result (a sort of the last ORDER BY term within one key is allowed). */
+  function expectNoScanNoFullSort(plan: readonly string[], label: string): void {
+    const joined = plan.join('\n');
+    expect(joined, label).toMatch(/USING (COVERING )?INDEX/u);
+    expect(joined, label).not.toMatch(/SCAN runs(?! USING)/u);
+    expect(joined, label).not.toMatch(/USE TEMP B-TREE FOR ORDER BY/u);
+  }
+
+  it('a project read with the status of a run in flight reads that status’s range; a terminal status keeps the project’s range', () => {
+    // The paused runs of a 50,000-run project cost one table row per run of the project on the project's range (MVP-11 unit 7 round 2:
+    // 30 ms per count, on every Home refresh); on the status range they cost the paused runs. The History browser's filters (the
+    // terminal statuses) keep the project's range, where the newest rows come first.
+    const reader = createRunHistoryReader(client.db);
+    for (const status of ['pending', 'running', 'paused'] as const) {
+      for (const read of [
+        () => reader.listRunSummaries({ limit: 9, projectRoot: '/work/p1', status }),
+        // The parked read's next page (`readProjectRunGates` pages past its first chunk by the keyset cursor).
+        () =>
+          reader.listRunSummaries({
+            limit: 9,
+            projectRoot: '/work/p1',
+            status,
+            before: { createdAt: 1_000, id: 'run-1' },
+          }),
+        () => reader.countRunSummaries({ projectRoot: '/work/p1', status }),
+      ]) {
+        const plan = planOfRead(read);
+        expectNoScanNoFullSort(plan, status);
+        expect(plan.join('\n'), status).toContain('idx_runs_status (status=?');
+        expect(constrainedColumns(plan), status).toContain('status');
+      }
+    }
+    for (const status of ['completed', 'failed', 'cancelled'] as const) {
+      const plan = planOfRead(() =>
+        reader.listRunSummaries({ limit: 21, projectRoot: '/work/p1', status }),
+      );
+      expectIndexServedNoFilesort(plan, 'runs', 'idx_runs_project_created');
+      expect(constrainedColumns(plan), status).toEqual(['project_root']);
+    }
+  });
+
+  it('the Home’s refresh: every runs statement it issues is planned, and a status it filters on bounds the index range it reads', () => {
+    // The statements the REAL store and the REAL parked read issue for one refresh (the snapshot, then the controller's parked runs),
+    // recorded with the filter each was issued for, so a new or changed read is planned as issued and not as a list here says it is.
+    const reader = createRunHistoryReader(client.db);
+    const issued: { readonly kind: 'list' | 'count'; readonly filter: string; plan: string[] }[] =
+      [];
+    const recorded = <A extends object, R>(
+      kind: 'list' | 'count',
+      read: (filter: A) => R,
+    ): ((filter: A) => R) => {
+      return (filter) => {
+        let result: R | undefined;
+        const statements = issuedSql(() => {
+          result = read(filter);
+        });
+        for (const statement of statements)
+          issued.push({ kind, filter: JSON.stringify(filter), plan: planOfIssued(statement) });
+        if (result === undefined) throw new Error('the read returned nothing');
+        return result;
+      };
+    };
+    const runsSeam = {
+      ...reader,
+      listRunSummaries: recorded('list', reader.listRunSummaries),
+      countRunSummaries: recorded('count', reader.countRunSummaries),
+    };
+    buildHomeSnapshot({
+      sessions: createSessionStore(client.db),
+      runs: runsSeam,
+      projectRoot: '/work/p1',
+      workingDir: '/work/p1',
+      now: () => 10 * 86_400_000,
+    });
+    readProjectRunGates(runsSeam, '/work/p1', { maxRuns: 8 });
+
+    for (const { kind, filter, plan } of issued) {
+      const label = `${kind} ${filter}`;
+      expectNoScanNoFullSort(plan, label);
+      // A status filter is a CONSTRAINED column of the index the read uses: the read costs the runs of that status (in the window), never
+      // a row read per run of the directory's history. Every paused read, and every count that names a status: a count served off the
+      // project's range with the status checked on each run (the old Runs count, `status <> ?`) fails here. The two other lists stop
+      // after their limit (the Runs section) or inside the window's range of the project (the failed runs), and keep that range.
+      const pausedRead = filter.includes('"status":"paused"');
+      const countByStatus = kind === 'count' && /"(?:status|exceptStatus)"/u.test(filter);
+      if (pausedRead || countByStatus) expect(constrainedColumns(plan), label).toContain('status');
+    }
+    // Exactly three counts, none of them a residual filter: the paused runs, the failed runs of the window, and every run of the directory
+    // (the project's range, no run row read); the Runs total is their difference, never a fourth count.
+    const counts = issued.filter((statement) => statement.kind === 'count');
+    expect(counts.map((statement) => constrainedColumns(statement.plan))).toEqual([
+      ['status'],
+      ['status', 'created_at'],
+      ['project_root'],
+    ]);
+    // The paused runs are read twice (the snapshot's unreadable probe and the parked rows), both off the status range.
+    const pausedLists = issued.filter(
+      (statement) => statement.kind === 'list' && statement.filter.includes('"status":"paused"'),
+    );
+    expect(pausedLists).toHaveLength(2);
+    // The sessions of this directory.
+    const sessions = createSessionStore(client.db);
+    expectIndexServedNoFilesort(
+      planOfRead(() => sessions.countSessions({ workingDir: '/work/p1' })),
+      'agent_sessions',
+      'idx_agent_sessions_working_dir_updated',
+    );
+  });
+
+  it('a Home refresh costs what this directory holds in Attention, not its history: a 20× longer history is not a slower refresh', () => {
+    // Two directories with the same six paused runs, created FIRST (the oldest rows: a newest-first walk of the project's range meets
+    // them last), and every other run completed long before the failed-run window. One has 1,000 runs, the other 20,000. A refresh
+    // that reads the paused runs off the status range costs about the same in both; one that checks the status on the project's range
+    // (or counts the Runs section that way) reads a row per run of the history and is many times slower in the long one. A ratio of
+    // two timings on one machine, the best of several each, taken in turn: the machine's speed and load cancel.
+    const T0 = Date.parse('2026-01-01T00:00:00.000Z');
+    const DAY = 86_400_000;
+    const definition = JSON.stringify({ nodes: 'n'.repeat(2_000) });
+    client.sqlite
+      .prepare(
+        `INSERT INTO workflows (id, name, slug, definition, created_at, updated_at) VALUES ('wf', 'wf', 'wf', '{}', ?, ?)`,
+      )
+      .run(T0, T0);
+    const insert = client.sqlite.prepare(
+      `INSERT INTO runs (id, workflow_id, workflow_definition_snapshot, project_root, status, created_at, updated_at) VALUES (?, 'wf', ?, ?, ?, ?, ?)`,
+    );
+    const seedDirectory = (root: string, count: number): void => {
+      for (let index = 0; index < count; index++) {
+        const at = T0 + index * 1_000;
+        insert.run(
+          `${root}#${String(index)}`,
+          definition,
+          root,
+          index < 6 ? 'paused' : 'completed',
+          at,
+          at,
+        );
+      }
+    };
+    client.sqlite.transaction(() => {
+      seedDirectory('/work/short', 1_000);
+      seedDirectory('/work/long', 20_000);
+    })();
+    const reader = createRunHistoryReader(client.db);
+    const sessions = createSessionStore(client.db);
+    const refresh = (root: string): number => {
+      const started = performance.now();
+      const snapshot = buildHomeSnapshot({
+        sessions,
+        runs: reader,
+        projectRoot: root,
+        workingDir: root,
+        now: () => T0 + 60 * DAY,
+      });
+      readProjectRunGates(reader, root, { maxRuns: 8 });
+      const elapsed = performance.now() - started;
+      expect(snapshot.totals.attention, root).toBe(6);
+      return elapsed;
+    };
+    const best = { short: Number.POSITIVE_INFINITY, long: Number.POSITIVE_INFINITY };
+    for (let round = 0; round < 9; round++) {
+      best.short = Math.min(best.short, refresh('/work/short'));
+      best.long = Math.min(best.long, refresh('/work/long'));
+    }
+    expect(best.long / best.short, JSON.stringify(best)).toBeLessThan(HOME_REFRESH_HISTORY_RATIO);
   });
 
   it('listStepSummaries and loadStepDetail are served off the step_executions indexes', () => {

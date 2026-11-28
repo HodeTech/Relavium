@@ -6,6 +6,9 @@
 > **CLI MVP first (2026-11-04):** the MVP order in [../current.md](../current.md#next-work--the-cli-mvp) takes slices of
 > 2.6.A/B/D/E/G/H/I/J/K/M/Q ahead of the rest of the phase; new MVP items are defined under
 > [CLI MVP additions](#cli-mvp-additions--2026-11-04). The phase scope, exit criteria and milestones are unchanged.
+> **MVP-11 (2026-11-24)**, the CLI's one surface language (popups, sheets, the palette order, the speaker marker, the Home and the first run), is
+> planned in its own file, [mvp-11.md](mvp-11.md). It builds the CLI-internal tables that 2.6.L's theme and locale catalogue will
+> consume and takes none of 2.6.L's scope.
 > Live progress is canonical in [../current.md](../current.md); the rest of the phase follows. Depends on the Phase 2.5
 > spine (the wired tool-environment and the per-tool approval / mode system), which is **complete** (M2.5-4,
 > PR #69, 2026-07-08), so this phase is unblocked.
@@ -6490,3 +6493,53 @@ Several concurrent legs, a detached child process, a warm engine across answers 
 9. **The catalog scan's total decode cost** (B·P1-15, and the third sitting): answered by the token budget of `33266015` (a lower `MAX_CATALOG_SCAN_BYTES` and discovery off the UI thread were not built and are not needed for the bound), so nothing is owed unless a legitimate file ever exceeds the cap, where raising `MAX_YAML_TOKENS` is a one-constant change.
 10. **The exact list of output member names that are masked whole** (A·P09-1, B·P1-14). It is the scrubber's own query names less `key` and `auth`, an exact list on purpose (a broader rule masks ordinary data); a security-posture decision the reviews asked the maintainer to confirm.
 11. **Whether the Defined workflow detail page, the strip's agent row and the Active tab's node boundaries are built or dropped from ADR-0140.** Each is described as built by the ADR and is not; the 2026-11-24 note of that ADR says so.
+
+### PR #102 merge checkpoint (2026-11-24)
+
+**Merged to `main`: MVP-8 (the Home as hub) is complete.** The maintainer merged [PR #102](https://github.com/HodeTech/Relavium/pull/102) on 2026-11-24 at 08:04:46Z (11:04 in the maintainer's time zone) as
+`c17e9763a2ad7745e3cbb41e1e84cca922e7c2d8`. Its Git tree, `42f45337167d9029263ab2404fda62771767e484`, is identical to head `f9cf2627`'s. `development` took the merge commit back (`c59d072d`) and
+holds one commit `main` does not: `29d18159`, the [MVP-11](mvp-11.md) plan. The PR was opened on 2026-11-23 at 21:59Z (after midnight in the maintainer's time zone) and carried 157 non-merge commits
+(`0a599a36..f9cf2627`; 485 files, +118,109 −3,860 lines). npm still serves `0.1.1`; the D59 release guard is unchanged.
+
+What the PR carried:
+
+- [x] **MVP-8's five steps** ([step 1](#mvp-8-step-1-implementation-record-2026-11-22), [2](#mvp-8-step-2-implementation-record-2026-11-22), [3](#mvp-8-step-3-implementation-record-2026-11-23),
+  [4](#mvp-8-step-4-implementation-record-2026-11-23), [5](#mvp-8-step-5-implementation-record-2026-11-23)): the durable run record and its reads (migration `0022`), one run core for the shell and the Home with the
+  lease-path fix, the Home hosting a run (`/run`, the native cards, the run view, the background leg and the exit guard), the management browsers (`/workflows`, the permissions tab), and the rest of the hub (the
+  actionable strip, `/agents`, `/agent`, `/help`, the typed-slash rule, the `/import` and `models pricing` forms, and the media-parked run continued from the Home). Each step had its review rounds, and a
+  separate security sitting where the D64 tier required one.
+- [x] **The ADRs:** [0139](../../decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) and [0140](../../decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+  (accepted 2026-11-22, before any code), and the rendering ADRs [0141](../../decisions/0141-a-table-too-wide-for-its-grid-renders-as-records.md) (superseded by [0143](../../decisions/0143-a-wide-table-keeps-its-grid-and-records-are-the-last-resort.md)),
+  [0142](../../decisions/0142-a-literal-search-is-linear-and-its-work-budget-charges-what-it-reads.md) and [0144](../../decisions/0144-fenced-code-is-highlighted-by-an-in-house-lexical-scanner.md); dated notes at the end of
+  ADR-0035, 0048, 0084, 0115, 0139, 0140, 0143 and 0144 correct what the code did differently (nothing was rewritten).
+- [x] **The answers to the review** ([the section above](#pr-102-review-corrections--2026-11-24)): three external reports (about 100 findings, each probed before it was classified), three independent security
+  sittings that found real defects in the first fixes (the resume abort that cancelled a parked run, the swap that placed a replaced file elsewhere, the YAML cost), and the register entries for what stays open.
+- [x] **The Sonar fixes:** the gate's reliability and security conditions (two bugs and ten bidi fixtures, then the one more bug, an `S2871` sort, and the three bidi fixtures that the review fixes introduced; `1ca7ff79`), and the maintainability findings the PR introduced (seven cognitive-complexity
+  functions split, sixteen nested ternaries and six nested templates removed, a linear trailing-zero trim; `ae0326d9`, 60 files, read for equivalence before the gate).
+
+**Final-head evidence, and what it does not show.**
+
+- CI run `45322172313` on `f9cf2627` ran 29 jobs and **all 29 succeeded** (created 03:49:45Z, last job done 04:31:02Z, before the merge at 08:04:46Z); the pull request showed 30 passing checks and two skipped.
+  The run on `04645e2e` was cancelled by the next push. Earlier heads had red runs, each answered: the pins and timeouts in the [review corrections](#pr-102-review-corrections--2026-11-24) (the provenance count, the
+  workspace job's watchdog, the Windows hard-link test's limit) and `1bfb607d` (a Linux-only miss: a test tried a fixed forty poll positions of a walk, and it now tries every position up to the walk's last).
+- **The whole local gate** (`pnpm gate --keep-going`: lint, build and format, the smokes, `test-acceptance-tools`, the workspace tests under the CI environment, the wire, usage and filesystem mutation lanes, the three
+  secrets-mutation shards and the enforced coverage run) **passed on a still tree at the code head `ae0326d9`**, run from an isolated git worktree because the mutation controls refuse a tree that moves and other
+  sessions were using the checkout. It closes the gap the [review corrections](#pr-102-review-corrections--2026-11-24) named ("no full `pnpm gate` run on the final head is claimed here"). The two commits after it
+  are tests and documents (`04645e2e`: the sweep of every microtask position at which a cancel can reach the resume path; `f9cf2627`), and CI run `45322172313` is their evidence. The installed-CLI smoke is CI-owned.
+- SonarCloud's gate on the pull request was **OK on `f9cf2627`** (reliability, security and maintainability A, duplication 0.4%, hotspots 100% reviewed; no bug and no vulnerability). It was red on earlier heads (reliability
+  and security) until the fixes above. **138 smells stay open on the pull request by decision, all `MINOR`**: 132 `S7758`, 5 `S9382` and 1 `S6582`, each intentional and listed in the
+  [register](../deferred-tasks.md#pr-102-review-2026-11-24--findings-answered-refuted-and-deferred) entry "SonarCloud on PR #102 at the merge". **SonarCloud's analysis of the merge commit on `main`** (`c17e9763`, 08:05:00Z) **finished: the gate is OK, with no bug and no vulnerability and 962 code smells** (886 before; 162 `S7758` are open on `main`, 132 of them
+  this PR's). A status is per branch, so the pull request's marks do not reach `main`. **The merge commit's own `push` run (`45353015865`) was still running at 08:13Z** (its first nine jobs had succeeded, and the shards,
+  the workspace checks, the coverage floor and the Windows jobs started at 08:09Z); its result is not claimed here, and its tree is the tree of the pull request's last run, which passed.
+- **The conditional acceptance stays conditional.** Rows 1 to 38 of [the Windows interrupt-evidence runbook](../../runbooks/windows-interrupt-evidence.md) (rows 1 to 16 are MVP-4's) have never been run by a person on
+  Windows Terminal and the legacy console host; CI runs tests, not a console. The forced-write module's link, FIFO and race tests are skipped on Windows, so its behaviour there is untested.
+- **What no fix addressed** is in the register and in the review record's "Needs the maintainer" list: whether a hosted workflow's writes enter ADR-0138's marks, a command to withdraw an MCP consent, whether ADR-0142
+  needed the security sitting it named, `fs_scope = "full"` and an operator-level approval, the node page's whole-text scrub, the `--force` id-shadowing choice, the member-name list, and whether the Defined detail
+  page, the strip's agent row and the Active tab's node boundaries are built or dropped. The forced-write residuals (Node has no `openat` or `renameat`) are registered with their limits.
+- **The pull request's description is the text written before the review corrections** and was not rewritten after the merge. It says a "two-process gate-resolve test" (the tests are two interleaved engines in one
+  process), that no single uninterrupted gate run exists on the final head (one does now), and that the trailers name "Haiku until the model was switched, Sonnet after" (the order is five Sonnet commits, 83 Haiku, one
+  with no trailer, then Sonnet). This record and the register are the authority.
+
+This checkpoint closes MVP-8's implementation, review, security and maintainer-merge gates except the Windows evidence and the maintainer decisions above. Pending-gate wording ("opened", "open for review",
+"implemented on `development`") in the dated records above is historical and is superseded by this checkpoint. **[MVP-11](mvp-11.md) (one surface language for the CLI) is next** under
+[the execution order](../current.md#next-work--the-cli-mvp): its Step 1 (decisions, ADRs, a real-terminal spike and a baseline, no product code) comes first. Phase 2.6, Phase 2.5.5 and milestone M3.5 remain open.

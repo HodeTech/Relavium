@@ -38,7 +38,7 @@ describe.each([true, false])('Continue prompt edits alternate=%s', (alternate) =
         resumeChat: resume,
         homeStore: {
           read: () => ({
-            attention: { gates: [], failedRuns: [] },
+            failedRuns: [],
             recentSessions: [
               {
                 sessionId: 'saved',
@@ -53,11 +53,11 @@ describe.each([true, false])('Continue prompt edits alternate=%s', (alternate) =
             ],
             recentRuns: [],
             recentAgents: [],
-            unreadableRunIds: [],
+            unreadableRuns: [],
+            totals: { attention: 0, sessions: 1, runs: 0 },
             isEmpty: false,
           }),
         },
-        doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
         onExit: () => {},
         onError: () => {},
       });
@@ -81,7 +81,8 @@ describe.each([true, false])('Continue prompt edits alternate=%s', (alternate) =
         },
       );
       try {
-        await vi.waitFor(() => expect(output.frames.join('')).toContain('Saved conversation'));
+        // the landing counts the session (MVP-11 unit 7); `↓` goes down to it on the work page
+        await vi.waitFor(() => expect(output.frames.join('')).toContain('↓ 1 session'));
         input.push('\x1b[B\r'); // coalesced Enter cannot activate the newly focused, unflushed row
         await vi.waitFor(() => expect(controller.getSnapshot().stripFocus?.id).toBe('saved'));
         expect(resume).not.toHaveBeenCalled();

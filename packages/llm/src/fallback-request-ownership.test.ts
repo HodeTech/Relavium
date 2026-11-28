@@ -305,7 +305,7 @@ for (const path of paths) {
           };
         })();
       const chain = new FallbackChain(
-        [entry(primary.instance, 'gpt-3.5-turbo'), entry(fallback.instance, 'claude-opus-4-8')],
+        [entry(primary.instance, 'gpt-4o'), entry(fallback.instance, 'claude-opus-4-8')],
         {
           keyFor: () => 'offline',
           sleep: () => Promise.resolve(),

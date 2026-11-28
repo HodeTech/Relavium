@@ -8,7 +8,7 @@ import { RootApp } from './home-app.js';
 import { MAX_HOME_NOTICE_CHARS, layoutHomeNotice } from './home-notice.js';
 
 const snapshot: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  failedRuns: [],
   recentSessions: Array.from({ length: 8 }, (_, n) => ({
     sessionId: `saved-${n}`,
     title: `Saved conversation ${n}`,
@@ -21,10 +21,17 @@ const snapshot: HomeSnapshot = {
   })),
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: Array.from({ length: 50 }, (_, n) => `run-${n}`),
+  // Fifty counted under Attention and none of them loaded (MVP-11 unit 7: an unreadable run is a row `↓` reaches, so loaded ones would come
+  // before the sessions this file focuses): the landing says the count, `↓ 50 need you`, and the work page a marker for them.
+  unreadableRuns: [],
+  totals: { attention: 50, sessions: 8, runs: 0 },
   isEmpty: false,
 };
-const detail = 'Read this diagnostic detail carefully. '.repeat(80) + 'FINAL_RECOVERY_REMEDY';
+// A long report the Home's notice holds whole (the notice wraps and pages any long sentence the same way). Put there through the controller's
+// own `setProviderState`: `/import` was the vehicle until MVP-11 unit 6 (6.3), when a flow's result became its popup's Done step and a
+// notification, and stopped writing the Home's notice (ADR-0148 §6).
+const detail =
+  'REPORT_START ' + 'Read this diagnostic detail carefully. '.repeat(80) + 'FINAL_RECOVERY_REMEDY';
 function mount(alternate: boolean, color: boolean, keyless = false) {
   const input = new OwnedTtyInput(),
     output = new OwnedTtyOutput(),
@@ -40,12 +47,6 @@ function mount(alternate: boolean, color: boolean, keyless = false) {
     resumeChat,
     pickSession,
     homeStore: { read: () => snapshot },
-    doctorProbes: {
-      keychain: () => {},
-      config: () => {},
-      toolHost: {},
-      globalArtifacts: () => detail,
-    },
     providerSetup: { initialKeyless: keyless, open: () => Promise.resolve() },
     onExit,
     onError: (cause) => {
@@ -90,12 +91,9 @@ function mount(alternate: boolean, color: boolean, keyless = false) {
       output.rows = rows;
       output.emit('resize');
     },
-    doctor: async () => {
-      input.push('/');
-      await vi.waitFor(() => expect(controller.getSnapshot().palette).toBeDefined());
-      input.push('doctor');
-      await vi.waitFor(() => expect(controller.getSnapshot().palette?.query).toBe('doctor'));
-      input.push('\r');
+    report: () => {
+      controller.setProviderState(keyless, detail);
+      return Promise.resolve();
     },
     close: async () => {
       await controller.teardownActive();
@@ -110,22 +108,23 @@ function mount(alternate: boolean, color: boolean, keyless = false) {
 
 describe.each([true, false])('Home reports and minimum geometry alternate=%s', (alternate) => {
   it.each([true, false])(
-    'retains complete doctor output, wraps and pages without hiding Continue or the prompt (color=%s)',
+    'retains a complete long report, wraps and pages without hiding Continue or the prompt (color=%s)',
     async (color) => {
       const h = mount(alternate, color, true);
       try {
-        await vi.waitFor(() => expect(h.output.frames.join('')).toContain('Saved conversation'));
-        await h.doctor();
-        await vi.waitFor(() => expect(h.frame('doctor:')).toContain('FINAL_RECOVERY_REMEDY'));
-        expect(h.frame('doctor:')).toContain('wired tools');
+        // the landing (MVP-11 unit 7): the sessions are the work page's, the hint's indicator counts them
+        await vi.waitFor(() => expect(h.output.frames.join('')).toContain('8 sessions'));
+        await h.report();
+        await vi.waitFor(() => expect(h.frame('REPORT_START')).toContain('FINAL_RECOVERY_REMEDY'));
         h.input.push('\x1b[B');
         await vi.waitFor(() => expect(h.controller.getSnapshot().stripFocus?.id).toBe('saved-0'));
         h.resize(80, 24);
-        await vi.waitFor(() => expect(h.frame('doctor:')).toContain('Notice 1–'));
-        expect(h.frame('doctor:')).toContain('> Saved conversation 0');
-        expect(h.frame('doctor:')).toContain('Connect a provider');
-        expect(h.frame('doctor:')).toContain('PgUp/PgDn');
-        expect(h.frame('doctor:').split('\n').length).toBeLessThanOrEqual(24);
+        await vi.waitFor(() => expect(h.frame('REPORT_START')).toContain('Notice 1–'));
+        expect(h.frame('REPORT_START')).toContain(`${color ? '›' : '>'} Saved conversation 0`);
+        // a saved conversation is focused, so `Enter` resumes it: the line promises only the command word
+        expect(h.frame('REPORT_START')).toContain('No provider key yet · /providers connects one');
+        expect(h.frame('REPORT_START')).toContain('PgUp/PgDn');
+        expect(h.frame('REPORT_START').split('\n').length).toBeLessThanOrEqual(24);
         // Coalesced page keys reduce against the live page, without submitting or moving Continue focus.
         h.input.push('\x1b[6~'.repeat(20));
         await vi.waitFor(() => expect(h.frame('PgUp/PgDn')).toContain('FINAL_RECOVERY_REMEDY'));
@@ -133,13 +132,13 @@ describe.each([true, false])('Home reports and minimum geometry alternate=%s', (
         expect(h.resumeChat).not.toHaveBeenCalled();
         expect(h.startChat).not.toHaveBeenCalled();
         const rerunStart = h.output.frames.length;
-        await h.doctor();
+        await h.report();
         await vi.waitFor(() =>
           expect(h.output.frames.slice(rerunStart).join('')).toContain('Notice 1–'),
         );
         h.resize(120, 60);
-        await vi.waitFor(() => expect(h.frame('doctor:')).toContain('FINAL_RECOVERY_REMEDY'));
-        expect(h.frame('doctor:')).not.toContain('PgUp/PgDn');
+        await vi.waitFor(() => expect(h.frame('REPORT_START')).toContain('FINAL_RECOVERY_REMEDY'));
+        expect(h.frame('REPORT_START')).not.toContain('PgUp/PgDn');
       } finally {
         await h.close();
       }
@@ -150,7 +149,7 @@ describe.each([true, false])('Home reports and minimum geometry alternate=%s', (
     const h = mount(alternate, false);
     try {
       h.resize(80, 24);
-      await vi.waitFor(() => expect(h.output.frames.join('')).toContain('Saved conversation'));
+      await vi.waitFor(() => expect(h.output.frames.join('')).toContain('need you'));
       h.input.push('\x1b[B');
       await vi.waitFor(() => expect(h.controller.getSnapshot().stripFocus?.id).toBe('saved-0'));
       // Enter arrives before React can paint the resize: admission must read actual geometry.
@@ -164,10 +163,10 @@ describe.each([true, false])('Home reports and minimum geometry alternate=%s', (
       expect(h.controller.getSnapshot().input.text).toBe('');
       h.input.push('\x1b');
       await vi.waitFor(() => expect(h.controller.getSnapshot().stripFocus?.id).toBeUndefined());
+      // `Esc` went back up to the landing (MVP-11 unit 7)
+      expect(h.controller.getSnapshot().homePage).toBe('start');
       h.resize(80, 24);
-      await vi.waitFor(() =>
-        expect(h.frame('Saved conversation')).not.toContain('Terminal too small'),
-      );
+      await vi.waitFor(() => expect(h.frame('need you')).not.toContain('Terminal too small'));
       h.input.push('\x1b[B');
       await vi.waitFor(() => expect(h.controller.getSnapshot().stripFocus?.id).toBe('saved-0'));
       h.input.push('\r');
@@ -180,11 +179,13 @@ describe.each([true, false])('Home reports and minimum geometry alternate=%s', (
   it('suspends hidden palette confirmation while keeping Esc and Ctrl+C available', async () => {
     const h = mount(alternate, false);
     try {
-      await vi.waitFor(() => expect(h.output.frames.join('')).toContain('Saved conversation'));
+      await vi.waitFor(() => expect(h.output.frames.join('')).toContain('need you'));
       h.input.push('/');
       await vi.waitFor(() => expect(h.controller.getSnapshot().palette).toBeDefined());
       h.input.push('resume');
-      await vi.waitFor(() => expect(h.controller.getSnapshot().palette?.query).toBe('resume'));
+      await vi.waitFor(() =>
+        expect(h.controller.getSnapshot().palette?.state.query).toBe('resume'),
+      );
       h.resize(40, 24);
       await vi.waitFor(() => expect(h.frame('Terminal too small')).not.toBe(''));
       expect(h.frame('Terminal too small')).not.toContain('/resume');
@@ -212,12 +213,11 @@ it('retains every diagnostic row across pages and the full long shell-picker rem
       (_, n) => `ROW-${String(n).padStart(3, '0')} ${'word '.repeat(20)}`,
     ).join('\n'),
     editor: { text: '', cursor: 0 },
-    cols: 80,
+    // 80 columns of text: both pages are left-hung at the 6-column margin (MVP-11 unit 7)
+    cols: 86,
     rows: 24,
-    keyless: true,
-    errorText: undefined,
     showBanner: false,
-    isEmpty: false,
+    onLanding: false,
     hasSessions: true,
   };
   const first = layoutHomeNotice(options);
@@ -231,7 +231,7 @@ it('retains every diagnostic row across pages and the full long shell-picker rem
   }
   expect(new Set(text.join('\n').match(/ROW-\d{3}/gu)).size).toBe(200);
   const remedy =
-    'This session belongs to another directory. Open Home there, or use relavium chat resume and Tab to browse all directories.';
+    'This session belongs to another directory. Open Home there, or use /resume and Tab to browse all directories.';
   expect(layoutHomeNotice({ ...options, notice: remedy })?.lines.join('')).toBe(remedy);
 });
 
@@ -240,10 +240,8 @@ describe('a notice is bounded before it is wrapped (review: a 2 MiB notice had n
     editor: { text: '', cursor: 0 },
     cols: 80,
     rows: 24,
-    keyless: false,
-    errorText: undefined,
     showBanner: false,
-    isEmpty: false,
+    onLanding: false,
     hasSessions: false,
   };
 
@@ -285,5 +283,77 @@ describe('a notice is bounded before it is wrapped (review: a 2 MiB notice had n
 
   it('keeps a notice that is not over the bound exactly as it was', () => {
     expect(pagesOf('Open Home there.').text).toBe('Open Home there.');
+  });
+});
+
+describe('a row that continues a line starts with its word, not with the wrap’s own space (MVP-11 Step 2 review, C9b)', () => {
+  const options = {
+    editor: { text: '', cursor: 0 },
+    // 20 columns of text: both pages are left-hung at the 6-column margin (MVP-11 unit 7)
+    cols: 26,
+    rows: 24,
+    showBanner: false,
+    onLanding: false,
+    hasSessions: false,
+  };
+  const linesOf = (notice: string): readonly string[] =>
+    layoutHomeNotice({ ...options, notice })?.lines ?? [];
+
+  it('drops the space a word ending on the last column leaves at the start of the next row', () => {
+    // 20 characters, then the space, then the rest: the row is full, so the space used to open the next row (` opened; it is stored…`).
+    expect(linesOf(`${'a'.repeat(20)} opened; it is stored`)).toEqual([
+      'a'.repeat(20),
+      'opened; it is stored',
+    ]);
+  });
+
+  it('keeps the indent of the first row of a line, and no continuation row starts with a space', () => {
+    const rows = linesOf('  indented line that wraps here');
+    expect(rows[0]?.startsWith('  indented')).toBe(true);
+    expect(rows.slice(1).every((row) => !row.startsWith(' '))).toBe(true);
+  });
+
+  it('applies to every logical line, and never removes a character that is not whitespace', () => {
+    const rows = linesOf(`${'b'.repeat(20)} first\n${'c'.repeat(20)} second`);
+    expect(rows).toEqual(['b'.repeat(20), 'first', 'c'.repeat(20), 'second']);
+  });
+
+  // Round 2, Q2: three mutants of the wrap survived the suite.
+  it('keeps a blank line inside a notice as a row of its own', () => {
+    expect(linesOf('a\n\nb')).toEqual(['a', '', 'b']);
+    expect(linesOf('first\n\n\nlast')).toEqual(['first', '', '', 'last']);
+  });
+
+  it('moves a double-width glyph that does not fit the last column to the next row, and loses none', () => {
+    // 19 columns of ASCII leave one column, which a two-column glyph cannot use.
+    expect(linesOf(`${'a'.repeat(19)}漢字 tail`)).toEqual(['a'.repeat(19), '漢字 tail']);
+    expect(linesOf('漢 abc 漢字漢字漢字漢字漢字漢字漢字').join('')).toContain(
+      '漢字漢字漢字漢字漢字漢字漢字',
+    );
+  });
+
+  it('shows a glyph wider than the row as one `?` and wraps the rest of the line as it is, never cutting a surrogate pair', () => {
+    const narrow = layoutHomeNotice({
+      ...options,
+      cols: 7, // one column of text
+      notice: '\u{20000}\u{20000}',
+    })?.lines;
+    expect(narrow).toEqual(['?', '?']);
+    for (const row of narrow ?? []) expect(row).not.toMatch(/[\ud800-\udfff]/u);
+  });
+
+  it('wraps a very long unbroken word at the width, every row full', () => {
+    const rows = linesOf('x'.repeat(205));
+    expect(rows).toHaveLength(11);
+    expect(rows.slice(0, 10).every((row) => row === 'x'.repeat(20))).toBe(true);
+    expect(rows[10]).toBe('xxxxx');
+  });
+
+  it('fills a row by the columns its text takes, not by the code units: combining marks are zero columns wide', () => {
+    // Ten letters with a combining acute are 20 code units and 10 columns: one row of ten columns, and not two of five.
+    const decomposed = 'e\u0301'.repeat(10);
+    expect(layoutHomeNotice({ ...options, cols: 16, notice: decomposed })?.lines).toEqual([
+      decomposed,
+    ]);
   });
 });

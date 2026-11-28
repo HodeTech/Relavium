@@ -100,6 +100,29 @@ describe('gateListCommand', () => {
     expect(text).toContain('hi'); // …while the readable text still reaches the user
   });
 
+  it('masks a secret-shaped upstream message in the human rows, and leaves the --json record as stored', async () => {
+    // The message is interpolated upstream node output: the human line goes through the same untrusted-text floor as the TUI card
+    // (secrets masked, then controls stripped); the machine record is a contract and keeps the stored text.
+    const key = ['sk-', 'ant-', 'api03-', 'AbCdEf0123456789xyz'].join('');
+    const message = `use ${key}\u001b[2J now`;
+    await seedRun(db, {
+      slug: 'x',
+      runId: 'r9',
+      state: 'paused',
+      gate: { gateId: 'g-x', gateType: 'approval', message },
+    });
+
+    const human = captureIo();
+    expect(gateListCommand({}, deps(human.io))).toBe(EXIT_CODES.success);
+    expect(human.out()).not.toContain('0123456789xyz');
+    expect(human.out()).not.toContain('\u001b');
+    expect(human.out()).toContain('[REDACTED]');
+
+    const machine = captureIo();
+    expect(gateListCommand({}, deps(machine.io, true))).toBe(EXIT_CODES.success);
+    expect(machine.out()).toContain('0123456789xyz');
+  });
+
   it('scopes to one run when given a runId', async () => {
     const { io, out } = captureIo();
     await seedRun(db, {

@@ -3,6 +3,7 @@ import { quoteCommandLine, tokenizeCommandLine } from '@relavium/shared';
 
 import type { ChatMode } from '../../chat/chat-mode.js';
 import { frameUntrusted } from './injection.js';
+import { keyToken } from './legend.js';
 
 /**
  * The `!`-shell escape input model (2.5.D step 5, [ADR-0061](../../../../../docs/decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)).
@@ -78,7 +79,7 @@ export function shellDenyHint(cmd: ShellCommand, allowlist: boolean, mode: ChatM
   const line = commandLine(cmd);
   if (allowlist) return `! ${line}: not run — it is not allowed here.`;
   if (mode === 'plan') {
-    return `! ${line}: not run — plan mode is read-only. Switch to ask, accept-edits or auto (Shift+Tab) to run it.`;
+    return `! ${line}: not run — plan mode is read-only. Switch to ask, accept-edits or auto (${keyToken('Shift+Tab')}) to run it.`;
   }
   return `! ${line}: declined.`;
 }

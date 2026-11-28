@@ -45,7 +45,7 @@ afterEach(async () => {
 describe('the chat mode control while a turn runs (D6)', () => {
   it('names the notice the way the card names Esc', () => {
     expect(MODE_CHANGE_RUNNING_NOTICE).toBe(
-      'Mode changes apply between turns — Esc stops the running turn.',
+      'Mode changes apply between turns \u00b7 Esc stops the running turn',
     );
   });
 
@@ -59,7 +59,7 @@ describe('the chat mode control while a turn runs (D6)', () => {
     expect(notices(m)).toEqual([]);
   });
 
-  it('refuses a mode change while a turn runs: footer and policy stay, a notice says why', async () => {
+  it('refuses a mode change while a turn runs: footer and policy stay, a notification (never a transcript row) says why', async () => {
     const m = await modeControl();
     m.store.apply(TURN_STARTED);
     expect(m.store.getSnapshot().state.status).toBe('running');
@@ -72,7 +72,19 @@ describe('the chat mode control while a turn runs (D6)', () => {
     expect(m.policyPushes(), 'no policy is pushed for a turn that has already taken its own').toBe(
       before,
     );
-    expect(notices(m)).toEqual([MODE_CHANGE_RUNNING_NOTICE]);
+    // OD-1: a mode change leaves the status line and one transient notification; the transcript keeps the conversation.
+    expect(m.announced).toEqual([MODE_CHANGE_RUNNING_NOTICE]);
+    expect(notices(m)).toEqual([]);
+  });
+
+  it('a control with no notification channel still says the refusal, in the transcript: the key is never silent', async () => {
+    const made = await realModeControl({ announce: false });
+    controls.push(made);
+    made.store.apply(TURN_STARTED);
+    made.control.onModeChange('auto');
+    expect(made.store.getSnapshot().mode).toBe('ask');
+    expect(made.announced).toEqual([]);
+    expect(notices(made)).toEqual([MODE_CHANGE_RUNNING_NOTICE]);
   });
 
   it('applies the mode again as soon as the turn has ended', async () => {
@@ -121,8 +133,9 @@ describe('Shift+Tab in the mounted standalone chat while a turn runs (D6)', () =
     m.store.apply(TURN_STARTED);
     const before = m.policyPushes();
     h.stdin.write(SHIFT_TAB);
-    await waitFor(() => notices(m).length === 1);
-    expect(notices(m)).toEqual([MODE_CHANGE_RUNNING_NOTICE]);
+    await waitFor(() => m.announced.length === 1);
+    expect(m.announced).toEqual([MODE_CHANGE_RUNNING_NOTICE]);
+    expect(notices(m), 'no row in the transcript').toEqual([]);
     expect(m.store.getSnapshot().mode).toBe('ask');
     expect(m.policyPushes()).toBe(before);
   });

@@ -1,6 +1,7 @@
 import { resolve } from 'node:path';
 
 import { isProtectedPath } from '../engine/tool-host/fs.js';
+import type { DisplayPathRoots } from '../render/notation.js';
 
 /**
  * What the command card says about a command and which answers it offers ([ADR-0118](../../../../docs/decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md)
@@ -211,8 +212,13 @@ export interface CommandCardFacts {
   readonly runsCode: boolean;
   /** An argument names a protected path: its card says so and the only answer that approves is Once. */
   readonly protectedPath: boolean;
-  /** The directory the command will run in: the host's, never the model's. */
+  /** The directory the command will run in: the host's, never the model's. Always the absolute path: the protected-path check reads it. */
   readonly cwd: string;
+  /**
+   * What the card shortens {@link CommandCardFacts.cwd} against when it names it (ADR-0145 §8: project-relative or from `~`, never absolute unless
+   * it is outside both): the project directory and the operator's home. Absent ⇒ the card draws `cwd` as it is.
+   */
+  readonly paths?: DisplayPathRoots | undefined;
   readonly offers: CommandOffers;
 }
 
@@ -227,6 +233,8 @@ export interface CommandFactsInput {
   /** The mode is `auto`, the only one that consults a grant: an outdated grant is only a reason the card asks there. */
   readonly autoAsks?: boolean;
   readonly cwd: string;
+  /** The roots the card shortens `cwd` against; absent ⇒ the card draws it as it is. */
+  readonly paths?: DisplayPathRoots | undefined;
   /** Whether the host offers a session answer at all (a delivered saved result, a blank preview or the headless path do not). */
   readonly sessionOffered: boolean;
   /** Whether the grants store can write a grant right now (it is usable, has room, and is not a headless surface's). */
@@ -249,6 +257,7 @@ export function commandCardFacts(input: CommandFactsInput): CommandCardFacts {
     runsCode,
     protectedPath,
     cwd: input.cwd,
+    ...(input.paths === undefined ? {} : { paths: input.paths }),
     offers: {
       session: input.sessionOffered && !protectedPath,
       // Remember is for a command no grant of the person's covers: an unremembered one (a listed command included: the allowlist is the

@@ -9,6 +9,7 @@ import {
   HIDE_CURSOR,
   SHOW_CURSOR,
   createAltScreenController,
+  homeAfterInkEnter,
 } from './alt-screen.js';
 
 const ENTER_SEQ = ENTER_ALT_SCREEN + HIDE_CURSOR + ENABLE_MOUSE;
@@ -77,9 +78,30 @@ describe('createAltScreenController (2.6.F Step 4b-3)', () => {
     expect(out).toHaveLength(afterRestore);
   });
 
+  it('the first frame starts at the top of the alternate screen: the enter homes the cursor and clears, before the cursor is hidden and the mouse armed', () => {
+    // xterm's 1049 leaves the cursor at the shell's row, so with twelve shell lines above the launch a frame drawn after a bare 1049h started at
+    // row twelve and snapped up at the next full redraw (a popup opening or closing).
+    const { write, out } = sink();
+    createAltScreenController({ write, active: true }).enter();
+    expect(out).toEqual(['\x1b[?1049h\x1b[H\x1b[J\x1b[?25l\x1b[?1002h\x1b[?1006h']);
+    const plain = sink();
+    createAltScreenController({ write: plain.write, active: true, mouse: false }).enter();
+    expect(plain.out).toEqual(['\x1b[?1049h\x1b[H\x1b[J\x1b[?25l']);
+  });
+
+  it('the reclaim after a job-control stop enters the same way: the cursor home and the clear follow the 1049h', () => {
+    const { write, out } = sink();
+    const c = createAltScreenController({ write, active: true });
+    c.enter();
+    expect(c.releaseForSuspend()).toBe(true);
+    c.reclaimAfterSuspend();
+    expect(out.at(-1)).toBe('\x1b[?1049h\x1b[H\x1b[J\x1b[?25l\x1b[?1002h\x1b[?1006h');
+  });
+
   it('the byte sequences match ink 7 exactly (so the hoisted toggle is indistinguishable from ink)', () => {
-    // DECSET/DECRST 1049 (alt buffer), DECTCEM 25 (cursor), CUP+ED (clear) — verbatim from ink/build.
-    expect(ENTER_ALT_SCREEN).toBe('\x1b[?1049h');
+    // DECSET/DECRST 1049 (alt buffer), DECTCEM 25 (cursor), CUP+ED (clear) — verbatim from ink/build, except the ENTER: ink's is the
+    // 1049h alone, and the hoisted toggle follows it with the cursor home and the clear (see the first-frame test below).
+    expect(ENTER_ALT_SCREEN).toBe('\x1b[?1049h\x1b[H\x1b[J');
     expect(EXIT_ALT_SCREEN).toBe('\x1b[?1049l');
     expect(HIDE_CURSOR).toBe('\x1b[?25l');
     expect(SHOW_CURSOR).toBe('\x1b[?25h');
@@ -283,5 +305,139 @@ describe('createAltScreenController — reversible job-control release', () => {
 
     expect(out).toEqual([ENTER_SEQ, EXIT_SEQ]);
     expect(alt.isEntered()).toBe(false);
+  });
+});
+
+/**
+ * The bare Home mounts ink with its own `alternateScreen` option, and ink writes the enter without a cursor home (xterm's 1049 leaves the cursor
+ * where the shell had it): the Home's first frame started at the shell's row. The Home gives ink its stdout through this wrapper.
+ */
+describe('homeAfterInkEnter', () => {
+  const INK_ENTER = '\x1b[?1049h';
+  /** A stream with a field that only it can read (`#cols`) and a method that gives back its own `this`: a method run on the wrapper instead of the stream is seen at once. */
+  class FakeStream {
+    readonly written: unknown[][] = [];
+    readonly columns = 97;
+    readonly isTTY = true;
+    readonly #cols = 97;
+    write(chunk: unknown, ...rest: unknown[]): boolean {
+      this.written.push([chunk, ...rest]);
+      return true;
+    }
+    /** A method that needs its own `this`: the wrapper must bind it to the stream, not to the proxy. */
+    self(): unknown {
+      return this;
+    }
+    /** Reads a `#private` field, which only the stream itself has (a proxy as `this` throws). */
+    privateColumns(): number {
+      return this.#cols;
+    }
+  }
+  const fakeStream = (): { readonly stream: FakeStream; readonly written: unknown[][] } => {
+    const stream = new FakeStream();
+    return { stream, written: stream.written };
+  };
+
+  it("writes ink's enter as the full enter (the cursor home and the clear follow it)", () => {
+    const { stream, written } = fakeStream();
+    homeAfterInkEnter(stream).write(INK_ENTER);
+    expect(written).toEqual([[ENTER_ALT_SCREEN]]);
+    expect(ENTER_ALT_SCREEN).toBe(INK_ENTER + CLEAR_ALT_SCREEN);
+  });
+
+  it('keeps the other arguments of the write (encoding, callback) and every other write untouched', () => {
+    const { stream, written } = fakeStream();
+    const callback = (): void => undefined;
+    const wrapped = homeAfterInkEnter(stream);
+    wrapped.write(INK_ENTER, 'utf8', callback);
+    wrapped.write('a frame');
+    wrapped.write(`${INK_ENTER}x`);
+    wrapped.write(EXIT_ALT_SCREEN);
+    expect(written).toEqual([
+      [ENTER_ALT_SCREEN, 'utf8', callback],
+      ['a frame'],
+      [`${INK_ENTER}x`],
+      [EXIT_ALT_SCREEN],
+    ]);
+  });
+
+  it("is the stream otherwise: properties are the stream's, a method runs on the stream", () => {
+    const { stream } = fakeStream();
+    const wrapped = homeAfterInkEnter(stream);
+    expect(wrapped.columns).toBe(97);
+    expect(wrapped.isTTY).toBe(true);
+    // The method runs on the stream itself: it sees its own `this` (not the proxy) and its own `#private` field.
+    expect(wrapped.self()).toBe(stream);
+    expect(wrapped.privateColumns()).toBe(97);
+  });
+
+  it('is one wrapper per stream: the same stream gives the same wrapper, another stream another one', () => {
+    const { stream } = fakeStream();
+    const other = fakeStream().stream;
+    const first = homeAfterInkEnter(stream);
+    expect(homeAfterInkEnter(stream)).toBe(first);
+    expect(homeAfterInkEnter(other)).not.toBe(first);
+    // The wrapper that is given back again still writes the full enter.
+    homeAfterInkEnter(stream).write(INK_ENTER);
+    expect(stream.written).toEqual([[ENTER_ALT_SCREEN]]);
+  });
+
+  it("keeps ink's one renderer per stdout: two mounts over the same stream share the first, so the enter is written once", async () => {
+    const { render, Text } = await import('ink');
+    const { createElement } = await import('react');
+    const chunks: string[] = [];
+    const stdout = Object.assign(new (await import('node:events')).EventEmitter(), {
+      isTTY: true,
+      columns: 80,
+      rows: 24,
+      write(chunk: unknown): boolean {
+        chunks.push(String(chunk));
+        return true;
+      },
+    });
+    const options = {
+      alternateScreen: true,
+      interactive: true,
+      patchConsole: false,
+      exitOnCtrlC: false,
+    };
+    const first = render(createElement(Text, null, 'one'), {
+      stdout: homeAfterInkEnter(stdout) as unknown as NodeJS.WriteStream,
+      ...options,
+    });
+    const second = render(createElement(Text, null, 'two'), {
+      stdout: homeAfterInkEnter(stdout) as unknown as NodeJS.WriteStream,
+      ...options,
+    });
+    first.unmount();
+    second.unmount();
+    expect(chunks.filter((chunk) => chunk === ENTER_ALT_SCREEN)).toHaveLength(1);
+  });
+
+  it("takes ink's real enter: a mounted ink with the alternate screen writes the home and the clear right after it", async () => {
+    const { render, Text } = await import('ink');
+    const { createElement } = await import('react');
+    const chunks: string[] = [];
+    const stdout = Object.assign(new (await import('node:events')).EventEmitter(), {
+      isTTY: true,
+      columns: 80,
+      rows: 24,
+      write(chunk: unknown): boolean {
+        chunks.push(String(chunk));
+        return true;
+      },
+    });
+    // `homeAfterInkEnter` is typed over any object; ink takes the stream it is given.
+    const instance = render(createElement(Text, null, 'hello'), {
+      stdout: homeAfterInkEnter(stdout) as unknown as NodeJS.WriteStream,
+      alternateScreen: true,
+      interactive: true,
+      patchConsole: false,
+      exitOnCtrlC: false,
+    });
+    instance.unmount();
+    const all = chunks.join('');
+    expect(all).toContain(ENTER_ALT_SCREEN);
+    expect(all.indexOf(ENTER_ALT_SCREEN)).toBeLessThan(all.indexOf('hello'));
   });
 });

@@ -22,6 +22,7 @@ import {
 import { stripTerminalControls } from '@relavium/shared/terminal-safe';
 
 import { isInterruptKey } from './interrupt-keymap.js';
+import { keyToken } from './legend.js';
 
 import {
   applyEditorAction,
@@ -69,7 +70,7 @@ export type QuestionKeyAction =
 export const QUESTION_SETTLE_MS = 250;
 
 const HINT_NOTHING_CHOSEN = 'Pick at least one option, or type your own answer.';
-const HINT_SAVED = 'Saved. Press Enter to continue, or keep picking.';
+const HINT_SAVED = `Saved. Press ${keyToken('Enter')} to continue, or keep picking.`;
 const HINT_LIMIT = `Limit reached: ${String(ASK_USER_BOUNDS.ownTextCodePoints)} characters.`;
 
 export function initialQuestionCard(request: AskUserRequest): QuestionCardState {

@@ -1,9 +1,29 @@
 import type { ToolPreview } from '@relavium/core';
 
 import type { CommandCardFacts } from '../../chat/command-facts.js';
+import type { DisplayPathRoots } from '../notation.js';
+import { glyph } from './glyphs.js';
+import { frameRows } from './home-layout.js';
+import {
+  exitKey,
+  keyToken,
+  legendItems,
+  waitMark,
+  type LegendItem,
+  type LegendRender,
+} from './legend.js';
+import { exitRow, sentenceRow } from './legend-row.js';
+import {
+  keepEnd,
+  namedProjectRoot,
+  PROJECT_ROOT_WORDS,
+  placeForDisplay,
+  placeLabel,
+} from './place-label.js';
 import { sanitizeInline } from '../sanitize.js';
-import type { ReviewDocument } from './tool-review-projection.js';
-import { displayWidth } from './viewport.js';
+import { escapeScreenText } from './screen-text.js';
+import { escapeReviewText, type ReviewDocument } from './tool-review-projection.js';
+import { displayWidth, measuredClusters } from './viewport.js';
 
 /**
  * The docked approval card's wording and arithmetic ([ADR-0129](../../../../../docs/decisions/0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md)).
@@ -16,8 +36,26 @@ import { displayWidth } from './viewport.js';
 
 /** The transcript rows that stay on screen above the card, whatever the terminal size. */
 export const CARD_MIN_TRANSCRIPT_ROWS = 8;
-/** Rows the live region needs besides the card (the busy line, the footer, the hint). */
-const LIVE_REGION_ROWS = 4;
+/**
+ * The chat header's rows (the wordmark and its blank row), which the full-screen frame draws above the transcript whatever is docked. It is
+ * `CHAT_HEADER_ROWS` of `chat-layout.ts` (a test pins the two equal): that module cannot be imported here without an import cycle through the
+ * run card's guards.
+ */
+export const CARD_FRAME_HEADER_ROWS = 2;
+/**
+ * The row the retired busy line gives back ([ADR-0147](../../../../../docs/decisions/0147-a-system-started-question-is-a-sheet-with-a-frame-and-a-wait-clock.md)
+ * §2): a sheet does not grow into it, the conversation keeps it, so a 12-row sheet at 80×24 leaves nine transcript rows, not eight.
+ */
+export const CARD_BUSY_ROW_RETURNED = 1;
+
+/**
+ * The rows a frame of `terminalRows` spends besides the transcript and a docked sheet: the terminal row the full-screen frame leaves empty
+ * ({@link frameRows}) and the header. The sheet takes the whole prompt block's place (ADR-0147 §1: the status line and the hint are not drawn
+ * while it is open), so nothing else is drawn beside it.
+ */
+function cardFrameRows(terminalRows: number): number {
+  return terminalRows - frameRows(terminalRows) + CARD_FRAME_HEADER_ROWS;
+}
 /** The most body rows the card ever shows: a longer change is cut with an exact count. */
 export const CARD_MAX_BODY_ROWS = 60;
 /** The answer-key rows and the stop hint: always these two rows, so the budget never depends on the labels. */
@@ -27,17 +65,30 @@ export const CARD_RULE_ROWS = 1;
 
 /**
  * The most rows the docked card may take: three fifths of the terminal, and never so many that fewer than
- * {@link CARD_MIN_TRANSCRIPT_ROWS} transcript rows remain. At the 80×24 floor that is twelve rows, so a short
- * change is shown whole on a larger terminal while the conversation stays in view on a small one.
+ * {@link CARD_MIN_TRANSCRIPT_ROWS} transcript rows remain beside the frame's own rows ({@link cardFrameRows}) and the row the busy line gave
+ * back ({@link CARD_BUSY_ROW_RETURNED}). At the 80×24 floor that is twelve rows and nine transcript rows (a 23-row frame: the header, nine
+ * transcript rows and a 12-row sheet), so a short change is shown whole on a larger terminal while the conversation stays in view on a small one.
  */
 export function cardRowBudget(terminalRows: number): number {
   return Math.max(
     8,
     Math.min(
       Math.floor((terminalRows * 3) / 5),
-      terminalRows - CARD_MIN_TRANSCRIPT_ROWS - LIVE_REGION_ROWS,
+      terminalRows -
+        CARD_MIN_TRANSCRIPT_ROWS -
+        cardFrameRows(terminalRows) -
+        CARD_BUSY_ROW_RETURNED,
     ),
   );
+}
+
+/**
+ * The rows the conversation keeps above the largest sheet on a terminal of `terminalRows` (nine at 80×24 and at 100×30): what the frame leaves
+ * once its own rows ({@link cardFrameRows}) and the sheet's budget are taken. The in-flight turn drawn above a docked sheet is bounded by it, so
+ * the sheet keeps its rows whatever the turn has drawn.
+ */
+export function sheetTranscriptRows(terminalRows: number): number {
+  return Math.max(0, terminalRows - cardFrameRows(terminalRows) - cardRowBudget(terminalRows));
 }
 
 /** Every word the card's title can open with, so the room it takes is derived from the words, not assumed. */
@@ -81,11 +132,11 @@ export function cardVerb(
   }
 }
 
-/** `+17 −0 · 468 bytes` for a change; empty for a preview that carries no diff. */
+/** `+17 -0 · 468 bytes` for a change; empty for a preview that carries no diff. */
 export function cardStats(document: ReviewDocument | undefined): string {
   const diff = document?.preview.diff;
   if (document === undefined || diff === undefined) return '';
-  return `+${diff.stats.addedLines} −${diff.stats.removedLines} · ${document.changedBytes} bytes`;
+  return `+${diff.stats.addedLines} -${diff.stats.removedLines} · ${document.changedBytes} bytes`;
 }
 
 /** How a side's line-ending convention reads in a warning. */
@@ -146,20 +197,8 @@ export interface CardWarningInput {
   readonly commandFacts?: CommandCardFacts | undefined;
   /** The denial reason box is open: a command's plain rows (standing, directory) give way to it; its warnings stay. */
   readonly denialOpen?: boolean | undefined;
-}
-
-/** `text` cut to `width` display columns from the FRONT, keeping its end (the part of a path that names where it is). */
-function keepEnd(text: string, width: number): string {
-  if (displayWidth(text) <= width) return text;
-  const kept: string[] = [];
-  let used = 1; // the ellipsis
-  for (const char of [...text].reverse()) {
-    const next = displayWidth(char);
-    if (used + next > width) break;
-    kept.unshift(char);
-    used += next;
-  }
-  return `\u2026${kept.join('')}`;
+  /** What the command's directory is shortened against (the project and the home); absent ⇒ the roots the facts carry (`facts.paths`), and with none, as the host gave it. */
+  readonly paths?: DisplayPathRoots | undefined;
 }
 
 /** The standing row of a command card: where the command stands before the person answers. */
@@ -182,31 +221,64 @@ export function commandStandingRow(facts: CommandCardFacts): string {
 
 /**
  * The rows a command card adds (ADR-0118 §1), as plain text, wrapped by the caller: the standing, the directory the host pins,
- * and the two warnings, each worded as a fact and neither ever refusing a command. The directory is the host's own path, but it is
- * still shown through the one-line sanitizer.
+ * and the two warnings, each worded as a fact and neither ever refusing a command. The directory is the host's own path, shortened
+ * against `paths` (default: the roots the facts carry) first (ADR-0145 §8: the project's own directory reads `. (project root: <folder>)`, one inside it from the project, one inside the
+ * home from `~`, and one outside both stays whole), and only then sent through the one-line sanitizer and bounded to the room, keeping its end.
  */
+/**
+ * A directory as the command card draws it (MVP-11 unit 9, review round 6, R6-S-2): through the card's own one-to-one escape (the classes a terminal
+ * may draw wider than the layout counts written as `<U+XXXX>`, as the approval card writes a path), and a cluster still wider than the row written as
+ * the tokens of its code points, never `?`: two directories that differ only inside one long cluster must not look the same on a consent card.
+ */
+function cardPlace(bound: number): (text: string) => string {
+  return (text) => {
+    let out = '';
+    for (const { segment, width } of measuredClusters(
+      escapeReviewText(sanitizeInline(text)).join(''),
+    ))
+      out += width > bound ? escapeScreenText(segment, () => true) : segment;
+    return out;
+  };
+}
+
 export function commandFactRows(
   facts: CommandCardFacts,
   columns = 76,
   compact = false,
+  paths: DisplayPathRoots | undefined = facts.paths,
 ): readonly string[] {
   const label = 'Runs in: ';
   const rows: string[] = [];
   // While the reason box is open the card has no room to spare: the warnings stay, the plain rows go (the box is for typing).
   if (!compact) {
     const standing = commandStandingRow(facts);
-    const directory = sanitizeInline(facts.cwd) || '(the workspace)';
-    // One row when the directory still has room to say where it is (it keeps its END), else two: a row saved is a row of the command.
+    // Shortened, made safe, guarded and bounded by the one helper (keeping the END of the path); an empty directory is the workspace. The
+    // project's own directory names its folder (`. (project root: app)`): a resumed chat's project is the session's directory, which is
+    // not always the one the person launched from, so "the project root" alone would not say where the command runs.
+    const inProjectRoot =
+      paths !== undefined && placeLabel(facts.cwd, paths) === PROJECT_ROOT_WORDS;
+    const directory = (bound: number): string =>
+      keepEnd(
+        (inProjectRoot
+          ? namedProjectRoot(paths, bound, cardPlace(bound))
+          : placeForDisplay(facts.cwd, paths, bound, cardPlace(bound))) || '(the workspace)',
+        bound,
+      );
+    // One row when the directory still has room to say where it is, else two: a row saved is a row of the command.
     const separator = ' \u00b7 ';
     const room = columns - displayWidth(standing) - separator.length - label.length;
-    if (room >= 24) rows.push(`${standing}${separator}${label}${keepEnd(directory, room)}`);
-    else rows.push(standing, `${label}${keepEnd(directory, Math.max(8, columns - label.length))}`);
+    if (room >= 24) rows.push(`${standing}${separator}${label}${directory(room)}`);
+    else rows.push(standing, `${label}${directory(Math.max(8, columns - label.length))}`);
   }
   // One row each: the key that is not offered is already missing from the legend, so these say why in few words.
   if (facts.runsCode)
-    rows.push('\u26a0 Runs code: a shell, an inline script or a wrapper. Remember is not offered.');
+    rows.push(
+      `${glyph('warning')} Runs code: a shell, an inline script or a wrapper. Remember is not offered.`,
+    );
   if (facts.protectedPath)
-    rows.push('\u26a0 Names a protected path (its output goes to the model). Allow once only.');
+    rows.push(
+      `${glyph('warning')} Names a protected path (its output goes to the model). Allow once only.`,
+    );
   return rows;
 }
 
@@ -237,7 +309,14 @@ export function cardWarnings(input: CardWarningInput): readonly string[] {
   const warnings: string[] =
     input.commandFacts === undefined
       ? []
-      : [...commandFactRows(input.commandFacts, input.columns, input.denialOpen === true)];
+      : [
+          ...commandFactRows(
+            input.commandFacts,
+            input.columns,
+            input.denialOpen === true,
+            input.paths,
+          ),
+        ];
   const factRows = warnings.length;
   // The lock sentence is the instruction for getting Allow back, so it is only true until the person has
   // inspected: afterwards the key rows offer Allow, and a warning that still says "locked" would contradict them
@@ -245,8 +324,8 @@ export function cardWarnings(input: CardWarningInput): readonly string[] {
   if (input.shortenedTarget) {
     warnings.push(
       input.inspected
-        ? `\u26a0 Target shortened \u2014 ${input.targetHiddenBytes} bytes omitted.`
-        : `\u26a0 Target shortened \u2014 ${input.targetHiddenBytes} bytes omitted. Press [v] to read all of it; Allow stays locked until you do.`,
+        ? `${glyph('warning')} Target shortened \u2014 ${input.targetHiddenBytes} bytes omitted.`
+        : `${glyph('warning')} Target shortened \u2014 ${input.targetHiddenBytes} bytes omitted. Press ${keyToken('v')} to read all of it; Allow stays locked until you do.`,
     );
   }
   if (document !== undefined && document.required.length > 0) {
@@ -255,15 +334,15 @@ export function cardWarnings(input: CardWarningInput): readonly string[] {
     const values = `${count} masked value${count === 1 ? '' : 's'} in this ${input.commandFacts === undefined ? 'change' : 'command'}.`;
     warnings.push(
       input.inspected
-        ? `\u26a0 ${values}`
-        : `\u26a0 ${values} Press [v], then [r] to inspect ${count === 1 ? 'it' : 'them'}; Allow stays locked until you do.`,
+        ? `${glyph('warning')} ${values}`
+        : `${glyph('warning')} ${values} Press ${keyToken('v')}, then ${keyToken('r')} to inspect ${count === 1 ? 'it' : 'them'}; Allow stays locked until you do.`,
     );
   }
   // A change the body cannot reach is the one thing the person must not approve unseen, so it is named — with the
   // way to read it — whenever it is true. (The card also offers no Allow-all then: `cardKeyRows`' caller.)
   if (input.changesNotShown > 0) {
     warnings.push(
-      `\u26a0 ${input.changesNotShown} changed line${input.changesNotShown === 1 ? '' : 's'} not shown \u2014 press [v] for the full diff.`,
+      `${glyph('warning')} ${input.changesNotShown} changed line${input.changesNotShown === 1 ? '' : 's'} not shown \u2014 press ${keyToken('v')} for the full diff.`,
     );
   }
   const linesNotShown = input.linesNotShown ?? 0;
@@ -273,18 +352,20 @@ export function cardWarnings(input: CardWarningInput): readonly string[] {
     const verb = linesNotShown === 1 ? 'is' : 'are';
     warnings.push(
       input.commandFacts === undefined
-        ? `\u26a0 ${linesNotShown} line${plural} of this call ${verb} not shown \u2014 press [v] for the full view.`
-        : `\u26a0 ${linesNotShown} row${plural} of this command ${verb} not shown \u2014 press [v]${commandRowsOfferNote(input.commandFacts.offers)}`,
+        ? `${glyph('warning')} ${linesNotShown} line${plural} of this call ${verb} not shown \u2014 press ${keyToken('v')} for the full view.`
+        : `${glyph('warning')} ${linesNotShown} row${plural} of this command ${verb} not shown \u2014 press ${keyToken('v')}${commandRowsOfferNote(input.commandFacts.offers)}`,
     );
   }
   const diff = document?.preview.diff;
   if (diff !== undefined) {
     const endings = endingsWarning(diff);
-    if (endings !== undefined) warnings.push(`\u26a0 Line endings: ${endings}.`);
+    if (endings !== undefined) warnings.push(`${glyph('warning')} Line endings: ${endings}.`);
   }
   // The generic lock sentence only when nothing above already explained the lock (a command's own fact rows never do).
   if (warnings.length === factRows && !input.inspected) {
-    warnings.push('\u26a0 Allow is locked until the required content has been inspected ([v]).');
+    warnings.push(
+      `${glyph('warning')} Allow is locked until the required content has been inspected (${keyToken('v')}).`,
+    );
   }
   return warnings.flatMap((warning) => wrapWords(warning, input.columns));
 }
@@ -300,8 +381,7 @@ export const CARD_TYPEAHEAD_NOTE =
 export const CARD_LOCKOUT_NOTE =
   'This card opened right after your last answer — wait, then press again.';
 /** An Enter that came before the question could be read, or after it had lapsed: the question is gone and nothing was granted. */
-export const CARD_ENTER_NOTE =
-  'Too early or too late for Enter — nothing was allowed. Press the key again.';
+export const CARD_ENTER_NOTE = `Too early or too late for ${keyToken('Enter')} — nothing was allowed. Press the key again.`;
 
 /** How a tool's `[Ctrl+G]` scope reads: what "always" would cover, in the person's words. */
 export function cardScopePhrase(toolId: string): string {
@@ -326,6 +406,13 @@ export interface CardKeyInput {
   readonly remember?: boolean;
   /** The first `Ctrl+O` was pressed and the card is waiting for ENTER. */
   readonly confirmRemember?: boolean;
+  /**
+   * The answer lockout holds the grants now (the store's `answerLock`, a display value): each reads dim with `(wait)` (ADR-0145 §3) until it
+   * opens. Absent: free.
+   */
+  readonly locked?: boolean;
+  /** The columns the grants row has, for the fit rule of a row that `(wait)` makes longer. Absent: not fitted. */
+  readonly columns?: number;
 }
 
 /** The sentence that ends a command card's "rows not shown" warning: what stays unavailable while a row is off screen. */
@@ -335,53 +422,103 @@ function commandRowsOfferNote(offers: CommandCardFacts['offers']): string {
     : '.';
 }
 
-/** The first key row once the call has been inspected: Allow, and the grants the card offers beside it. */
-function allowRow(input: CardKeyInput, session: string): string {
-  const once = input.command === true ? ' once' : '';
-  const sessionKey = input.cacheable ? session : '';
-  const remember = input.remember === true ? '   [Ctrl+O] Allow + remember' : '';
-  return `[Ctrl+Y] Allow${once}${sessionKey}${remember}`;
-}
+/** What the key that stops a turn does, said the same on every card that has one. */
+const STOPS_THE_TURN = 'stops the turn';
 
-/** The first key row while Allow is locked: what the person has to do first. */
-function lockedAllowRow(command: boolean): string {
-  return command
-    ? '(Allow is locked until you read the whole command)'
-    : '(Allow is locked until you inspect the change)';
+/** The question a command's wider grant asks, second row: what Enter does, what every other key does, and the stop key. */
+const COMMAND_CONFIRM_ITEMS: readonly LegendItem[] = [
+  { keys: 'Enter', verb: 'confirm' },
+  { text: 'any other key cancels, allowing nothing' },
+];
+
+/** The grants the card offers once the call has been inspected: Allow, and the grants beside it, each as the answer it is. */
+function allowItems(input: CardKeyInput): readonly LegendItem[] {
+  const command = input.command === true;
+  const items: LegendItem[] = [
+    { keys: 'Ctrl+Y', verb: command ? 'Allow once' : 'Allow', role: 'ok' },
+  ];
+  if (input.cacheable)
+    items.push({
+      keys: 'Ctrl+G',
+      verb: command ? 'Allow this session' : `Allow all ${input.scope} this session`,
+      role: 'ok',
+    });
+  if (input.remember === true) items.push({ keys: 'Ctrl+O', verb: 'Allow + remember', role: 'ok' });
+  return items;
 }
 
 /**
- * The two key rows: the grants, then the refusals and the rest. Every answer is a Ctrl chord (see `reviewAnswerKey`), and the
- * legend spells them out; the rows are laid out so that, at 80 columns, the longest scope phrase still leaves both rows whole
- * and Deny is never the part a narrow terminal cuts. Allow is not offered while it is locked. While the session-wide grant
- * waits for its confirmation both rows say what the next key does — one question, two rows, so the card keeps its two key
- * rows (and the layout its budget) and no scope phrase can push "any other key cancels" off the end of a row. The
- * confirmation is ENTER, never a second `Ctrl+G`: the same key twice is what a held key produces.
+ * The grants as the row draws them: each marked `(wait)` while the lockout holds it, and, when the marks make the row wider than `columns`, the
+ * wider grants dropped from the end until it fits (the fit rule of unit 6: the part that waits keeps the key that matters most; `Allow` is never
+ * dropped). Once the lock opens the row is whole again.
  */
-export function cardKeyRows(input: CardKeyInput): readonly [string, string] {
+function grantItems(input: CardKeyInput): readonly LegendItem[] {
+  const locked = input.locked === true;
+  const items = allowItems(input).map((item) => ({ ...item, ...waitMark(locked) }));
+  if (!locked || input.columns === undefined) return items;
+  const kept = [...items];
+  while (kept.length > 1 && displayWidth(legendItems(kept).text) > input.columns) kept.pop();
+  return kept;
+}
+
+/** The first key row while Allow is locked: what the person has to do first. */
+function lockedAllowRow(command: boolean): LegendRender {
+  return sentenceRow(
+    command
+      ? '(Allow is locked until you read the whole command)'
+      : '(Allow is locked until you inspect the change)',
+  );
+}
+
+/**
+ * The two key rows, as rows a view can colour by role ({@link cardKeyRows} is their text): the grants, then the refusals and the key that
+ * leaves. Every answer is a Ctrl chord (see `reviewAnswerKey`), and the legend spells them out; the rows are laid out so that, at 80
+ * columns, the longest scope phrase still leaves both rows whole and Deny is never the part a narrow terminal cuts. Allow is not offered
+ * while it is locked. While the session-wide grant waits for its confirmation both rows say what the next key does — one question, two
+ * rows, so the card keeps its two key rows (and the layout its budget) and no scope phrase can push "any other key cancels" off the end of
+ * a row. The confirmation is ENTER, never a second `Ctrl+G`: the same key twice is what a held key produces.
+ */
+export function cardKeyLegend(input: CardKeyInput): readonly [LegendRender, LegendRender] {
+  const stop = exitKey.decide(STOPS_THE_TURN);
+  const enter = keyToken('Enter');
   if (input.confirmRemember === true)
     return [
-      'Press Enter to allow this exact command now and remember it for this project',
-      'Enter confirms \u00b7 any other key cancels, allowing nothing \u00b7 Esc stops the turn',
+      sentenceRow(
+        `Press ${enter} to allow this exact command now and remember it for this project`,
+      ),
+      exitRow(COMMAND_CONFIRM_ITEMS, stop),
     ];
   if (input.confirmAlways === true)
     return [
-      input.command === true
-        ? 'Press Enter to allow this exact command for this session'
-        : `Press Enter to allow all ${input.scope} this session`,
-      input.command === true
-        ? 'Enter confirms \u00b7 any other key cancels, allowing nothing \u00b7 Esc stops the turn'
-        : 'Any other key cancels \u00b7 Esc stops the turn',
+      sentenceRow(
+        input.command === true
+          ? `Press ${enter} to allow this exact command for this session`
+          : `Press ${enter} to allow all ${input.scope} this session`,
+      ),
+      exitRow(
+        input.command === true ? COMMAND_CONFIRM_ITEMS : [{ text: 'any other key cancels' }],
+        stop,
+      ),
     ];
-  const session =
-    input.command === true
-      ? '   [Ctrl+G] Allow this session'
-      : `   [Ctrl+G] Allow all ${input.scope} this session`;
-  const grants = input.inspected
-    ? allowRow(input, session)
-    : lockedAllowRow(input.command === true);
-  const full = input.command === true ? 'Full view' : 'Full diff';
-  return [grants, `[Ctrl+N] Deny   [Ctrl+R] Deny + reason   [v] ${full}   Esc stops the turn`];
+  const command = input.command === true;
+  const grants = input.inspected ? legendItems(grantItems(input)) : lockedAllowRow(command);
+  return [
+    grants,
+    exitRow(
+      [
+        { keys: 'Ctrl+N', verb: 'Deny', role: 'danger' },
+        { keys: 'Ctrl+R', verb: 'Deny + reason' },
+        { keys: 'v', verb: command ? 'full view' : 'full diff' },
+      ],
+      stop,
+    ),
+  ];
+}
+
+/** The text of {@link cardKeyLegend}'s two rows. */
+export function cardKeyRows(input: CardKeyInput): readonly [string, string] {
+  const [grants, refusals] = cardKeyLegend(input);
+  return [grants.text, refusals.text];
 }
 
 /** Rows a denial-reason capture takes beyond the key rows it replaces (the disclosure above the input). */

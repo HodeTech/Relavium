@@ -35,7 +35,13 @@ const prompt: ApprovalPrompt = () => Promise.resolve({ outcome: 'approve', scope
 describe('makeChatModeEnv + applyChatMode', () => {
   it('derives the governed hide-set from the session tools and pushes the mapped policy on apply', () => {
     const { session, policies } = fakeSession();
-    const env = makeChatModeEnv({ session, tools: BUILTIN_TOOLS, workspaceDir: workspace, prompt });
+    const env = makeChatModeEnv({
+      session,
+      tools: BUILTIN_TOOLS,
+      workspaceDir: workspace,
+      prompt,
+      commandPaths: undefined,
+    });
     applyChatMode(env, 'plan');
     expect(policies).toHaveLength(1);
     const policy = policies[0];
@@ -46,7 +52,13 @@ describe('makeChatModeEnv + applyChatMode', () => {
 
   it('ask advertises every granted tool — the person decides each call (ADR-0130)', () => {
     const { session, policies } = fakeSession();
-    const env = makeChatModeEnv({ session, tools: BUILTIN_TOOLS, workspaceDir: workspace, prompt });
+    const env = makeChatModeEnv({
+      session,
+      tools: BUILTIN_TOOLS,
+      workspaceDir: workspace,
+      prompt,
+      commandPaths: undefined,
+    });
     applyChatMode(env, 'ask');
     expect(policies[0]?.advertise).toBeUndefined();
     expect(policies[0]?.confirm).toBeDefined();
@@ -54,7 +66,13 @@ describe('makeChatModeEnv + applyChatMode', () => {
 
   it('applies a new policy on every mode change (accept-edits advertises all)', () => {
     const { session, policies } = fakeSession();
-    const env = makeChatModeEnv({ session, tools: BUILTIN_TOOLS, workspaceDir: workspace, prompt });
+    const env = makeChatModeEnv({
+      session,
+      tools: BUILTIN_TOOLS,
+      workspaceDir: workspace,
+      prompt,
+      commandPaths: undefined,
+    });
     applyChatMode(env, 'ask');
     applyChatMode(env, 'accept-edits');
     expect(policies).toHaveLength(2);
@@ -64,7 +82,13 @@ describe('makeChatModeEnv + applyChatMode', () => {
 
   it('shares ONE cache across mode changes — an "always" grant persists across re-applies', () => {
     const { session } = fakeSession();
-    const env = makeChatModeEnv({ session, tools: BUILTIN_TOOLS, workspaceDir: workspace, prompt });
+    const env = makeChatModeEnv({
+      session,
+      tools: BUILTIN_TOOLS,
+      workspaceDir: workspace,
+      prompt,
+      commandPaths: undefined,
+    });
     applyChatMode(env, 'accept-edits');
     env.cache.rememberAlways('write_file');
     applyChatMode(env, 'ask'); // switch mode — a fresh policy, but over the SAME env/cache
@@ -85,7 +109,13 @@ describe('makeChatModeEnv + applyChatMode', () => {
 
   it('isProtectedTarget resolves the TARGET path against the workspace and matches a protected target', () => {
     const { session } = fakeSession();
-    const env = makeChatModeEnv({ session, tools: BUILTIN_TOOLS, workspaceDir: workspace, prompt });
+    const env = makeChatModeEnv({
+      session,
+      tools: BUILTIN_TOOLS,
+      workspaceDir: workspace,
+      prompt,
+      commandPaths: undefined,
+    });
     expect(env.isProtectedTarget(req({ path: '.git/config' }))).toBe(true);
     expect(env.isProtectedTarget(req({ path: '.ssh/authorized_keys' }))).toBe(true);
     expect(env.isProtectedTarget(req({ path: 'notes.md' }))).toBe(false);
@@ -95,7 +125,13 @@ describe('makeChatModeEnv + applyChatMode', () => {
 
   it('classifies from the TARGET even when the redacted preview no longer looks protected (#91)', () => {
     const { session } = fakeSession();
-    const env = makeChatModeEnv({ session, tools: BUILTIN_TOOLS, workspaceDir: workspace, prompt });
+    const env = makeChatModeEnv({
+      session,
+      tools: BUILTIN_TOOLS,
+      workspaceDir: workspace,
+      prompt,
+      commandPaths: undefined,
+    });
     // Exactly the collapse a whole-string scrub produces on this path: the display copy has lost its `.ssh`
     // segment entirely. Reading `preview` here would return false and silently auto-approve; reading `target`
     // — which is what the classifier does — still sees the real path.
@@ -113,6 +149,7 @@ describe('makeChatModeEnv + applyChatMode', () => {
     const { session, policies } = fakeSession();
     const promptSpy = vi.fn<ApprovalPrompt>(() => Promise.resolve({ outcome: 'reject' }));
     const env = makeChatModeEnv({
+      commandPaths: undefined,
       session,
       tools: BUILTIN_TOOLS,
       workspaceDir: workspace,

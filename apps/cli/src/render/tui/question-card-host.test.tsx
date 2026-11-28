@@ -65,15 +65,15 @@ function fixture(
     teardown: async () => {},
   };
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => Promise.resolve(session),
     homeStore: {
       read: () => ({
-        attention: { gates: [], failedRuns: [] },
+        failedRuns: [],
         recentSessions: [],
         recentRuns: [],
         recentAgents: [],
-        unreadableRunIds: [],
+        unreadableRuns: [],
+        totals: { attention: 0, sessions: 0, runs: 0 },
         isEmpty: true,
       }),
     },
@@ -167,11 +167,11 @@ describe.each(['chat', 'home'] as const)('the docked question card %s (ADR-0132)
     expect(frame).toContain('EARLIER-CONVERSATION-LINE');
     expect(frame).toContain('not an approval');
     expect(frame).toContain('Which file should I change?');
-    expect(frame).toContain('\u203a 1 ( ) alpha.ts');
+    expect(frame).toContain('> 1 ( ) alpha.ts');
     expect(frame).toContain('2 ( ) beta.ts');
-    expect(frame).toContain('\u270e Type your own answer');
+    expect(frame).toContain('e Type your own answer');
     expect(frame).toContain('The first file'); // the highlighted option's description
-    expect(frame).toContain('Esc or Ctrl+C stops the turn');
+    expect(frame).toContain('Esc / [Ctrl+C] stops the turn');
     expect(frame).not.toMatch(/Approval needed|\[y\]|\[a\]|\[n\]/u);
     f.input.push('2');
     expect(await answer).toEqual({ kind: 'answered', answers: [{ selected: ['beta.ts'] }] });
@@ -255,7 +255,7 @@ describe.each(['chat', 'home'] as const)('the docked question card %s (ADR-0132)
     await vi.waitFor(() =>
       expect(f.store.getSnapshot().question?.field?.text).toBe('half a thought'),
     );
-    await vi.waitFor(() => expect(f.text()).toContain('Esc closes · Ctrl+C stops the turn'));
+    await vi.waitFor(() => expect(f.text()).toContain('[Ctrl+C] stops the turn · Esc close'));
     const mark = f.output.frames.length; // only frames drawn AFTER the Esc count for the legend that follows
     f.input.push('\u001b'); // Esc: one level back, not out
     await vi.waitFor(() => expect(f.store.getSnapshot().question?.field).toBeUndefined());
@@ -268,7 +268,7 @@ describe.each(['chat', 'home'] as const)('the docked question card %s (ADR-0132)
           // eslint-disable-next-line no-control-regex -- stripping terminal control sequences from a captured frame
           .map((frame) => frame.replace(/\u001b\[[0-9;?]*[A-Za-z]/gu, ''))
           .join(''),
-      ).toContain('Esc or Ctrl+C stops the turn'),
+      ).toContain('Esc / [Ctrl+C] stops the turn'),
     );
     f.input.push('1'); // and the card still answers
     expect(await answer).toEqual({ kind: 'answered', answers: [{ selected: ['alpha.ts'] }] });
@@ -281,7 +281,7 @@ describe.each(['chat', 'home'] as const)('the docked question card %s (ADR-0132)
     await f.ready();
     const answer = f.store.requestQuestion(QUESTION);
     await vi.waitFor(() => expect(f.text()).toContain('Terminal too small'));
-    expect(f.lastFrameWith('Terminal too small') ?? '').toMatch(/Esc or Ctrl\+C/u);
+    expect(f.lastFrameWith('Terminal too small') ?? '').toMatch(/Esc \/\s+\[Ctrl\+C\]/u);
     f.input.push('1');
     f.input.push('s');
     await settle();
@@ -354,7 +354,7 @@ describe.each(['chat', 'home'] as const)(
       const f = fixture(host, true, false);
       await f.ready();
       const answer = f.store.requestQuestion(THREE);
-      await vi.waitFor(() => expect(f.text()).toContain('One  [○] ○ ○ · Review'));
+      await vi.waitFor(() => expect(f.text()).toMatch(/One {2,}<o> o o · Review/u));
       await settle();
       // A held Enter repeats every few tens of milliseconds: only the first lands on a settled frame. (Keys pushed in the SAME
       // tick reach the card as one chunk, which it ignores whole, so they are spaced the way key repeat spaces them.)
@@ -438,22 +438,22 @@ describe.each(['chat', 'home'] as const)(
       const f = fixture(host, true, false);
       await f.ready();
       const answer = f.store.requestQuestion(THREE);
-      await vi.waitFor(() => expect(f.text()).toContain('Pick  [○] ○ ○ · Review'));
+      await vi.waitFor(() => expect(f.text()).toMatch(/Pick {2,}<o> o o · Review/u));
       await settle();
       await tap(f, RIGHT); // look at question 2 without answering question 1
       await vi.waitFor(() =>
-        expect(f.lastFrameWith('Which more?') ?? '').toContain('Also  ○ [○] ○ · Review'),
+        expect(f.lastFrameWith('Which more?') ?? '').toMatch(/Also {2,}o <o> o · Review/u),
       );
       await tap(f, RIGHT);
       await tap(f, RIGHT); // the Review tab
       await vi.waitFor(() =>
         expect(f.lastFrameWith('Review your answers') ?? '').toContain(
-          '○ 1 Pick → not answered yet',
+          'o 1 Pick → not answered yet',
         ),
       );
       await tap(f, '\r'); // Enter with holes: goes to the first unanswered question, with a note
       await vi.waitFor(() =>
-        expect(f.lastFrameWith('Question 1 is not answered yet.') ?? '').toContain('Pick  [○]'),
+        expect(f.lastFrameWith('Question 1 is not answered yet.') ?? '').toMatch(/Pick {2,}<o>/u),
       );
       await tap(f, '2'); // beta.ts → question 2
       await tap(f, '1'); // multi-select: tick "one" …
@@ -461,7 +461,7 @@ describe.each(['chat', 'home'] as const)(
       await tap(f, '1'); // yes → the Review tab, which does NOT send
       expect(f.store.getSnapshot().question?.index).toBe(3);
       await vi.waitFor(() =>
-        expect(f.lastFrameWith('Review your answers') ?? '').toContain('● 2 Also → one'),
+        expect(f.lastFrameWith('Review your answers') ?? '').toContain('+ 2 Also → one'),
       );
       f.input.push('\r');
       expect(await answer).toEqual({
@@ -488,7 +488,7 @@ describe.each(['chat', 'home'] as const)(
       f.input.push('\r'); // SAVES the text — the question is still open
       await vi.waitFor(() => expect(f.store.getSnapshot().question?.field).toBeUndefined());
       expect(f.store.getSnapshot().question).toBeDefined();
-      await vi.waitFor(() => expect(f.lastFrameWith('Saved.') ?? '').toContain('[x] ✎ note'));
+      await vi.waitFor(() => expect(f.lastFrameWith('Saved.') ?? '').toContain('[x] e note'));
       await settle();
       f.input.push('\r'); // the second Enter confirms the question
       expect(await answer).toEqual({
@@ -501,15 +501,30 @@ describe.each(['chat', 'home'] as const)(
       const f = fixture(host, true, false);
       await f.ready();
       const answer = f.store.requestQuestion(THREE);
-      await vi.waitFor(() => expect(f.text()).toContain('Pick  [○]'));
+      await vi.waitFor(() => expect(f.text()).toMatch(/Pick {2,}<o>/u));
       await settle();
       await tap(f, '1'); // alpha.ts → question 2
       await tap(f, LEFT);
       await vi.waitFor(() =>
-        expect(f.lastFrameWith('Which file?') ?? '').toContain('(•) alpha.ts'),
+        expect(f.lastFrameWith('Which file?') ?? '').toContain('(*) alpha.ts'),
       );
       f.store.sealToolPreviews();
       await expect(answer).rejects.toMatchObject({ name: 'AbortError' });
+    });
+  },
+);
+
+describe.each(['chat', 'home'] as const)(
+  'the sheet’s wait clock follows the screen in the %s host (ADR-0147 §2; unit 8 fix wave, M-12 I04)',
+  (host) => {
+    it.each([
+      [true, /^== Question from the agent · not an approval =+ waiting 0:\d\d ==$/mu],
+      [false, /^== Question from the agent · not an approval =+ waiting since \d\d:\d\d ==$/mu],
+    ] as const)('alternate=%s: the rule carries the clock in its form', async (alternate, rule) => {
+      const f = fixture(host, alternate, false);
+      await f.ready();
+      void f.store.requestQuestion(QUESTION).catch(() => undefined);
+      await vi.waitFor(() => expect(f.lastFrameWith('Question from the agent')).toMatch(rule));
     });
   },
 );

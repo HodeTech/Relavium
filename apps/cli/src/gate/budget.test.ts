@@ -220,8 +220,8 @@ describe('budget operator transport and recorded authority', () => {
     const choice = selectBudgetGate(cp, undefined);
     expect(choice.kind).toBe('invalid');
     if (choice.kind === 'invalid') {
-      expect(choice.message).toContain('budget-gate: 20 microcents');
-      expect(choice.message).toContain('budget-two: 0 microcents');
+      expect(choice.message).toContain('budget-gate: allowance $0.0000002');
+      expect(choice.message).toContain('budget-two: allowance $0.0000');
       expect(choice.message).not.toContain('PRIVATE_MODEL');
     }
     expect(selectBudgetGate(cp, 'budget-two')).toEqual({
@@ -232,7 +232,7 @@ describe('budget operator transport and recorded authority', () => {
   it('wrong A keeps recorded amount intact and exposes exact frozen remedy', () => {
     const a = allowance();
     expect(() => assertBudgetDecision(a, budgetDecisionFromFlags({ approveAmount: '21' }))).toThrow(
-      /20 microcents/,
+      /the budget allowance is \$0\.0000002; --approve-amount must equal it exactly \(--approve-amount 20\)/,
     );
     expect(budgetPromptContext(a)).toEqual({ kind: 'amount', microcents: 20 });
     expect(() =>
@@ -245,7 +245,9 @@ describe('budget operator transport and recorded authority', () => {
         decision: 'approved',
         decidedBy: 'cli',
       }),
-    ).toThrow(/0 microcents/);
+    ).toThrow(
+      /the budget allowance is \$0\.0000; --approve-amount must equal it exactly \(--approve-amount 0\)/,
+    );
     expect(() =>
       assertBudgetDecision(allowance(0), budgetDecisionFromFlags({ approveAmount: '0' })),
     ).not.toThrow();
@@ -260,7 +262,7 @@ describe('budget operator transport and recorded authority', () => {
         { kind: 'legacy_no_allowance' },
         budgetDecisionFromFlags({ approveAmount: '0' }),
       ),
-    ).toThrow(/no frozen amount/);
+    ).toThrow(/no budget allowance to approve/);
     expect(() =>
       assertBudgetDecision(allowance('unrepresentable'), budgetDecisionFromFlags({ abort: true })),
     ).not.toThrow();

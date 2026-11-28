@@ -8,7 +8,7 @@ import { openSessionStore, type OpenedSessionStore } from '../history/session-op
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
-import { sanitizeInline } from '../render/tui/chat-projection.js';
+import { sanitizeInline } from '../render/sanitize.js';
 import { writeRecordLines } from '../render/records.js';
 
 export interface ChatListCommandDeps {

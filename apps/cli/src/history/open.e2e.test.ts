@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -86,9 +86,12 @@ describe('2.H durable run history — real run → history.db (temp home)', () =
       expect(events[0]?.type).toBe('run:started');
       expect(events.at(-1)?.type).toBe('run:completed');
       expect(events.map((e) => e.sequenceNumber)).toEqual(events.map((_, i) => i)); // gap-free
-      // The run's cwd (FIXTURES, passed as openRunStore's projectRoot) was persisted to runs.project_root —
-      // the durable half of the save_to resume re-jail (loadRunSnapshot reads it back on a `relavium gate`).
-      expect(loadRunSnapshot(db, runs[0]?.id ?? '')?.projectRoot).toBe(FIXTURES);
+      // The run's cwd (FIXTURES) was persisted to runs.project_root as its canonical spelling (MVP-11 unit 7, round 2: the trailing
+      // slash of FIXTURES is not part of it) — the durable half of the save_to resume re-jail (loadRunSnapshot reads it back on a
+      // `relavium gate`) and the root every "this directory" reader compares with.
+      expect(loadRunSnapshot(db, runs[0]?.id ?? '')?.projectRoot).toBe(
+        realpathSync.native(FIXTURES),
+      );
       // …and the FROZEN GRAPH, which is what `relavium gate` rebuilds the run from and what ADR-0083 §5
       // verifies a resume against. A review measured `openHistoryStore`'s
       // `definitionJson: JSON.stringify(workflow)` replaceable with a literal while the whole `apps/cli`

@@ -10,7 +10,7 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { writeRecordLines } from '../render/records.js';
 import { openHistoryReader } from '../history/reader.js';
-import { sanitizeInline } from '../render/sanitize.js';
+import { sanitizeInline, sanitizeUntrustedInline } from '../render/sanitize.js';
 import { batchedStateEvents } from '../history/batched-state-events.js';
 import { readPerRunOrDegrade } from '../history/per-run-read.js';
 
@@ -159,8 +159,8 @@ function renderGateRows(io: CliIo, rows: readonly GateRow[], runId: string | und
   }
   io.writeOut(`Pending human gates (${rows.length}):\n`);
   for (const row of rows) {
-    // Same untrusted `human_gate:paused.message` as `status.ts` — see the note there.
-    const message = row.message === '' ? '' : `  "${sanitizeInline(row.message)}"`;
+    // Same untrusted `human_gate:paused.message` as `status.ts` — see the note there (the `--json` rows keep it as stored).
+    const message = row.message === '' ? '' : `  "${sanitizeUntrustedInline(row.message)}"`;
     // The ids are history.db values too, with no CHECK behind them, and this is a terminal write.
     io.writeOut(
       `  ${sanitizeInline(row.runId)}  ${sanitizeInline(row.gateId)}  ${row.gateType}  ` +

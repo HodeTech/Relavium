@@ -50,7 +50,7 @@ describe('reasoningControlShape — the PRESENTATION shape a picker projects (AD
   });
 
   it("no usable knob ⇒ 'none' (empty descriptor, a lone toggle, or absent)", () => {
-    expect(reasoningControlShape({})).toBe('none'); // deepseek-reasoner: reasons, no control
+    expect(reasoningControlShape({})).toBe('none'); // deep-research-preview-04-2026: reasons, no control
     expect(reasoningControlShape({ effortValues: [] })).toBe('none'); // an empty ladder is no ladder
     expect(reasoningControlShape({ toggle: true })).toBe('none'); // no tier to map "on" to
     expect(reasoningControlShape(undefined)).toBe('none'); // does not reason
@@ -156,13 +156,17 @@ describe('`off` is not an effort value on three of four providers — the asymme
 });
 
 describe('the empty descriptor — reasons, but has NO controllable tier', () => {
-  it('deepseek-reasoner offers NOTHING — not even off', () => {
+  // The row is Gemini's `deep-research-preview-04-2026`: `deepseek-reasoner`, which this section was written
+  // around, left the catalog in the 2026-11-25 snapshot sync, and the deep-research agents are the surviving
+  // models that publish exactly `reasoning: {}`. The rule is provider-independent (`acceptedTiers` reads the
+  // descriptor), so the substitute pins the same state.
+  it('deep-research-preview-04-2026 offers NOTHING — not even off', () => {
     // `reasoning: {}` is a real, distinct state: the model thinks, and upstream declines to describe any control
     // for it. The safe answer is to withhold the field entirely. Adding `off` on DeepSeek's *general* ability to
     // disable would be a guess about a model whose capability nobody documented — and a guess is exactly what
     // put a rejected value on the wire in the first place.
-    expect(CATALOG_SNAPSHOT['deepseek-reasoner']?.reasoning).toEqual({});
-    expect(tiers('deepseek-reasoner')).toEqual([]);
+    expect(CATALOG_SNAPSHOT['deep-research-preview-04-2026']?.reasoning).toEqual({});
+    expect(tiers('deep-research-preview-04-2026')).toEqual([]);
   });
 
   it('a NON-reasoning model offers nothing either', () => {
@@ -177,6 +181,8 @@ describe('MEMBERSHIP, not presence — the bug an adversarial review found in th
    *
    *   claude-opus-4-5     publishes ['low','medium','high'] — no `max`    → tier `max`    sent `effort: 'max'`
    *   gemini-3-pro-preview publishes ['low','high']          — no `medium` → tier `medium` sent `thinkingLevel: MEDIUM`
+   *                        (gone from the catalog since the 2026-11-25 sync; the test below keeps its exact ladder as
+   *                        a literal, and pins the same property on the real `gpt-5-pro` row)
    *
    * Both reach the wire through a FAILOVER, and that is the sting: the fallback chain exists to RESCUE a failing
    * turn, and a 400 on an unsupported parameter is fatal and non-retryable — so the rescue kills the turn instead.
@@ -193,12 +199,20 @@ describe('MEMBERSHIP, not presence — the bug an adversarial review found in th
     expect(tiers('claude-opus-4-5')).toContain('max');
   });
 
-  it('gemini-3-pro-preview does NOT accept `medium` — its ladder skips it', () => {
-    expect(CATALOG_SNAPSHOT['gemini-3-pro-preview']?.reasoning?.effortValues).toEqual([
-      'low',
-      'high',
-    ]);
-    expect(tiers('gemini-3-pro-preview')).not.toContain('medium');
+  it('gpt-5-pro does NOT accept `medium` — its ladder skips it', () => {
+    // No shipped Gemini row skips a mid tier any more (every surviving Gemini ladder carries `medium`), so the
+    // real-row pin moved to the one surviving model whose ladder has gaps below the top: `gpt-5-pro`, `['high']`.
+    expect(CATALOG_SNAPSHOT['gpt-5-pro']?.reasoning?.effortValues).toEqual(['high']);
+    expect(tiers('gpt-5-pro')).toEqual(['high']); // no `medium`, no `low`, no `off`, no `max`
+  });
+
+  it("a Gemini ladder of ['low','high'] (gemini-3-pro-preview's) does NOT accept `medium` either", () => {
+    // The Gemini-specific half of the bug, kept as a literal descriptor now that no shipped row has this shape.
+    const ladder = { effortValues: ['low', 'high'] } as const;
+    expect(acceptedWireValue('gemini', 'medium', ladder)).toBeUndefined();
+    expect(acceptedWireValue('gemini', 'low', ladder)).toBe('low');
+    expect(acceptedWireValue('gemini', 'high', ladder)).toBe('high');
+    expect(acceptedTiers('gemini', ladder).has('medium')).toBe(false);
   });
 
   it('gpt-5.4-pro does NOT accept `low` — the original bug report, at the wire layer', () => {
@@ -350,14 +364,17 @@ describe('the whole shipped catalog — no model is offered a tier it would reje
   });
 
   it('an EMPTY descriptor cannot be disabled either — not even on a provider with a disable switch', () => {
-    // `deepseek-reasoner` ships `reasoning: {}`: it reasons, and upstream describes no knob. `canDisableReasoning`
+    // `deep-research-preview-04-2026` ships `reasoning: {}` (so did `deepseek-reasoner`, now out of the catalog):
+    // it reasons, and upstream describes no knob. `canDisableReasoning`
     // used to answer `true` for anthropic/deepseek on the provider's general ability, regardless of the model — and
     // that answer is what let the adapters send `thinking: {type:'disabled'}` to a model that never said it takes
     // one. An empty descriptor means there is nothing to turn.
     expect(canDisableReasoning('deepseek', {})).toBe(false);
     expect(canDisableReasoning('anthropic', {})).toBe(false);
-    expect(acceptedTiers('deepseek', CATALOG_SNAPSHOT['deepseek-reasoner']?.reasoning).size).toBe(
-      0,
-    );
+    // The empty descriptor is a real catalog row's, handed to a provider that HAS a disable switch.
+    expect(CATALOG_SNAPSHOT['deep-research-preview-04-2026']?.reasoning).toEqual({});
+    expect(
+      acceptedTiers('deepseek', CATALOG_SNAPSHOT['deep-research-preview-04-2026']?.reasoning).size,
+    ).toBe(0);
   });
 });

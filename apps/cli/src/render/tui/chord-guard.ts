@@ -19,6 +19,7 @@
  */
 
 import type { ChatKey } from './chat-input.js';
+import type { OpenerKey } from './held-opener.js';
 import {
   approvalKeyRefusal,
   resolveApprovalGuard,
@@ -29,15 +30,49 @@ import {
 export type ChordAnswer = 'allow' | 'deny';
 
 /**
- * Which answer this key is, or `undefined` for every key that is not a chord. Exactly `Ctrl+Y` and `Ctrl+N`: the letter must be the
- * whole input (a pasted run that contains one is not a key), `ctrl` must be set (a bare letter is typing) and `meta` must not be (a
- * different chord). Nothing else answers.
+ * A key as a chord surface reads it: the chat's key fields and, from a terminal that reports key events (the kitty keyboard protocol's
+ * "report event types", which Ink 7 parses: `ESC[121;5:2u` is a held `Ctrl+Y`'s repeat, `ESC[121;5:3u` its release), which event it was.
+ * The CLI never enables that mode, but a terminal another program left in it sends the repeat and the release as keys of their own.
  */
-export function reduceChordKey(input: string, key: ChatKey): ChordAnswer | undefined {
+export interface ChordKey extends ChatKey {
+  readonly eventType?: 'press' | 'repeat' | 'release' | undefined;
+}
+
+/**
+ * Which chord this key is, whatever its event (a press, a held key's repeat, its release), or `undefined` for every key that is not one.
+ * Exactly `Ctrl+Y` and `Ctrl+N`: the letter must be the whole input (a pasted run that contains one is not a key), `ctrl` must be set (a
+ * bare letter is typing) and `meta` must not be (a different chord). What a surface uses to RECOGNISE the key (a held `Ctrl+Y` is still a
+ * refused affirmative on a step that is no line); never what answers: that is {@link reduceChordKey}.
+ */
+export function chordOf(input: string, key: ChordKey): ChordAnswer | undefined {
   if (key.ctrl !== true || key.meta === true) return undefined;
   if (input === 'y') return 'allow';
   if (input === 'n') return 'deny';
   return undefined;
+}
+
+/**
+ * A host's key reader that never hears a key's RELEASE (a terminal left in the kitty protocol's event-type mode reports one after every
+ * press). A release is not a key: read, it would type a letter twice into a composer and give a card or a popup line a second `Ctrl+Y`.
+ * Nothing in the CLI acts on one, so each host's one reader is wrapped in this. A held key's repeat IS a key, as a legacy terminal's
+ * auto-repeat is, and goes through; the chord surfaces refuse it as an answer ({@link reduceChordKey}).
+ */
+export function pressesOnly<Key extends { readonly eventType?: ChordKey['eventType'] }>(
+  read: (input: string, key: Key) => void,
+): (input: string, key: Key) => void {
+  return (input, key) => {
+    if (key.eventType === 'release') return;
+    read(input, key);
+  };
+}
+
+/**
+ * Which answer this key is, or `undefined` for every key that is not a chord PRESS ({@link chordOf}). A key's repeat is never a first
+ * press and its release is not a press at all: neither answers anything, on any surface that reads its answer here.
+ */
+export function reduceChordKey(input: string, key: ChordKey): ChordAnswer | undefined {
+  if (key.eventType === 'repeat' || key.eventType === 'release') return undefined;
+  return chordOf(input, key);
 }
 
 /**
@@ -50,6 +85,12 @@ export interface ChordHistory {
   previousKeyAt: number;
   lastForeignKeyAt: number;
   lastResolvedAt: number;
+  /**
+   * The plain key that opened the native flow now beginning (the History detail's `r`), left by the surface that took it and taken by the
+   * channel when the flow begins, so that the flow's first text field does not type the key's auto-repeats (`held-opener.ts`). No time of the
+   * hands: no guard reads it, and a flow that no key opened leaves it unset.
+   */
+  openedBy?: OpenerKey | undefined;
 }
 
 export function createChordHistory(): ChordHistory {
@@ -79,6 +120,8 @@ export interface ChordGuard {
   readonly begin: () => void;
   /** The card's exact frame was just measured and flushed (a new frame restarts the dwell). */
   readonly shown: () => void;
+  /** When the card's current frame was acknowledged (the dwell origin), or `undefined` while it has not been. Read only, never a second clock. */
+  readonly shownAt: () => number | undefined;
   /**
    * Whether this chord answers. An affirmative one needs every layer clear AND `painted`; a rejection answers at once unless `strict`
    * says it is as consequential as an approval (default: only an affirmative chord is strict). When a strict chord does not count and
@@ -91,6 +134,86 @@ export interface ChordGuard {
     painted: boolean,
     strict?: boolean,
   ) => ChordAnswer | undefined;
+  /**
+   * Until when, on this guard's clock, an affirmative chord judged on `evidence` (default: the history as the next key's stamp would carry it)
+   * is refused by the LOCKOUT, the layer {@link decide} restarts with every refused press inside it: `lockoutMs` after `evidence.lastResolvedAt`,
+   * or `-Infinity` when the guard has no lockout. The lockout rule read without a key, for a surface that draws its affirmative as locked while
+   * it holds (`(wait)` in its legend, ADR-0145 §3): never a second copy of the rule. The other layers (the dwell, the quiet gap, the typing
+   * window) are not in it: they are shorter and follow from the person's own keys.
+   */
+  readonly lockedUntil: (evidence?: Pick<ChordStamp, 'lastResolvedAt'>) => number;
+}
+
+/**
+ * What a surface DRAWS of a lockout: whether its affirmative is locked now, so its legend part reads dim with `(wait)` (the maintainer's ruling
+ * of 2026-11-26 on ADR-0145 §3), and the ONE timer that says when it opens. `until` asks the guard that decides
+ * ({@link ChordGuard.lockedUntil}); nothing here answers anything. A display value, never a frame's field: a view reads it beside its snapshot
+ * (as the popup host's loading clock), so it changes no identity and restarts no guard.
+ */
+export interface LockDisplay {
+  /**
+   * Read the lock again (a prompt or a step opened, settled or went; a refused press inside the lockout moved its end): listeners hear only a
+   * change, and one timer is kept at the unlock instant while it holds (moved when its end moved, none otherwise). Never periodic.
+   */
+  readonly sync: () => void;
+  readonly subscribe: (listener: () => void) => () => void;
+  readonly read: () => boolean;
+  /** The surface is gone: the timer is cleared, nobody is told again, and a later `sync` does nothing. */
+  readonly dispose: () => void;
+}
+
+export function createLockDisplay(options: {
+  /** The guard's clock. */
+  readonly now: () => number;
+  /** A one-shot timer (`setTimeout`-shaped) returning its cancel; production passes an unref'd one. */
+  readonly schedule: (callback: () => void, ms: number) => () => void;
+  /** Until when the affirmative is locked, on that clock: the deciding guard's `lockedUntil`, `-Infinity` when nothing is held. */
+  readonly until: () => number;
+}): LockDisplay {
+  const listeners = new Set<() => void>();
+  let locked = false;
+  let disposed = false;
+  let unlockAt = Number.NEGATIVE_INFINITY;
+  let cancel: (() => void) | undefined;
+  const stopTimer = (): void => {
+    cancel?.();
+    cancel = undefined;
+  };
+  const sync = (): void => {
+    if (disposed) return;
+    const until = options.until();
+    const next = options.now() < until;
+    if (!next || until !== unlockAt) stopTimer();
+    if (next && cancel === undefined) {
+      unlockAt = until;
+      cancel = options.schedule(
+        () => {
+          cancel = undefined;
+          sync();
+        },
+        // Never before the instant (a timer cannot fire early on the guard's clock and leave the part dim with no timer left).
+        Math.max(1, Math.ceil(until - options.now())),
+      );
+    }
+    if (next === locked) return;
+    locked = next;
+    for (const listener of listeners) listener();
+  };
+  return {
+    sync,
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    read: () => locked,
+    dispose: () => {
+      disposed = true;
+      stopTimer();
+      listeners.clear();
+    },
+  };
 }
 
 export function createChordGuard(options: {
@@ -126,6 +249,7 @@ export function createChordGuard(options: {
     shown: () => {
       shownAt = options.now();
     },
+    shownAt: () => shownAt,
     decide: (stamp, chord, painted, strict = chord === 'allow') => {
       if (!strict) {
         history.lastResolvedAt = stamp.now;
@@ -146,5 +270,9 @@ export function createChordGuard(options: {
         history.lastResolvedAt = stamp.now;
       return undefined;
     },
+    lockedUntil: (evidence = { lastResolvedAt: history.lastResolvedAt }) =>
+      numbers.lockoutMs > 0
+        ? evidence.lastResolvedAt + numbers.lockoutMs
+        : Number.NEGATIVE_INFINITY,
   };
 }

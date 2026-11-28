@@ -105,7 +105,7 @@ describe('the chord card in a terminal', () => {
     expect(text).toContain('│ argument   [Ctrl+Y] Allow');
     expect(text).toContain('[Ctrl+Y] Allow, and remember it on this machine');
     expect(text).toContain('[Ctrl+N] Refuse, and start nothing');
-    expect(text).toContain('Esc cancel');
+    expect(text).toContain('Esc denies');
     expect(text).not.toContain('for this run');
   });
 
@@ -218,10 +218,10 @@ describe('the chord card in a terminal', () => {
     expect(f.ui.getSnapshot().note).toBe('EARLY NOTE from a flow');
   });
 
-  it('in back mode the line says so, Esc steps back and Ctrl+C leaves', async () => {
+  it('in back mode the line says so, Esc steps back and Ctrl+C denies and leaves', async () => {
     const stepped = mount(80, 24, 'back');
     await stepped.painted();
-    expect(stepped.text()).toContain('Esc back · Ctrl+C leave');
+    expect(stepped.text()).toContain('Esc back · [Ctrl+C] denies');
     stepped.at(60_000);
     stepped.input.push('\x1b');
     await vi.waitFor(() => expect(stepped.result.done).toBe(true), { timeout: WAIT_MS });

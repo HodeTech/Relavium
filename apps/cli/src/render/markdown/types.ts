@@ -58,6 +58,11 @@ export interface MarkdownBlock {
    * space that broke them, because a table's spacing is not prose.
    */
   readonly tableSource?: boolean;
+  /**
+   * A literal block that is prose: its wrapped lines start at their text, as a paragraph's do (the chat's plain live tail, the colour-off form of a
+   * reply that the finished reply's rows must match; MVP-11 unit 9, review round 1, D-2).
+   */
+  readonly prose?: boolean;
 }
 
 export interface MarkdownDisplayLine {

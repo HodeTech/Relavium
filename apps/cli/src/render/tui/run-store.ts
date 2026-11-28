@@ -1,6 +1,7 @@
 import { UsageCoverageFold, type RunEvent } from '@relavium/shared';
 
 import { renderFinalSummary } from './final-summary.js';
+import { withGlyphForm } from './glyphs.js';
 import { initialRunViewState, reduceRunEvent, type RunViewState } from './run-view-model.js';
 
 /**
@@ -63,6 +64,11 @@ export function createRunStore(color: boolean): RunStoreController {
   let tickCount = 0;
   let dirty = false;
   let snapshot: RunStoreSnapshot = { state, tick: tickCount, color };
+
+  // The lines the reducer bakes into the state (a tool call, a tool result) are built in the form the colour setting asks for: the plain
+  // forms when colour is off (ADR-0145 §5).
+  const reduce = (event: RunEvent): RunViewState =>
+    withGlyphForm(!color, () => reduceRunEvent(state, event));
 
   const flush = (): void => {
     snapshot = { state, tick: tickCount, color };
@@ -136,11 +142,11 @@ export function createRunStore(color: boolean): RunStoreController {
               (event.type === 'cost:updated' && event.priced === false ? 1 : 0)
             : Math.max(state.unpricedCalls ?? 0, event.cumulativeUnpricedCalls);
         state = {
-          ...reduceRunEvent(state, event),
+          ...reduce(event),
           usageCoverage,
           unpricedCalls,
         };
-      } else state = reduceRunEvent(state, event);
+      } else state = reduce(event);
       if (HIGH_FREQUENCY_EVENTS.has(event.type)) {
         dirty = true; // coalesced to the next frame — no flood, no drop
       } else {
@@ -154,6 +160,6 @@ export function createRunStore(color: boolean): RunStoreController {
       }
     },
     flush,
-    summaryText: () => renderFinalSummary(state),
+    summaryText: () => withGlyphForm(!color, () => renderFinalSummary(state)),
   };
 }

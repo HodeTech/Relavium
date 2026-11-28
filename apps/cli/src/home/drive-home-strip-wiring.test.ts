@@ -12,9 +12,9 @@
  * Time moves only when the test says so (the controller's own timer is the one faked), and every home is a temporary directory handed to
  * the Home.
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { Readable } from 'node:stream';
 
 import { createClient, createSessionStore, runMigrations, type DbClient } from '@relavium/db';
@@ -29,7 +29,7 @@ import type { RootAppProps } from '../render/tui/home-app.js';
 import { STRIP_REFRESH_MS } from '../render/tui/home-controller.js';
 import { runLabel } from '../render/tui/home-projection.js';
 import { seedRun } from '../test-support.js';
-import { driveHome, type HomeDeps, type OnboardingTerminalLifecycle } from './drive-home.js';
+import { driveHome, type HomeDeps } from './drive-home.js';
 
 /** The bound of every wait in this file, in turns of the event loop. */
 const WAIT_TURNS = 500;
@@ -39,11 +39,6 @@ const INERT_JOB_CONTROL: JobControlLifecycle = {
   onSuspend: () => () => undefined,
   onContinue: () => () => undefined,
   suspendSelf: () => undefined,
-};
-const INERT_ONBOARDING_TERMINAL: OnboardingTerminalLifecycle = {
-  onInput: () => () => undefined,
-  isRawMode: () => false,
-  setRawMode: () => undefined,
 };
 
 let root: string;
@@ -64,8 +59,19 @@ afterEach(() => {
   if (client.sqlite.open) client.sqlite.close();
   rmSync(root, { recursive: true, force: true });
   rmSync(operatorHome, { recursive: true, force: true });
+  for (const parent of links.splice(0)) rmSync(parent, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
+
+const links: string[] = [];
+/** A symlink to `dir`, in a directory of its own that the test removes. */
+function linkTo(dir: string): string {
+  const parent = mkdtempSync(join(tmpdir(), 'relavium-strip-wired-link-'));
+  links.push(parent);
+  const link = join(parent, 'here');
+  symlinkSync(dir, link, 'junction');
+  return link;
+}
 
 const turn = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 /** Turn the event loop until `predicate` holds, and FAIL when it does not within {@link WAIT_TURNS}. */
@@ -78,7 +84,7 @@ async function until(predicate: () => boolean, what: string): Promise<void> {
 }
 
 /** The Home over an injected mount (no TTY), on `client`'s file, with only the controller's timers faked. */
-async function mountHome(seed?: () => Promise<void>) {
+async function mountHome(seed?: () => Promise<void>, cwd: string = root) {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
   await seed?.();
   const opened: OpenedSessionStore = {
@@ -99,7 +105,7 @@ async function mountHome(seed?: () => Promise<void>) {
   const global: GlobalOptions = {
     json: false,
     color: false,
-    cwd: root,
+    cwd,
     configPath: join(tmpdir(), 'no-such-relavium-config.toml'),
     verbosity: 'normal',
   };
@@ -140,17 +146,9 @@ async function mountHome(seed?: () => Promise<void>) {
     subscribeSignals: () => () => undefined,
     subscribeProcessExit: () => () => undefined,
     jobControlLifecycle: INERT_JOB_CONTROL,
-    onboardingTerminalLifecycle: INERT_ONBOARDING_TERMINAL,
     writeControl: () => undefined,
     exit: () => undefined,
-    onboardingPrompter: {
-      intro: () => undefined,
-      outro: () => undefined,
-      note: () => undefined,
-      select: () => Promise.resolve(Symbol('cancel')),
-      password: () => Promise.resolve(Symbol('cancel')),
-      isCancel: (v): v is symbol => typeof v === 'symbol',
-    },
+    firstRunSetup: 'off',
   };
   const running = driveHome(deps);
   await until(() => captured !== undefined, 'the Home mounting');
@@ -178,12 +176,20 @@ describe('driveHome wires the strip’s idle refresh to the Active tab’s chang
 
     // A write through the Home's own connection moves neither half of the token (`PRAGMA data_version` ignores its own connection and
     // nothing bumped the generation): the tick finds the token where the Home read it, and reads nothing.
+    // (Each run is recorded for the directory the Home was opened in: the Home lists this directory's runs only, MVP-11 unit 7.)
     await seedRun(client.db, { slug: 'wf', runId: 'own-write', state: 'completed' });
+    // A run records the canonical spelling of its directory (MVP-11 unit 7, round 2): a temp directory and its realpath differ on macOS.
+    client.sqlite
+      .prepare('UPDATE runs SET project_root = ? WHERE id = ?')
+      .run(realpathSync.native(root), 'own-write');
     await vi.advanceTimersByTimeAsync(STRIP_REFRESH_MS * 3);
     expect(home.runIds(), 'the token did not move, so the strip was not read').toEqual([]);
 
     // Another terminal commits: `PRAGMA data_version` moves, and the next tick reads the strip (all of it, the own write too).
     await seedRun(other.db, { slug: 'wf', runId: 'another-terminal', state: 'completed' });
+    other.sqlite
+      .prepare('UPDATE runs SET project_root = ? WHERE id = ?')
+      .run(realpathSync.native(root), 'another-terminal');
     await vi.advanceTimersByTimeAsync(STRIP_REFRESH_MS);
     expect(new Set(home.runIds())).toEqual(new Set(['own-write', 'another-terminal']));
 
@@ -191,33 +197,56 @@ describe('driveHome wires the strip’s idle refresh to the Active tab’s chang
   });
 });
 
-describe('driveHome tells the store which project this Home is, so a run of another project says so', () => {
-  it('marks a paused run recorded for another project `other project` in the Continue strip, and a run of this project not', async () => {
+describe('driveHome tells the store which directory this Home is, so it lists that directory’s work only', () => {
+  it('lists a run of this directory, and neither a run recorded for another directory nor one that recorded none, in any list or count', async () => {
     const elsewhere = join(operatorHome, 'code', 'other-app');
     const home = await mountHome(async () => {
       await seedRun(client.db, { slug: 'wf', runId: 'this-project', state: 'completed' });
       await seedRun(client.db, { slug: 'wf', runId: 'other-project', state: 'paused' });
       await seedRun(client.db, { slug: 'wf', runId: 'no-project', state: 'completed' });
       const record = client.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?');
-      record.run(root, 'this-project'); // the directory the Home was opened in (`global.cwd`)
+      // The directory the Home was opened in (`global.cwd`), as a run records it: canonical (MVP-11 unit 7, round 2).
+      record.run(realpathSync.native(root), 'this-project');
       record.run(elsewhere, 'other-project');
-      // `no-project` recorded none: unknown is not another project
+      // `no-project` recorded none: unknown is not this directory
     });
-    expect(new Set(home.runIds())).toEqual(
-      new Set(['this-project', 'other-project', 'no-project']),
+    expect(home.runIds()).toEqual(['this-project']);
+    const snapshot = home.props.controller.getSnapshot().snapshot;
+    expect(snapshot.totals).toEqual({ attention: 0, sessions: 0, runs: 1 });
+    expect(snapshot.unreadableRuns).toEqual([]);
+    expect(snapshot.failedRuns).toEqual([]);
+    const own = home.row('this-project');
+    expect(own === undefined ? 'missing' : runLabel(own, Date.now())).not.toContain(
+      'other project',
     );
-    const now = Date.now();
-
-    const other = home.row('other-project');
-    expect(other?.project, 'the root as the store shortens it under the home directory').toMatch(
-      /^~[\\/]code[\\/]other-app$/u,
-    );
-    expect(other === undefined ? '' : runLabel(other, now)).toContain('other project');
-    for (const id of ['this-project', 'no-project']) {
-      const own = home.row(id);
-      expect(own?.project, `${id} is not marked`).toBeUndefined();
-      expect(own === undefined ? 'missing' : runLabel(own, now)).not.toContain('other project');
-    }
     expect(await home.leave()).toBe(0);
   });
+
+  it.each([
+    ['a trailing slash', (dir: string): string => `${dir}${sep}`],
+    ['a symlink', (dir: string): string => linkTo(dir)],
+  ])(
+    'opened through %s, lists the runs recorded under the canonical root, and none recorded under another spelling or `.` (MVP-11 unit 7, round 2)',
+    async (_name, spell) => {
+      const cwd = spell(root);
+      const home = await mountHome(async () => {
+        const record = client.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?');
+        for (const [runId, stored] of [
+          ['canonical', realpathSync.native(root)],
+          ['as-typed', cwd],
+          ['dot', '.'],
+        ] as const) {
+          await seedRun(client.db, { slug: 'wf', runId, state: 'completed' });
+          record.run(stored, runId);
+        }
+      }, cwd);
+      expect(home.runIds()).toEqual(['canonical']);
+      expect(home.props.controller.getSnapshot().snapshot.totals).toEqual({
+        attention: 0,
+        sessions: 0,
+        runs: 1,
+      });
+      expect(await home.leave()).toBe(0);
+    },
+  );
 });

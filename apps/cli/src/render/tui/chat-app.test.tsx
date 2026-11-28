@@ -8,6 +8,8 @@ import type { ClipboardOutcome } from '../clipboard.js';
 import type { ApprovalAnswer } from '../../chat/chat-mode.js';
 import { createSuspendPort } from '../suspend.js';
 import { ChatApp } from './chat-ink.js';
+import { CHAT_HEADER_ROWS } from './chat-layout.js';
+import { chatGrid } from './chat-grid.js';
 import { liveAnswerRowBudget } from './chat-projection.js';
 import { COPIED_TOAST_MS } from './tui-constants.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
@@ -16,7 +18,7 @@ import {
   INLINE_TRANSCRIPT_BOUND,
   assertRenderStoreAgree,
 } from './session-view-model.js';
-import { bracketed, settleFrames, waitFor } from './harness-util.js';
+import { bracketed, settleFrames, waitFor, withoutStyles } from './harness-util.js';
 
 /**
  * Mounted-`ChatApp` component tests (2.6.F Step 3, ADR-0068 part f) — the harness's first end-to-end renders of a
@@ -54,6 +56,13 @@ function render(tree: ReactElement): ReturnType<typeof renderCapture> {
 }
 
 afterEach(cleanup);
+
+/**
+ * The frame below the chat's header (ADR-0146 §4): the first user line is the session title, drawn in the header's second half, so a message
+ * that is the OLDEST entry of the conversation is on screen in the header whether or not the viewport still shows it. An assertion about what the
+ * viewport shows reads the frame from the first row under the header.
+ */
+const belowHeader = (frame: string): string => frame.split('\n').slice(CHAT_HEADER_ROWS).join('\n');
 
 /** Mount `ChatApp` with the minimal REQUIRED props (no optional ports) — the surface under test is the ink
  *  lifecycle + the raw-mode input/paste handlers, so the driver callbacks are inert stubs. */
@@ -460,8 +469,8 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     setWindowSize(h.stdout, 80, 24); // a deterministic 24-row terminal
     await waitFor(() => frame().includes('MSG39')); // the viewport measures + windows to the tail
     expect(frame()).toContain('MSG39'); // the newest entry is shown (following the tail)
-    expect(frame()).not.toContain('MSG0'); // the oldest scrolled off the top — the alt buffer has no scrollback
-    expect(frame().split('\n').length).toBeLessThanOrEqual(24); // virtualized — bounded to the terminal rows
+    expect(belowHeader(frame())).not.toContain('MSG0'); // the oldest scrolled off the top — the alt buffer has no scrollback
+    expect(frame().split('\n').length).toBeLessThanOrEqual(24 - 1); // virtualized — bounded to the frame (the terminal's rows less one)
   });
 
   it('SCROLLS the transcript: PgUp leaves the tail (pauses follow), PgDn back to the bottom resumes it (Step 4b-2)', async () => {
@@ -514,12 +523,14 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
       h.stdin.write(ch); // filter to NO match → the palette stays open but short (leaves the viewport tall)
       await settleFrames();
     }
-    expect(frame()).toContain('Enter run'); // the palette overlay is open (its nav hint is on-screen)
+    expect(frame()).toContain('no matching command'); // the palette overlay is open (its row and its `Esc close` are on-screen)
+    expect(frame()).toContain('Esc close');
     expect(frame()).toContain('MSG59'); // still following the tail
 
     h.stdin.write('\x1b[5~'); // PgUp — must be consumed by the palette, NOT the transcript scroll keymap
     await settleFrames();
-    expect(frame()).toContain('Enter run'); // the palette still owns the keyboard
+    expect(frame()).toContain('no matching command'); // the palette still owns the keyboard
+    expect(frame()).toContain('Esc close');
     expect(frame()).toContain('MSG59'); // the transcript did NOT scroll (follow was never paused behind the overlay)
   });
 
@@ -532,26 +543,26 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
 
     h.stdin.write('\x1b[1;5H'); // Ctrl+Home → jump to the very top (ink parses this to key.home + key.ctrl)
     await settleFrames();
-    expect(frame()).toContain('MSG0'); // the oldest entry is now at the top
+    expect(belowHeader(frame())).toContain('MSG0'); // the oldest entry is now at the top
     expect(frame()).not.toContain('MSG59'); // the tail scrolled off the bottom (following paused)
 
     h.stdin.write('\x1b[1;5F'); // Ctrl+End → jump back to the tail (resume following)
     await settleFrames();
     expect(frame()).toContain('MSG59'); // back at the tail
-    expect(frame()).not.toContain('MSG0'); // the top scrolled off
+    expect(belowHeader(frame())).not.toContain('MSG0'); // the top scrolled off
   });
 
   it('re-wraps + re-bounds the viewport on a terminal RESIZE (ink 7 useWindowSize — the Step-4b-1 Opus fix)', async () => {
     const h = render(chatApp(seed(40)));
     const frame = (): string => h.lastFrame() ?? '';
     setWindowSize(h.stdout, 80, 24);
-    await waitFor(() => frame().split('\n').length === 24); // settled at 24 rows
-    // Shrink the terminal: useWindowSize re-renders → the container re-bounds + the viewport re-measures to 10 rows.
+    await waitFor(() => frame().split('\n').length === 23); // settled at the frame's 23 rows (the terminal's 24 less one)
+    // Shrink the terminal: useWindowSize re-renders → the container re-bounds + the viewport re-measures to 2 rows (9 less the header and the block).
     setWindowSize(h.stdout, 80, 10);
-    await waitFor(() => frame().split('\n').length <= 10);
-    expect(frame().split('\n').length).toBeLessThanOrEqual(10); // re-bounded to the NEW rows (was 24)
+    await waitFor(() => frame().split('\n').length <= 9);
+    expect(frame().split('\n').length).toBeLessThanOrEqual(9); // re-bounded to the NEW rows (was 23)
     expect(frame()).toContain('MSG39'); // still tail-following after the resize
-    expect(frame()).not.toContain('MSG0');
+    expect(belowHeader(frame())).not.toContain('MSG0');
   });
 
   it('RE-CLAMPS a PAUSED (non-tail) scroll offset when the terminal SHRINKS — no blank/garbled frame (Step 4b-3)', async () => {
@@ -571,11 +582,11 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     await settleFrames();
     expect(frame()).not.toContain('MSG59'); // paused, not at the tail
 
-    setWindowSize(h.stdout, 80, 8); // shrink: maxOffset drops — the frozen offset must re-clamp, not blank out
-    await waitFor(() => frame().split('\n').length <= 8);
+    setWindowSize(h.stdout, 80, 12); // shrink: maxOffset drops — the frozen offset must re-clamp, not blank out (12 − 1 − 7 = 4 viewport rows)
+    await waitFor(() => frame().split('\n').length <= 11);
     const shrunk = frame();
-    expect(shrunk.split('\n').length).toBeLessThanOrEqual(8); // re-bounded to the new rows
-    expect(shrunk).toMatch(/MSG\d+/); // a VALID contiguous slice is shown (not a blank past-the-end window)
+    expect(shrunk.split('\n').length).toBeLessThanOrEqual(11); // re-bounded to the new rows
+    expect(belowHeader(shrunk)).toMatch(/MSG\d+/); // a VALID contiguous slice is shown (not a blank past-the-end window)
 
     h.stdin.write('\x1b[1;5F'); // Ctrl+End still reaches the tail after the shrink+re-clamp
     await settleFrames();
@@ -618,13 +629,15 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
       h.stdin.write(ch); // filter to no match ⇒ the palette stays open but short
       await settleFrames();
     }
-    expect(frame()).toContain('Enter run'); // the palette owns the keyboard
+    expect(frame()).toContain('no matching command'); // the palette owns the keyboard
+    expect(frame()).toContain('Esc close');
 
     h.stdin.write('\x1b[<64;10;5M'); // a wheel notch behind the overlay
     h.stdin.write('\x1b[<0;10;5M'); // …and a click
     await settleFrames();
 
-    expect(frame()).toContain('Enter run'); // the palette is still open
+    expect(frame()).toContain('no matching command'); // the palette is still open
+    expect(frame()).toContain('Esc close');
     expect(frame()).not.toContain('<64;10'); // the mouse bytes did NOT enter the filter
     expect(frame()).not.toContain('<0;10');
     expect(frame()).toContain('MSG59'); // …and the transcript did not scroll behind the overlay
@@ -660,8 +673,8 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     const h = render(chatApp(createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND)));
     const frame = (): string => h.lastFrame() ?? '';
     setWindowSize(h.stdout, 80, 24);
-    await waitFor(() => frame().includes('/ for commands')); // the idle hint (live region) renders
-    expect(frame()).toContain('/ for commands'); // no crash; the prompt/footer are shown below the empty viewport
+    await waitFor(() => frame().includes('[/] commands')); // the idle hint (live region) renders
+    expect(frame()).toContain('[/] commands'); // no crash; the prompt/status line are shown below the empty viewport
   });
 
   it('a SINGLE entry taller than the window shows its BOTTOM rows (tail), bounded to the terminal', async () => {
@@ -675,8 +688,8 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     setWindowSize(h.stdout, 80, 24);
     await waitFor(() => frame().includes('LASTLINE'));
     expect(frame()).toContain('LASTLINE'); // the bottom of the over-tall entry (the tail)
-    expect(frame()).not.toContain('FIRSTLINE'); // the top of the entry scrolled off — no scrollback
-    expect(frame().split('\n').length).toBeLessThanOrEqual(24);
+    expect(belowHeader(frame())).not.toContain('FIRSTLINE'); // the top of the entry scrolled off — no scrollback (the title, in the header, is its first words)
+    expect(frame().split('\n').length).toBeLessThanOrEqual(24 - 1);
   });
 
   /**
@@ -684,7 +697,7 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
    *
    * The alt screen's root Box is `height: rows`, and ink clips the frame there. An unbounded busy line therefore does
    * not scroll — it COLLIDES with its siblings inside the box. Reproduced at 80x24 with a 900-character answer, well
-   * under `MAX_LIVE_TOKEN_CHARS = 4000`, i.e. an ordinary response: the "Esc to stop" hint and the streamed text landed
+   * under `MAX_LIVE_TOKEN_CHARS = 4000`, i.e. an ordinary response: the "Esc stops the turn" hint and the streamed text landed
    * on the SAME frame row, overwriting each other.
    */
   describe('ChatApp (alt screen) — the live streaming region is bounded', () => {
@@ -707,7 +720,7 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
       store.flush();
     };
 
-    it('the "Esc to stop" hint never shares a row with the streamed text', async () => {
+    it('the "Esc stops the turn" hint never shares a row with the streamed text', async () => {
       const store = seed(30);
       const h = render(chatApp(store));
       setWindowSize(h.stdout, 80, 24);
@@ -716,9 +729,9 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
       await settleFrames();
 
       const rows = (h.lastFrame() ?? '').split('\n');
-      const hintRow = rows.find((r) => r.includes('Esc to stop'));
+      const hintRow = rows.find((r) => r.includes('Esc stops the turn'));
       expect(hintRow).toBeDefined();
-      expect(hintRow?.trim()).toMatch(/Esc to stop$/); // …and nothing else on it
+      expect(hintRow?.trim()).toMatch(/Esc stops the turn$/); // …and nothing else on it
       expect(rows.length).toBeLessThanOrEqual(24);
     });
 
@@ -812,6 +825,17 @@ describe('ChatApp — the suspend port (ADR-0068 §e)', () => {
  * the text the highlight covered.
  */
 describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
+  /**
+   * The 1-based terminal row of the viewport's n-th row (1 for the first): the header takes the rows above the viewport (ADR-0146 §4), and the
+   * mouse mapping reads the viewport's measured top, so a press on the first transcript row is at row `CHAT_HEADER_ROWS + 1`.
+   */
+  const viewportRow = (n: number): number => CHAT_HEADER_ROWS + n;
+  /**
+   * The 1-based terminal column of the n-th CONTENT cell (1 for the first): the transcript stands on the chat's grid (MVP-11 unit 9), so its text
+   * starts right of the margin, and the viewport reports that edge as its `left` (a press in the margin clamps to the first content cell).
+   */
+  const contentColumn = (n: number): number => chatGrid(100).margin + n;
+
   /** Three one-row transcript lines: notices render as their bare text, so the wrapped rows are exactly these. */
   const seedThree = (): ChatStoreController => {
     const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
@@ -846,11 +870,11 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
     const h = mountWithClipboard(seedThree(), copied);
     await waitFor(() => (h.lastFrame() ?? '').includes('AAAA'));
 
-    h.stdin.write('\x1b[<0;1;1M'); // press at terminal row 1, column 1 ⇒ line 0, column 0
+    h.stdin.write(`\x1b[<0;1;${viewportRow(1)}M`); // press at column 1 (in the margin) ⇒ line 0, content column 0
     await settleFrames();
-    h.stdin.write('\x1b[<32;3;1M'); // drag to column 3 ⇒ column 2 (inclusive)
+    h.stdin.write(`\x1b[<32;${contentColumn(3)};${viewportRow(1)}M`); // drag to the third content cell ⇒ column 2 (inclusive)
     await settleFrames();
-    h.stdin.write('\x1b[<0;3;1m'); // release ⇒ copy
+    h.stdin.write(`\x1b[<0;${contentColumn(3)};${viewportRow(1)}m`); // release ⇒ copy
     await settleFrames();
 
     expect(copied).toEqual(['AAA']); // columns 0..2 of 'AAAA'
@@ -861,11 +885,11 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
     const h = mountWithClipboard(seedThree(), copied);
     await waitFor(() => (h.lastFrame() ?? '').includes('CCCC'));
 
-    h.stdin.write('\x1b[<0;3;1M'); // press line 0, column 2
+    h.stdin.write(`\x1b[<0;${contentColumn(3)};${viewportRow(1)}M`); // press line 0, column 2
     await settleFrames();
-    h.stdin.write('\x1b[<32;2;3M'); // drag to line 2 ('CCCC'), column 1
+    h.stdin.write(`\x1b[<32;${contentColumn(2)};${viewportRow(3)}M`); // drag to line 2 ('CCCC'), column 1
     await settleFrames();
-    h.stdin.write('\x1b[<0;2;3m');
+    h.stdin.write(`\x1b[<0;${contentColumn(2)};${viewportRow(3)}m`);
     await settleFrames();
 
     // First row from column 2 to its end, the middle row whole, the last row to its INCLUSIVE end column.
@@ -914,15 +938,15 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
       h.stdin.write('\x1b[<64;5;5M'); // wheel up: leave the tail
       await settleFrames();
     }
-    const thirdRow = (h.lastFrame() ?? '').split('\n')[2]?.trim();
+    const thirdRow = (h.lastFrame() ?? '').split('\n')[CHAT_HEADER_ROWS + 2]?.trim();
     expect(thirdRow).toMatch(/^row-\d\d$/);
     expect(thirdRow).not.toBe('row-02'); // we really did scroll away from the head
 
-    h.stdin.write('\x1b[<0;1;3M'); // press the THIRD viewport row (terminal row 3)
+    h.stdin.write(`\x1b[<0;1;${viewportRow(3)}M`); // press the THIRD viewport row (terminal row 3)
     await settleFrames();
-    h.stdin.write('\x1b[<32;99;3M'); // drag past its right edge ⇒ the whole row
+    h.stdin.write(`\x1b[<32;99;${viewportRow(3)}M`); // drag past its right edge ⇒ the whole row
     await settleFrames();
-    h.stdin.write('\x1b[<0;99;3m');
+    h.stdin.write(`\x1b[<0;99;${viewportRow(3)}m`);
     await settleFrames();
 
     expect(copied).toEqual([thirdRow]); // exactly the line the user could SEE on that row
@@ -937,9 +961,9 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
     await waitFor(() => (h.lastFrame() ?? '').includes('CCCC'));
 
     store.notice('DDDD'); // the ref still says 3 lines; the store says 4
-    h.stdin.write('\x1b[<0;1;4M'); // press terminal row 4 ⇒ the new line
-    h.stdin.write('\x1b[<32;4;4M');
-    h.stdin.write('\x1b[<0;4;4m');
+    h.stdin.write(`\x1b[<0;1;${viewportRow(4)}M`); // press terminal row 4 ⇒ the new line
+    h.stdin.write(`\x1b[<32;${contentColumn(4)};${viewportRow(4)}M`);
+    h.stdin.write(`\x1b[<0;${contentColumn(4)};${viewportRow(4)}m`);
     await settleFrames();
 
     expect(copied).toEqual(['DDDD']); // NOT 'CCCC' — the stale clamp would have landed one row up
@@ -951,16 +975,17 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
     // whose model wrote a paragraph.
     const copied: string[] = [];
     const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
-    const long = 'x'.repeat(100) + 'TAIL'; // cols = 100 in the harness ⇒ wraps to two rows
+    // cols = 100 in the harness: the content column is 84 wide (unit 9's grid) ⇒ the line wraps to two rows, the second ending in TAIL
+    const long = 'x'.repeat(chatGrid(100).content) + 'TAIL';
     store.notice(long);
     const h = mountWithClipboard(store, copied);
     await waitFor(() => (h.lastFrame() ?? '').includes('TAIL'));
 
-    h.stdin.write('\x1b[<0;1;2M'); // press the SECOND wrapped row
+    h.stdin.write(`\x1b[<0;1;${viewportRow(2)}M`); // press the SECOND wrapped row
     await settleFrames();
-    h.stdin.write('\x1b[<32;99;2M'); // drag to its end
+    h.stdin.write(`\x1b[<32;99;${viewportRow(2)}M`); // drag to its end
     await settleFrames();
-    h.stdin.write('\x1b[<0;99;2m');
+    h.stdin.write(`\x1b[<0;99;${viewportRow(2)}m`);
     await settleFrames();
 
     expect(copied).toEqual(['TAIL']); // the continuation row, not the (nonexistent) second entry
@@ -979,11 +1004,11 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
       />,
     );
     await waitFor(() => (h.lastFrame() ?? '').includes('AAAA'));
-    h.stdin.write('\x1b[<0;1;1M');
+    h.stdin.write(`\x1b[<0;1;${viewportRow(1)}M`);
     await settleFrames();
-    h.stdin.write('\x1b[<32;3;1M');
+    h.stdin.write(`\x1b[<32;3;${viewportRow(1)}M`);
     await settleFrames();
-    h.stdin.write('\x1b[<0;3;1m');
+    h.stdin.write(`\x1b[<0;3;${viewportRow(1)}m`);
     await settleFrames();
     expect(h.lastFrame()).toBeDefined();
   });
@@ -997,11 +1022,11 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
     /** Drive a press-drag-release that copies, and return the frame right after. */
     const copyOnce = async (h: ReturnType<typeof render>): Promise<void> => {
       await waitFor(() => (h.lastFrame() ?? '').includes('AAAA'));
-      h.stdin.write('\x1b[<0;1;1M');
+      h.stdin.write(`\x1b[<0;1;${viewportRow(1)}M`);
       await settleFrames();
-      h.stdin.write('\x1b[<32;3;1M');
+      h.stdin.write(`\x1b[<32;${contentColumn(3)};${viewportRow(1)}M`);
       await settleFrames();
-      h.stdin.write('\x1b[<0;3;1m');
+      h.stdin.write(`\x1b[<0;${contentColumn(3)};${viewportRow(1)}m`);
       await settleFrames();
     };
 
@@ -1074,7 +1099,7 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
       const h = mountWithClipboard(seedThree(), copied);
       await copyOnce(h);
       expect(copied).toHaveLength(1); // the write happened
-      const rows = (h.lastFrame() ?? '').split('\n');
+      const rows = withoutStyles(h.lastFrame() ?? '').split('\n');
       const toastRow = rows.findIndex((r) => r.includes('Sent to terminal clipboard'));
       const footerRow = rows.findIndex((r) => r.includes('turns'));
       expect(toastRow).toBeGreaterThanOrEqual(0);

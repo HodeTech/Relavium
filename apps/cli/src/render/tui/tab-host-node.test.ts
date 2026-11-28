@@ -40,14 +40,14 @@ import { createPinPort } from '../../home/pin-port.js';
 import { readAbsenceReference } from '../../test-support.js';
 import { ABSENCE_SENTENCES } from '../absence.js';
 import type { ChatKey } from './chat-input.js';
-import { legend } from './legend.js';
 import { usableColumns } from './sheet-frame.js';
 import {
   TAB_HOST_ROWS,
   enterTab,
   foldTabHostKey,
   freshTabMemory,
-  tabHostLegendItems,
+  tabHostLegend,
+  tabHostLegendText,
   tabHostLines,
   withHistoryLoad,
   type TabHostContext,
@@ -57,6 +57,7 @@ import {
 import type { HistoryPort } from './tab-host-history.js';
 import {
   NODE_FAULT,
+  NODE_KEYS,
   NODE_LOG_PARTIAL,
   NODE_NOT_A_NODE,
   NODE_NOT_HERE,
@@ -122,6 +123,7 @@ function rig(options: RigOptions = {}) {
     }),
     loadDetail: createRunDetailLoader({
       reader,
+      projectRoot: ROOT,
       listHeld: () => Promise.resolve((options.held ?? []).map((runId) => ({ runId }))),
       loadSnapshot: snapshot,
     }),
@@ -132,11 +134,9 @@ function rig(options: RigOptions = {}) {
       ? undefined
       : createPinPort({ store, workflowRoot: () => ROOT, now: () => NOW });
   const context = (): TabHostContext => ({
-    port: undefined,
     history,
     pins,
     now: 10_000,
-    canArm: true,
   });
   let state: TabHostState = enterTab(freshTabMemory('history'), 'history', context());
   const press = (input: string, key: ChatKey = {}): TabHostStep => {
@@ -180,7 +180,11 @@ function rig(options: RigOptions = {}) {
     const at = rows.findIndex((entry) => entry.kind === 'run' && entry.row.id === runId);
     if (at < 0) throw new Error(`the run is not listed: ${runId}`);
     const pinned = state.history?.read?.pinned.length ?? 0;
-    while ((state.history?.cursor ?? 0) < pinned + at) press('', DOWN);
+    // A bounded walk: a list that never moves fails with the run it was looking for instead of looping (review round 1, D08/D09).
+    for (let step = 0; (state.history?.cursor ?? 0) < pinned + at; step += 1) {
+      if (step >= 200) throw new Error(`the cursor never reached the run ${runId}`);
+      press('', DOWN);
+    }
     const step = press('', ENTER);
     if (step.kind !== 'open-detail') throw new Error(`Enter did not open the run: ${step.kind}`);
     state = withHistoryLoad(state, runId, await history.loadDetail(runId));
@@ -279,8 +283,9 @@ describe('what the node page shows', () => {
       for (const line of lines)
         expect(displayWidth(line.text), line.text).toBeLessThanOrEqual(usableColumns(80));
       expect(lines.at(-1)?.kind).toBe('legend');
+      // `Tab` is no item of the legend (two tabs: `←/→ tab` says it), so `[Ctrl+C] close` fits the 78 columns beside the node page's own keys
       expect(lines.at(-1)?.text).toBe(
-        '←/→ tab · Tab cycle · ↑/↓ scroll · [n] first failed · Ctrl+C close · Esc back',
+        '←/→ tab · ↑/↓ scroll · [n] first failed · [Ctrl+C] close · Esc back',
       );
       expect(lines.filter((line) => line.kind === 'selected')).toHaveLength(1);
       r.press('', DOWN);
@@ -338,15 +343,18 @@ describe('what the node page shows', () => {
   it('names exactly the keys it answers to, and each does what it says', async () => {
     const r = rig();
     await r.openRun(FIXTURE_RUN_IDS.failed);
-    expect(legend(tabHostLegendItems(r.state))).toBe(
+    expect(tabHostLegendText(r.state)).toBe(
       '←/→ tab · ↑/↓ scroll · Enter open · [n] first failed · [p] pin · Esc back',
     );
     r.press('n');
     expect(r.selected()).toContain('review');
     r.press('', ENTER);
-    expect(legend(tabHostLegendItems(r.state))).toBe(
-      '←/→ tab · Tab cycle · ↑/↓ scroll · [n] first failed · Ctrl+C close · Esc back',
+    expect(tabHostLegendText(r.state)).toBe(
+      '←/→ tab · ↑/↓ scroll · [n] first failed · [Ctrl+C] close · Esc back',
     );
+    // the page's `Esc` returns to the run's detail on the line it left: one level, the Step class, and it is the page's own key
+    expect(tabHostLegend(r.state).exit).toBe(NODE_KEYS.back);
+    expect(NODE_KEYS.back).toMatchObject({ keys: 'Esc', verb: 'back', class: 'step' });
     r.press('n');
     expect(r.node()?.message).toBe(nodeShowingFirstFailed(1));
     r.press('', DOWN);
@@ -372,9 +380,7 @@ describe('what the node page shows', () => {
     const rows = r.text().split('\n');
     expect(rows).toContain('  The record of this node is unavailable.');
     expect(rows).toContain("  Its attempt, or the run's event log, could not be read.");
-    expect(legend(tabHostLegendItems(r.state))).toBe(
-      '←/→ tab · Tab cycle · ↑/↓ scroll · Ctrl+C close · Esc back',
-    );
+    expect(tabHostLegendText(r.state)).toBe('←/→ tab · ↑/↓ scroll · [Ctrl+C] close · Esc back');
     r.press('n');
     expect(r.node()?.message).toBe(NODE_NO_ATTEMPT);
   });
@@ -384,9 +390,9 @@ describe('below the 80×24 floor the legend names the level `Esc` steps back to'
   const SMALL = { columns: 79, terminalRows: 24 };
   const smallLines = (state: TabHostState): string[] =>
     tabHostLines(state, SMALL).map((line) => line.text);
-  const HINT = 'Enlarge the terminal — Esc steps back, or closes at the list.';
+  const HINT = 'Enlarge the terminal.';
 
-  it('says `back to the run` on a node page, `back to the list` on a run’s detail, and `close` only at the list', async () => {
+  it('says `back to the run` on a node page, `back to the list` on a run’s detail, and `back to Home` only at the list', async () => {
     const r = rig();
     await r.openNode(FIXTURE_RUN_IDS.failed, 'build');
     expect(smallLines(r.state), 'a node page: Esc goes back to the run').toEqual([
@@ -401,7 +407,10 @@ describe('below the 80×24 floor the legend names the level `Esc` steps back to'
     ]);
     r.press('', ESC);
     expect(r.state.history?.detail, 'Esc stepped back to the list').toBeUndefined();
-    expect(smallLines(r.state), 'the list: Esc closes the screen').toEqual([HINT, 'Esc close']);
+    expect(smallLines(r.state), 'the list: Esc leaves the screen for the Home').toEqual([
+      HINT,
+      'Esc / [Ctrl+C] back to Home',
+    ]);
   });
 });
 
@@ -698,7 +707,7 @@ describe('p on the run detail pins the run', () => {
     const full = rig();
     await full.openFromList(FIXTURE_RUN_IDS.failed);
     full.press('p');
-    // The store holds fifty run pins and no workflow pin: the sentence names both counts, as the Defined tab's does.
+    // The store holds fifty run pins and no workflow pin: the sentence names both counts, as the `/workflows` popup's does.
     expect(full.state.history?.detail?.message).toBe(
       `Cannot pin 11111111: ${String(MAX_RUN_PINS)} is the limit; ${String(MAX_RUN_PINS)} stored, 0 of them workflows.`,
     );
@@ -919,8 +928,11 @@ describe('no value reaches a line raw', () => {
   const at = '2026-11-23T10:00:00.000Z';
   const base = { runId: 'r', timestamp: at };
 
-  /** A failed node whose stored output, error and tool trace all carry a secret shape, an escape and a bidi control. */
-  function hostilePage(): NodeTabState {
+  /**
+   * A failed node whose stored output, error and tool trace all carry a secret shape, an escape and a bidi control. `message` and `note` stand
+   * in for the error's message and the output's `note` where a test needs other text there.
+   */
+  function hostilePage(message = `msg ${hostile}`, note = hostile): NodeTabState {
     const detail: StepDetailRecord = {
       nodeId: 'x',
       nodeType: 'agent',
@@ -931,11 +943,11 @@ describe('no value reaches a line raw', () => {
       outputTokens: 0,
       durationMs: 10,
       cachedTokens: 0,
-      outputJson: JSON.stringify({ note: hostile, [`k ${hostile}`]: 'v', nested: [hostile] }),
+      outputJson: JSON.stringify({ note, [`k ${hostile}`]: 'v', nested: [hostile] }),
       outputByteLength: 1,
       errorJson: JSON.stringify({
         code: `code ${hostile}`,
-        message: `msg ${hostile}`,
+        message,
         // The error's node id is text from the history file: a key-shaped one is masked, not only cleaned of its controls.
         nodeId: `n ${hostile}`,
       }),
@@ -1013,6 +1025,20 @@ describe('no value reaches a line raw', () => {
     expect(drawn).toContain('REDACTED');
     expect(drawn).toContain('tool ');
     expect(drawn).toContain('masked');
+  });
+
+  it('draws an error’s message with the host’s own glyphs blanked, and an output and a message through the screen filter before they are laid out', () => {
+    const FILLER = String.fromCodePoint(0x115f);
+    const state = hostilePage(`✓ forged ❯ row │ box${FILLER}after`, `out${FILLER}put ${FILLER}`);
+    const rows = nodeBody(state, 98, 500).map((line) => line.text);
+    const message = rows.find((row) => row.includes('forged'));
+    expect(message, 'the message is drawn').toBeDefined();
+    // The host's status glyph, its selection marker and a box-drawing stroke the message wrote are blanked: no row of the page is the message's own.
+    expect(message).not.toMatch(/[✓❯│]/u);
+    expect(message).toContain('boxafter');
+    const output = rows.find((row) => row.includes('output'));
+    expect(output, 'the output is drawn with its filler dropped').toBeDefined();
+    for (const row of rows) expect(row, 'a Hangul filler reached the page').not.toContain(FILLER);
   });
 
   it('masks the whole output of a node whose id labels a credential, on the page a person reads and in the lines it keeps, and says it masked', () => {

@@ -1,0 +1,647 @@
+/**
+ * A typed `/word` on the landing, and the `/help` popup it opens
+ * ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §3, MVP-8 step 5;
+ * [ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §10 as amended 2026-11-27, MVP-11 unit 8),
+ * through the real Home controller: a line that starts with a slash is a command line and is always answered, never a message (the chat reads
+ * every such line as a slash command, so a chat started for it could only say `unknown command`): a registry word is answered whatever
+ * follows it, a word the registry does not know is said to be unknown, a line that is not a word is said to be unknown as the chat says it.
+ * `/help` is a popup (the popup host owns its keys: `popups/home-help-popup.test.ts`, `popups/home-session-hosts.test.tsx`); the controller only
+ * routes the word and builds the port, which this file reads through a scripted `openHomePopup`. The run host, the ports and the timers are
+ * scripted: no engine is built and no operator home is read.
+ */
+import { describe, expect, it, vi } from 'vitest';
+
+import {
+  HOME_PALETTE_COMMANDS,
+  placementOf,
+  REPL_COMMANDS,
+  unavailableNotice,
+} from '../../commands/repl-commands.js';
+import type { HomeSnapshot } from '../../home/home-store.js';
+import type { RunHostSnapshot } from '../../home/run-host.js';
+import { createChatStore } from './chat-store.js';
+import { HOME_KEYS, type HelpKeyPress } from './help-sheet.js';
+import {
+  createHomeController,
+  type HomeChatSession,
+  type HomeController,
+  type HomeControllerDeps,
+} from './home-controller.js';
+import { buildPaletteEntries, filterPaletteEntries } from './palette-entries.js';
+import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
+
+const EMPTY: HomeSnapshot = {
+  failedRuns: [],
+  recentSessions: [],
+  recentRuns: [],
+  recentAgents: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
+  isEmpty: true,
+};
+const WITH_SESSION: HomeSnapshot = {
+  ...EMPTY,
+  recentSessions: [
+    {
+      sessionId: 'saved',
+      title: 'Saved conversation',
+      agentSlug: 'chat',
+      modelId: undefined,
+      status: 'ended',
+      updatedAt: '2026-11-10T00:00:00.000Z',
+      totalCostMicrocents: 0,
+    },
+  ],
+  isEmpty: false,
+};
+
+const ENTER = { return: true } as const;
+const ESC = { escape: true } as const;
+/** A leg that is executing a run: what makes `Enter` at an empty prompt show it, and `Ctrl+D` and a second `Ctrl+C` ask before they leave. */
+const EXECUTING: RunHostSnapshot = {
+  launching: false,
+  active: { leg: 'start', runId: 'run-0001', cancelling: false },
+  last: undefined,
+};
+const WITH_FAILED_RUN: HomeSnapshot = {
+  ...EMPTY,
+  failedRuns: [
+    {
+      runId: 'failed-run',
+      workflowSlug: 'nightly',
+      status: 'failed',
+      createdAt: '2026-11-10T00:00:00.000Z',
+      startedAt: undefined,
+      completedAt: undefined,
+      totalCostMicrocents: 0,
+    },
+  ],
+  totals: { attention: 1, sessions: 0, runs: 0 },
+  isEmpty: false,
+};
+const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+/** A Home over scripted ports, with no timers and a chat build that never finishes (so a started chat is a `startChat` call). */
+function mount(
+  options: {
+    readonly snapshot?: HomeSnapshot;
+    readonly hosted?: RunHostSnapshot;
+    readonly popups?: boolean;
+  } = {},
+) {
+  const onExit = vi.fn();
+  const openHomePopup = vi.fn();
+  const startChat = vi.fn(() => new Promise<HomeChatSession>(() => {}));
+  const deps: HomeControllerDeps = {
+    startChat,
+    homeStore: { read: () => options.snapshot ?? EMPTY },
+    ...(options.hosted === undefined
+      ? {}
+      : {
+          hostedRuns: {
+            snapshot: () =>
+              options.hosted ?? { launching: false, active: undefined, last: undefined },
+            cancel: () => true,
+            close: () => Promise.resolve(),
+          },
+        }),
+    ...(options.popups === true ? { openHomePopup } : {}),
+    schedule: () => () => {},
+    now: () => 1_000,
+    onExit,
+    onError: (cause) => {
+      throw cause;
+    },
+  };
+  return { controller: createHomeController(deps), onExit, startChat, openHomePopup };
+}
+type Home = ReturnType<typeof mount>;
+
+/** A line that enters the prompt as a paste does (so a `/` at the start does not open the palette), and is submitted. */
+const pasted = (home: Home, text: string): void => {
+  home.controller.handlePaste(text);
+  home.controller.handleKey('', ENTER);
+};
+/** The same line typed key by key: its first `/` opens the palette, which then answers a word that matches nothing. */
+const typed = (home: Home, text: string): void => {
+  for (const char of text) home.controller.handleKey(char, {});
+  home.controller.handleKey('', ENTER);
+};
+const press = (controller: HomeController, key: HelpKeyPress): void => {
+  controller.handleKey(key.input, key.key);
+};
+
+const WORKS_IN_A_CHAT = (word: string): string =>
+  `${word} works in a chat. Start one, then type it. /help lists the commands.`;
+
+/**
+ * What every word of the registry does at the landing, by name: the words a landing owns (`/help`, `/exit`, `/doctor`, `/clear`, `/models`),
+ * the ones an earlier branch answers when its port is missing (`/mode`, `/permissions`, `/workflows`), and a chat's own (the rest).
+ * The test fails for a registry name that is not here, so a new command has to be given its answer.
+ */
+const ANSWERS: Readonly<Record<string, (home: Home) => void | Promise<void>>> = {
+  help: (home) => {
+    // A popup `driveHome` always wires; with none, the one line every word with no port says.
+    expect(home.controller.getSnapshot().notice).toBe('/help is not available here.');
+  },
+  exit: (home) => {
+    expect(home.onExit).toHaveBeenCalledOnce();
+  },
+  doctor: (home) => {
+    // A popup `driveHome` always wires; with none, the one line every word with no port says.
+    expect(home.controller.getSnapshot().notice).toBe('Doctor is not available here.');
+  },
+  clear: (home) => {
+    // The words `Enter` on the dim /clear row says (C8): one fact, one wording.
+    expect(home.controller.getSnapshot().notice).toBe(
+      '/clear is unavailable: no conversation to clear.',
+    );
+  },
+  models: (home) => {
+    expect(home.controller.getSnapshot().notice).toBe('/models is unavailable here.');
+  },
+  mode: (home) => {
+    expect(home.controller.getSnapshot().notice).toBe(
+      'Startup mode settings are unavailable here.',
+    );
+  },
+  permissions: (home) => {
+    expect(home.controller.getSnapshot().notice).toBe(
+      'Remembered commands are not available here.',
+    );
+  },
+  workflows: (home) => {
+    expect(home.controller.getSnapshot().notice).toBe(
+      'The project’s workflows are not available here.',
+    );
+  },
+};
+const chatOnly = (name: string) => (home: Home) => {
+  expect(home.controller.getSnapshot().notice).toBe(WORKS_IN_A_CHAT(`/${name}`));
+};
+
+describe('a registry word at the landing is answered, and never starts a chat', () => {
+  it('covers every word of the registry', () => {
+    const owned = Object.keys(ANSWERS);
+    const names = REPL_COMMANDS.map((command) => command.name);
+    for (const name of owned) expect(names, `${name} is a registry word`).toContain(name);
+    // Every other word is a chat's: the registry says it works nowhere on the landing.
+    for (const command of REPL_COMMANDS)
+      if (!owned.includes(command.name))
+        expect(placementOf(command.name, 'home'), `/${command.name}`).toBeUndefined();
+  });
+
+  it.each(REPL_COMMANDS.map((command) => command.name))(
+    'a pasted /%s starts no chat and sends nothing: it is answered',
+    async (name) => {
+      const home = mount();
+      pasted(home, `/${name}`);
+      await flush();
+      expect(home.startChat, `/${name} starts no chat`).not.toHaveBeenCalled();
+      const snapshot = home.controller.getSnapshot();
+      expect(snapshot.mode).toBe('home');
+      expect(snapshot.input.text, 'the line is cleared').toBe('');
+      expect(snapshot.session).toBeUndefined();
+      await (ANSWERS[name] ?? chatOnly(name))(home);
+      await home.controller.teardownActive();
+    },
+  );
+
+  it.each(REPL_COMMANDS.map((command) => command.name))(
+    'a typed /%s is answered the same way, through the palette',
+    async (name) => {
+      const home = mount();
+      typed(home, `/${name}`);
+      await flush();
+      expect(home.startChat, `/${name} starts no chat`).not.toHaveBeenCalled();
+      const snapshot = home.controller.getSnapshot();
+      if (name === 'clear') {
+        // The Home has no conversation to clear, so /clear is a dim row: the palette says why and stays open (ADR-0145 §7.4). It is neither
+        // run nor "unknown command"; the pasted word, which never reaches the palette, is answered above.
+        expect(snapshot.palette, 'a dim row keeps the palette open').toBeDefined();
+        expect(snapshot.notice).toBe(unavailableNotice('clear', 'no conversation to clear'));
+        expect(snapshot.mode).toBe('home');
+        await home.controller.teardownActive();
+        return;
+      }
+      expect(snapshot.palette, 'the palette is closed').toBeUndefined();
+      expect(snapshot.mode).toBe('home');
+      expect(snapshot.input.text).toBe('');
+      // The palette filters on the descriptions too, so a word that matches a command of the Home's runs that command, as it always did
+      // (`/export` matches the Home's `/workflows`: "run or export one"); one that matches nothing is the typed word, answered here.
+      const rows = buildPaletteEntries('home', { hasSession: false, hasKey: true });
+      if (filterPaletteEntries(rows, name).length === 0)
+        await (ANSWERS[name] ?? chatOnly(name))(home);
+      await home.controller.teardownActive();
+    },
+  );
+
+  it.each([
+    ['/doctor --deep', '/doctor accepts no arguments here. Start a chat to use them.'],
+    ['/cost --release', WORKS_IN_A_CHAT('/cost')],
+  ])('a pasted "%s" is answered with its notice and runs nothing', async (line, notice) => {
+    const home = mount();
+    pasted(home, line);
+    await flush();
+    const snapshot = home.controller.getSnapshot();
+    expect(snapshot.notice).toBe(notice);
+    expect(snapshot.screen, 'no popup opens for a line with arguments').toBeUndefined();
+    expect(home.startChat).not.toHaveBeenCalled();
+    expect(home.onExit).not.toHaveBeenCalled();
+    expect(snapshot.input.text).toBe('');
+    await home.controller.teardownActive();
+  });
+});
+
+/**
+ * The Home's own words that the registry does not hold (`/import` and `/pricing`, ADR-0140 §9): `ANSWERS` above is the registry's, and its
+ * first test fails for a key that is not a registry word, so these have their own table. Each is a command of the bare Home's palette and so
+ * a row of the help popup; at the landing it is answered by its own route (`home-import-pricing-route.test.ts` owns the cards), and it is
+ * never a message, so it starts no chat, however it reaches the prompt.
+ */
+describe.each([
+  ['/import', 'Import is unavailable in this session.'],
+  ['/pricing', 'Model pricing is not available here.'],
+] as const)('the Home word %s', (word, unavailable) => {
+  const name = word.slice(1);
+
+  it('is a command of the bare Home’s palette and a row of the help popup, and is not a word of the registry', () => {
+    expect(HOME_PALETTE_COMMANDS.map((command) => command.name)).toContain(name); // the popup lists exactly the palette's commands
+    expect(REPL_COMMANDS.map((command) => command.name)).not.toContain(name);
+  });
+
+  it.each([
+    ['pasted', pasted],
+    ['typed', typed],
+  ] as const)('when %s is answered at the landing and starts no chat', async (_how, enter) => {
+    const home = mount();
+    enter(home, word);
+    await flush();
+    expect(home.startChat).not.toHaveBeenCalled();
+    const snapshot = home.controller.getSnapshot();
+    expect(snapshot.notice).toBe(unavailable);
+    expect(snapshot.palette).toBeUndefined();
+    expect(snapshot.input.text).toBe('');
+    expect(snapshot.mode).toBe('home');
+    await home.controller.teardownActive();
+  });
+
+  it('with text after it is told it takes no arguments, and is not sent as a message', async () => {
+    const home = mount();
+    pasted(home, `${word} some/file.yaml`);
+    await flush();
+    expect(home.startChat).not.toHaveBeenCalled();
+    expect(home.controller.getSnapshot().notice).toMatch(
+      new RegExp(`^${word} accepts no arguments\\.`, 'u'),
+    );
+    await home.controller.teardownActive();
+  });
+});
+
+describe('Enter on a palette query that matches nothing, at the landing', () => {
+  it('opens the popup for help, answers a chat’s word and says a stranger is unknown', () => {
+    const help = mount({ popups: true });
+    typed(help, '/help');
+    expect(help.openHomePopup).toHaveBeenCalledOnce();
+    expect(help.openHomePopup.mock.calls[0]?.[0]).toMatchObject({ kind: 'help' });
+    expect(help.controller.getSnapshot().screen).toBeUndefined();
+    expect(help.controller.getSnapshot().palette).toBeUndefined();
+
+    const cost = mount();
+    typed(cost, '/cost');
+    expect(cost.controller.getSnapshot().notice).toBe(WORKS_IN_A_CHAT('/cost'));
+
+    const stranger = mount();
+    typed(stranger, '/nosuchword');
+    expect(stranger.controller.getSnapshot().notice).toBe(
+      'Unknown command: /nosuchword. /help lists the commands.',
+    );
+    for (const home of [help, cost, stranger]) expect(home.startChat).not.toHaveBeenCalled();
+  });
+
+  it('a palette query that is a sentence is answered as its first word is: it opens no popup and starts no chat', () => {
+    const home = mount();
+    typed(home, '/help me');
+    expect(home.startChat).not.toHaveBeenCalled();
+    expect(home.controller.getSnapshot().notice).toBe('/help accepts no arguments.');
+    expect(home.controller.getSnapshot().screen).toBeUndefined();
+    expect(home.controller.getSnapshot().palette).toBeUndefined();
+    expect(home.controller.getSnapshot().input.text).toBe('');
+  });
+
+  it('still runs the command a query does match, and a first word that is not a lower-case word is said to be unknown, not sent', () => {
+    const exit = mount();
+    typed(exit, '/exit');
+    expect(exit.onExit).toHaveBeenCalledOnce();
+
+    const odd = mount();
+    typed(odd, '/Zzzz');
+    const snapshot = odd.controller.getSnapshot();
+    expect(snapshot.palette).toBeUndefined();
+    expect(snapshot.notice).toBe('Unknown command: /Zzzz. /help lists the commands.');
+    expect(snapshot.screen).toBeUndefined();
+    expect(snapshot.mode).toBe('home');
+    expect(
+      odd.startChat,
+      'a line that starts with a slash is never a message',
+    ).not.toHaveBeenCalled();
+  });
+
+  it('leaves the palette’s own Esc alone: nothing is answered', () => {
+    const home = mount();
+    home.controller.handleKey('/', {});
+    for (const char of 'cost') home.controller.handleKey(char, {});
+    home.controller.handleKey('', ESC);
+    expect(home.controller.getSnapshot().palette).toBeUndefined();
+    expect(home.controller.getSnapshot().notice).toBeUndefined();
+  });
+});
+
+describe('a word the registry does not know', () => {
+  it.each([
+    ['pasted', pasted],
+    ['typed', typed],
+  ] as const)('is said to be unknown when %s, and starts no chat', async (_how, enter) => {
+    const home = mount();
+    enter(home, '/nosuchword');
+    await flush();
+    const snapshot = home.controller.getSnapshot();
+    expect(snapshot.notice).toBe('Unknown command: /nosuchword. /help lists the commands.');
+    expect(snapshot.mode).toBe('home');
+    expect(snapshot.input.text).toBe('');
+    expect(home.startChat).not.toHaveBeenCalled();
+    await home.controller.teardownActive();
+  });
+
+  it.each([
+    ['/inti', '/init'],
+    ['/hlep', '/help'],
+    ['/doctr', '/doctor'],
+  ])('keeps the suggestion for a near miss: %s', (line, suggestion) => {
+    const home = mount();
+    pasted(home, line);
+    expect(home.controller.getSnapshot().notice).toBe(
+      `Unknown command. Did you mean ${suggestion}?`,
+    );
+    expect(home.startChat).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    '/Users/x/file.txt',
+    '/etc/passwd',
+    '/Users',
+    '/Zzzz',
+    '/a/b',
+    '/Users/x/notes.md please read',
+  ])(
+    'a line that starts with a slash and is not a word (%s) is said to be unknown as the chat says it, and starts no chat',
+    (line) => {
+      const home = mount();
+      pasted(home, line);
+      const snapshot = home.controller.getSnapshot();
+      expect(snapshot.notice).toBe(`Unknown command: ${line}. /help lists the commands.`);
+      expect(snapshot.mode).toBe('home');
+      expect(snapshot.input.text).toBe('');
+      expect(
+        home.startChat,
+        'the chat would read it as a command, not send it',
+      ).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    // A registry word is answered whatever follows it: a Home word is told it takes no arguments, a chat's word where it works.
+    ['/cost is high, can you check?', WORKS_IN_A_CHAT('/cost')],
+    ['/export x.yaml', WORKS_IN_A_CHAT('/export')],
+    ['/help me understand this', '/help accepts no arguments.'],
+    ['/exit now', '/exit accepts no arguments here. Start a chat to use them.'],
+    ['/doctor why is this slow', '/doctor accepts no arguments here. Start a chat to use them.'],
+    // A lower-case word the registry does not know names the word, and not the sentence after it.
+    ['/tmp has junk, please clean it', 'Unknown command: /tmp. /help lists the commands.'],
+    ['/nosuchword and then some text', 'Unknown command: /nosuchword. /help lists the commands.'],
+    // A near miss keeps its suggestion, with text after it as well.
+    ['/inti the project please', 'Unknown command. Did you mean /init?'],
+  ])(
+    'a line that opens with a slash word and goes on as text (%s) is answered by its first word, and starts no chat',
+    (line, notice) => {
+      const home = mount();
+      pasted(home, line);
+      const snapshot = home.controller.getSnapshot();
+      expect(snapshot.notice).toBe(notice);
+      expect(snapshot.screen, 'no popup opens for a line with text after the word').toBeUndefined();
+      expect(snapshot.mode).toBe('home');
+      expect(snapshot.input.text).toBe('');
+      expect(
+        home.startChat,
+        'a line that starts with a slash is never a message',
+      ).not.toHaveBeenCalled();
+      expect(home.onExit).not.toHaveBeenCalled();
+    },
+  );
+
+  it('shows a line that is not a word as the chat does: printable ASCII only, and at most 64 characters', () => {
+    const control = mount();
+    pasted(control, `/Users/x${String.fromCharCode(27)}[31mred`);
+    // The escape never enters the draft (a paste drops every C0, DEL and C1 control but TAB and LF: `draftText`, round 2 F6), so the notice has no `?`
+    // where it stood; what the notice itself does with a character it cannot show is pinned by the next case (`é` and the line break).
+    expect(control.controller.getSnapshot().notice).toBe(
+      'Unknown command: /Users/x[31mred. /help lists the commands.',
+    );
+
+    const multiline = mount();
+    pasted(multiline, '/Users/x\nsecond line é');
+    expect(multiline.controller.getSnapshot().notice).toBe(
+      'Unknown command: /Users/x?second line ?. /help lists the commands.',
+    );
+
+    const long = mount();
+    pasted(long, `/Users/${'x'.repeat(100)}`);
+    const notice = long.controller.getSnapshot().notice ?? '';
+    expect(notice).toBe(`Unknown command: /Users/${'x'.repeat(57)}. /help lists the commands.`);
+    for (const home of [control, multiline, long])
+      expect(home.startChat, 'none of them is sent').not.toHaveBeenCalled();
+  });
+
+  it('a line that does not start with a slash is a message, whatever it holds', () => {
+    for (const line of ['please clean /tmp', 'hello', ' text with /help inside']) {
+      const home = mount();
+      pasted(home, line);
+      expect(home.startChat, line).toHaveBeenCalledOnce();
+      expect(home.controller.getSnapshot().mode, line).toBe('loading');
+      expect(home.controller.getSnapshot().notice, line).toBeUndefined();
+    }
+  });
+
+  it('a bare slash word that matches nothing is answered at the landing, and is not sent', () => {
+    const home = mount();
+    pasted(home, '/zzqqx');
+    expect(home.controller.getSnapshot().notice).toBe(
+      'Unknown command: /zzqqx. /help lists the commands.',
+    );
+    expect(home.startChat).not.toHaveBeenCalled();
+  });
+
+  it('answers a word of any length: it is never sent either', () => {
+    const home = mount();
+    pasted(home, `/${'a'.repeat(200)}`);
+    expect(home.controller.getSnapshot().notice).toMatch(/^Unknown command: \/a+\. \/help lists/u);
+    expect(home.controller.getSnapshot().notice?.length).toBeLessThan(120);
+    expect(home.startChat).not.toHaveBeenCalled();
+  });
+
+  it('does not treat a word inside a message as a command', () => {
+    const home = mount();
+    pasted(home, 'please run /cost for me');
+    expect(home.startChat).toHaveBeenCalledOnce();
+  });
+
+  it('answers in a chat as it did: the chat’s own dispatch gets its own commands and its own unknown words', async () => {
+    const lines: string[] = [];
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const session: HomeChatSession = {
+      store,
+      sessionId: 'sess-words',
+      processLine: (line) => {
+        lines.push(line);
+        return Promise.resolve();
+      },
+      shouldStop: () => false,
+      stopReason: () => 'exit',
+      teardown: () => Promise.resolve(),
+    };
+    const started = vi.fn(() => Promise.resolve(session));
+    const onExit = vi.fn();
+    const controller = createHomeController({
+      startChat: started,
+      homeStore: { read: () => EMPTY },
+      schedule: () => () => {},
+      now: () => 1_000,
+      onExit,
+      onError: (cause) => {
+        throw cause;
+      },
+    });
+    controller.handlePaste('hello');
+    controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(controller.getSnapshot().mode).toBe('chat'));
+    await vi.waitFor(() => expect(controller.getSnapshot().submitBusy).toBe(false));
+    lines.length = 0;
+    for (const line of ['/cost', '/nosuchword', '/help']) {
+      controller.handlePaste(line);
+      controller.handleKey('', ENTER);
+      await vi.waitFor(() => expect(lines).toContain(line));
+    }
+    expect(controller.getSnapshot().screen, 'no screen opens over a chat').toBeUndefined();
+    expect(controller.getSnapshot().notice).toBeUndefined();
+    await controller.teardownActive();
+  });
+});
+
+/**
+ * The keys the `/help` popup names are the landing's own, and each does what its verb says there (a hint cannot name a key that does not do
+ * it): the popup draws its Keys section from `HOME_KEYS`, and this presses every one of them on a mounted Home.
+ */
+describe('every key the popup names does what it says on the landing', () => {
+  type Id = keyof typeof HOME_KEYS;
+  const pressAll = (home: Home, id: Id): void => {
+    for (const key of HOME_KEYS[id].presses) press(home.controller, key);
+  };
+  const landing: Readonly<Record<Id, () => void>> = {
+    send: () => {
+      const home = mount();
+      home.controller.handlePaste('hello');
+      pressAll(home, 'send');
+      expect(home.startChat).toHaveBeenCalledOnce();
+      expect(home.controller.getSnapshot().pendingMessage).toBe('hello');
+      // `or open the row or the running run`: at an empty prompt `Enter` shows the run that executes, and starts no chat.
+      const running = mount({ hosted: EXECUTING });
+      pressAll(running, 'send');
+      expect(running.controller.getSnapshot().screen).toMatchObject({
+        kind: 'run-view',
+        runId: 'run-0001',
+      });
+      expect(running.startChat).not.toHaveBeenCalled();
+    },
+    newline: () => {
+      const home = mount();
+      home.controller.handleKey('a', {});
+      pressAll(home, 'newline');
+      home.controller.handleKey('b', {});
+      expect(home.controller.getSnapshot().input.text).toBe('a\nb');
+      expect(home.startChat).not.toHaveBeenCalled();
+    },
+    commands: () => {
+      const home = mount();
+      pressAll(home, 'commands');
+      expect(home.controller.getSnapshot().palette).toBeDefined();
+      // From an empty prompt only: with something typed, `/` is a character.
+      const typedFirst = mount();
+      typedFirst.controller.handleKey('a', {});
+      pressAll(typedFirst, 'commands');
+      expect(typedFirst.controller.getSnapshot().palette).toBeUndefined();
+      expect(typedFirst.controller.getSnapshot().input.text).toBe('a/');
+    },
+    rows: () => {
+      const home = mount({ snapshot: WITH_SESSION });
+      pressAll(home, 'rows');
+      expect(home.controller.getSnapshot().stripFocus?.id).toBe('saved');
+      // `a row of the strip`: a failed run is one too, and `Enter` on it opens its detail.
+      const failed = mount({ snapshot: WITH_FAILED_RUN });
+      pressAll(failed, 'rows');
+      expect(failed.controller.getSnapshot().stripFocus).toEqual({ kind: 'run', id: 'failed-run' });
+      // With something typed too (MVP-11 unit 7): `↓` goes down to the work page's FIRST row, and the draft is kept.
+      const typedFirst = mount({ snapshot: WITH_SESSION });
+      typedFirst.controller.handleKey('a', {});
+      pressAll(typedFirst, 'rows');
+      expect(typedFirst.controller.getSnapshot().stripFocus?.id).toBe('saved');
+      expect(typedFirst.controller.getSnapshot().input.text).toBe('a');
+      expect(typedFirst.controller.getSnapshot().homePage).toBe('work');
+    },
+    back: () => {
+      const home = mount({ snapshot: WITH_SESSION });
+      pressAll(home, 'rows');
+      expect(home.controller.getSnapshot().stripFocus?.id).toBe('saved');
+      pressAll(home, 'back');
+      expect(home.controller.getSnapshot().stripFocus?.id).toBeUndefined();
+      expect(home.controller.getSnapshot().homePage, 'back up to the start page').toBe('start');
+      expect(home.startChat).not.toHaveBeenCalled();
+    },
+    eof: () => {
+      const home = mount();
+      pressAll(home, 'eof');
+      expect(home.onExit).toHaveBeenCalledOnce();
+      // From an empty prompt only: with something typed it keeps the text.
+      const typedFirst = mount();
+      typedFirst.controller.handleKey('a', {});
+      pressAll(typedFirst, 'eof');
+      expect(typedFirst.onExit).not.toHaveBeenCalled();
+      expect(typedFirst.controller.getSnapshot().input.text).toBe('a');
+      // `asks first while a run executes`: the exit-guard card opens, and nothing leaves.
+      const running = mount({ hosted: EXECUTING });
+      pressAll(running, 'eof');
+      expect(running.controller.getSnapshot().exitGuard).toBe('confirm');
+      expect(running.onExit).not.toHaveBeenCalled();
+    },
+    interrupt: () => {
+      const home = mount();
+      pressAll(home, 'interrupt');
+      expect(home.controller.getSnapshot().interruptArmed, 'the first press only arms').toBe(true);
+      expect(home.onExit).not.toHaveBeenCalled();
+      pressAll(home, 'interrupt');
+      expect(home.onExit, 'the second ends the Home').toHaveBeenCalledOnce();
+      // `asks first while a run executes`: the second press opens the exit-guard card instead, and nothing leaves.
+      const running = mount({ hosted: EXECUTING });
+      pressAll(running, 'interrupt');
+      pressAll(running, 'interrupt');
+      expect(running.controller.getSnapshot().exitGuard).toBe('confirm');
+      expect(running.onExit).not.toHaveBeenCalled();
+    },
+  };
+
+  it('has a check for every key the popup names', () => {
+    expect(Object.keys(landing).sort()).toEqual(Object.keys(HOME_KEYS).sort());
+  });
+  it.each(Object.keys(HOME_KEYS) as Id[])('%s', (id) => {
+    landing[id]();
+  });
+});

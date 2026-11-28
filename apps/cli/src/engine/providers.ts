@@ -14,6 +14,8 @@ import {
 import type { Agent } from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
+import type { Surface } from '../render/surface.js';
+import { keyLabel, keyToken, LEGEND_SEPARATOR } from '../render/tui/legend.js';
 import {
   KeychainUnavailableError,
   keychainAccount,
@@ -60,6 +62,11 @@ export interface ProviderResolver {
   readonly endpointKind?: (id: ProviderId) => EndpointKind;
   /** Safe destination captured with the actual adapter; absent only on injected resolver stubs. */
   readonly endpointContext?: (id: ProviderId) => string;
+  /**
+   * The surface this resolver's diagnostics are written for, so a message built OUTSIDE the resolver (the session pre-flight) names the
+   * same remedy `keyFor` does. Absent on a scripting path and on an injected stub, where the shell wording is the right one.
+   */
+  readonly credentialSurface?: Surface;
 }
 
 /** Both native setup hosts disclose the resolver's pinned recipient, never a fresh registry read. */
@@ -72,10 +79,35 @@ export function providerEndpointContext(resolver: ProviderResolver, id: Provider
 }
 
 /**
+ * The ORIGIN a provider's key would be sent to, read from the resolver's pinned destination ({@link providerEndpointContext}: the one string
+ * the resolver captures beside the adapter it built, `Official endpoint: <origin>` or `Custom endpoint: <origin>`), or `undefined` when it
+ * cannot be known: a custom endpoint that was refused or whose origin the resolver does not carry, or anything that is not an `https:` origin
+ * exactly. Never the provider's name or its known base URL alone: a stored custom endpoint changes where the key goes, and only the resolver
+ * knows which one its adapter was built for (the doctor's deep-tier consent names this, ADR-0148 §8).
+ */
+export function providerEndpointOrigin(
+  resolver: ProviderResolver,
+  id: ProviderId,
+): string | undefined {
+  const pinned = /^(?:Official|Custom) endpoint: (\S+)$/u.exec(
+    providerEndpointContext(resolver, id),
+  );
+  const written = pinned?.[1];
+  if (written === undefined) return undefined;
+  try {
+    const url = new URL(written);
+    return url.protocol === 'https:' && url.origin === written ? url.origin : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Whether `resolver` can resolve a key for `id` — a boolean, never the key. Prefers the resolver's own
  * {@link ProviderResolver.hasKey} (the fault-preserving path production always provides); falls back to a
  * `keyFor` try/probe only when a (test) stub omits it. Centralizes the "does this provider have a key" question
- * so the picker key-gate + `isProviderKeyless` share one source (2.5.G key-awareness).
+ * so the model catalogue's key-gate, the key sample of a provider's availability and the chat hosts' missing-key notices share one source
+ * (2.5.G key-awareness).
  */
 export function providerHasKey(
   resolver: Pick<ProviderResolver, 'keyFor' | 'hasKey'>,
@@ -136,20 +168,26 @@ export function providerKeyEnvVar(id: ProviderId): RelaviumKeyEnvName {
   return RELAVIUM_PROVIDER_KEY_ENV_VARS[id];
 }
 
-export type CredentialSurface = 'home' | 'standalone-chat' | 'shell';
-
 /** Fixed, value-free diagnostics with a remedy reachable in the actual host. */
 export function providerKeyAvailabilityMessage(
   id: ProviderId,
   availability: ProviderKeyAvailability,
-  surface: CredentialSurface = 'shell',
+  surface: Surface = 'shell',
 ): string {
+  // Where a credential message is read decides its remedy: `home` is the bare Home (`/providers` opens setup); `home-chat` is a chat the Home
+  // hosts, which answers `/providers` with a pointer only, so its remedy names the way back; `standalone-chat` is `relavium chat`, which cannot
+  // open setup itself (it opens it once, at its start, and only when no provider is usable); `shell` is a script or a plain command.
+  // The `home`, `home-chat` and `standalone-chat` remedies name no shell command (ADR-0146 §6, MVP-11): the Home has `/providers`; the chat
+  // it hosts is left with Ctrl+C twice; a stand-alone chat has no setup of its own to open (starting it again opens one only when NO provider
+  // is usable, which is not this case when another one works), so it names the Home, which `relavium` alone starts (ADR-0145 §7.4).
   const remedy =
     surface === 'home'
       ? 'open `/providers` to connect a key or review its source.'
-      : surface === 'standalone-chat'
-        ? 'restart `relavium chat` to open provider setup.'
-        : `store one with \`relavium provider set-key ${id}\` or set ${providerKeyEnvVar(id)}.`;
+      : surface === 'home-chat'
+        ? `go back to the Home (${keyToken('Ctrl+C')} twice) and use \`/providers\` to connect a key or review its source.`
+        : surface === 'standalone-chat'
+          ? 'connect a key or review its source from the Home (start Relavium without arguments).'
+          : `store one with \`relavium provider set-key ${id}\` or set ${providerKeyEnvVar(id)}.`;
   switch (availability.status) {
     case 'present-standard-not-allowed':
       return `${availability.source.name} is present but has not been allowed for this interactive invocation — ${remedy}`;
@@ -165,12 +203,52 @@ export function providerKeyAvailabilityMessage(
 }
 
 /**
+ * The hint beside a provider's row in the explicit `Providers` list (MVP-11, ADR-0146 §6): what its key is, and what `Enter` does on the row.
+ * It is a hint inside the very list that connects a provider, so it never says to open it (the old hint did: ``open `/providers` to connect
+ * a key``, inside `/providers`), and it names no provider id: the row's own label is the display name. Short enough to stay on one row at 80
+ * columns, which also leaves no wrapped row to start with a stray space.
+ */
+export function providerRowHint(availability: ProviderKeyAvailability): string {
+  // What `Enter` does is a key and its verb after the state, the shape of a legend item; a row's hint names no key that leaves (the list's own
+  // legend does), which `legend()` requires, so the key and the separator are written by the builder's own rules instead.
+  const enter = (state: string, verb: string): string =>
+    `${state}${LEGEND_SEPARATOR}${keyLabel('Enter')} ${verb}`;
+  switch (availability.status) {
+    case 'present-standard-not-allowed':
+      return enter(`${availability.source.name} is set`, 'review it');
+    case 'ineligible-custom-endpoint':
+      // Short on purpose: choosing the row says why in a note of its own (`${name} cannot be used with the configured custom endpoint`).
+      return enter('custom endpoint', 'add a key');
+    case 'unavailable':
+      return enter('the OS keychain is unavailable', 'show options');
+    case 'missing':
+      return enter('no key yet', 'add one');
+    case 'usable':
+      return `An API key is available from ${'name' in availability.source ? availability.source.name : availability.source.label}.`;
+  }
+}
+
+/**
  * The actionable "no key" message: names both ways to provide one, never a key. One source for
  * {@link createProviderResolver}'s `keyFor` and the session pre-flight (MVP-A4), so the user reads the same
  * remedy whichever caught it first.
  */
-export function missingKeyMessage(id: ProviderId): string {
-  return providerKeyAvailabilityMessage(id, { status: 'missing', keychainHealth: 'unknown' });
+export function missingKeyMessage(id: ProviderId, surface?: Surface): string {
+  return providerKeyAvailabilityMessage(
+    id,
+    { status: 'missing', keychainHealth: 'unknown' },
+    surface,
+  );
+}
+
+/**
+ * What a person reads for a provider: its display name (`Anthropic`, `Google Gemini`), or the id itself for a provider this build has
+ * no metadata for (a registered custom one). A message names a provider this way wherever a person reads it; the id stays the key a
+ * command, a config file and a log use (MVP-11, ADR-0145).
+ */
+export function providerDisplayName(id: string): string {
+  const known = KNOWN_PROVIDER_IDS.find((candidate) => candidate === id);
+  return known === undefined ? id : KNOWN_PROVIDERS[known].displayName;
 }
 
 /** A non-secret display hint for a key — masked, with the last 4 chars (or fully masked when too short). NEVER the full key. */
@@ -178,12 +256,19 @@ export function keyHint(key: string): string {
   return key.length <= 4 ? '••••' : `••••${key.slice(-4)}`;
 }
 
-/** A known provider's metadata — display name, base URL, a cheap model for the live key test, and the public
- *  pricing page (the ADR-0065 §1 default `pricing_reference_url`, where a user finds a price to hand-enter). */
+/** A known provider's metadata — display name, base URL, its starter model, and the public pricing page (the ADR-0065 §1
+ *  default `pricing_reference_url`, where a user finds a price to hand-enter). */
 export interface ProviderMeta {
   readonly displayName: string;
   readonly baseUrl: string;
-  readonly testModel: string;
+  /**
+   * The provider's STARTER model: the ONE starter table of [ADR-0146](../../../../docs/decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md)
+   * §6 (ruled 2026-11-24: the current family, every entry in the shipped catalogue, priced and a chat model). Every path that picks a model for a
+   * provider reads it and no other spelling: the default a first setup and an environment-key consent write, the zero-config chat's model, the
+   * live key check of the setup, `relavium provider test` and the doctor's deep tier (`maxTokens: 1`). A test pins each entry against the
+   * catalogue and greps the sources for a model id written by hand on those paths.
+   */
+  readonly starterModel: string;
   /** The provider's public pricing page — the default `llm_providers.pricing_reference_url` seeded on
    *  `provider add` (overridable with `--pricing-url`). A display-only pointer; NEVER fetched (not an egress
    *  target), so it needs no SSRF gate. Verified 2026-07-06 against each provider's live docs. */
@@ -192,7 +277,7 @@ export interface ProviderMeta {
 
 /**
  * The known providers (each has an `@relavium/llm` adapter). The single home for CLI provider metadata:
- * `displayName`, `baseUrl`, a cheap `testModel` for the live key-check, and the public `pricingUrl`. Every
+ * `displayName`, `baseUrl`, the `starterModel` (the one starter table), and the public `pricingUrl`. Every
  * provider-facing CLI surface is **data-driven off this map + {@link KNOWN_PROVIDER_IDS}** — registering a provider
  * here (plus its `LLM_PROVIDERS` id — see below) lights up every surface with **no per-surface edit**, via one of
  * two access patterns:
@@ -204,10 +289,10 @@ export interface ProviderMeta {
  *    `set-key` / `remove-key` / `test`, which accept a single name gated by the WIDER `ProviderIdSchema`
  *    (`z.enum(LLM_PROVIDERS)`) — so an `LLM_PROVIDERS` id absent from `KNOWN_PROVIDERS` would pass validation and
  *    then throw on the `undefined` metadata lookup (the second reason the two lists must stay in lock-step).
- * A new provider's test model / display name is thus defined once. See the `add-llm-adapter` skill for the
+ * A new provider's starter model / display name is thus defined once. See the `add-llm-adapter` skill for the
  * end-to-end checklist.
  */
-/** The provider ids the CLI knows how to validate + onboard (those with a `testModel`). The const tuple is the
+/** The provider ids the CLI knows how to validate + onboard (those with a `starterModel`). The const tuple is the
  *  SOURCE OF TRUTH — `satisfies readonly ProviderId[]` validates each is a real `ProviderId` (no cast, no
  *  widening), and {@link KNOWN_PROVIDERS} is keyed on it, so THOSE two cannot drift; the wizard, `provider`, and
  *  `/doctor` probe all iterate it directly.
@@ -232,25 +317,25 @@ export const KNOWN_PROVIDERS: Record<(typeof KNOWN_PROVIDER_IDS)[number], Provid
   anthropic: {
     displayName: 'Anthropic',
     baseUrl: 'https://api.anthropic.com',
-    testModel: 'claude-haiku-4-5',
+    starterModel: 'claude-haiku-5-5',
     pricingUrl: 'https://platform.claude.com/docs/en/about-claude/pricing',
   },
   openai: {
     displayName: 'OpenAI',
     baseUrl: 'https://api.openai.com/v1',
-    testModel: 'gpt-5.4-mini',
+    starterModel: 'gpt-5.4-mini',
     pricingUrl: 'https://platform.openai.com/docs/pricing',
   },
   gemini: {
     displayName: 'Google Gemini',
     baseUrl: 'https://generativelanguage.googleapis.com',
-    testModel: 'gemini-2.5-flash',
+    starterModel: 'gemini-2.5-flash',
     pricingUrl: 'https://ai.google.dev/gemini-api/docs/pricing',
   },
   deepseek: {
     displayName: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com',
-    testModel: 'deepseek-v4-flash',
+    starterModel: 'deepseek-v4-flash',
     pricingUrl: 'https://api-docs.deepseek.com/quick_start/pricing',
   },
 };
@@ -348,10 +433,9 @@ export async function validateProviderKey(
         : provider.generate(request, key, lifecycle.work));
       return { ok: true, detail: `key works (${model})`, reason: 'ok' };
     } catch (err) {
-      const raw = err instanceof Error ? err.message : String(err);
       return {
         ok: false,
-        detail: `key test failed — ${raw.split(key).join(keyHint(key))}`,
+        detail: `key test failed — ${failureWords(err, key)}`,
         // Classify from the seam's own error kind (never a string heuristic): a rejected key is `auth` (retry with
         // a new key); a timeout/transport/overloaded/rate-limit is `network` (continue-anyway is sane); else `other`.
         reason: classifyValidationFailure(err),
@@ -366,6 +450,26 @@ export async function validateProviderKey(
     if (timer !== undefined) clearTimeout(timer);
     lifecycle?.signal.removeEventListener('abort', parentStopped);
   }
+}
+
+/** What a key test says of a transport failure that carries no status and no code: the same sentence for every provider. */
+export const CONNECTION_FAILED_WORDS = 'could not reach the provider';
+
+/**
+ * What a failed key test says: a transport failure the provider gave no status or code for is ONE sentence, because each SDK words the same
+ * cause its own way (`Connection error.`, `fetch failed`) and the person reading the rows cannot tell whether they are the same problem. Any
+ * other failure keeps the provider's own words, the key redacted, so a status or a code is never hidden behind the sentence.
+ */
+function failureWords(err: unknown, key: string): string {
+  if (
+    err instanceof LlmProviderError &&
+    err.llmError.kind === 'transport' &&
+    err.llmError.status === undefined &&
+    err.llmError.code === undefined
+  )
+    return CONNECTION_FAILED_WORDS;
+  const raw = err instanceof Error ? err.message : String(err);
+  return raw.split(key).join(keyHint(key));
 }
 
 /** Map a probe throw → a {@link ValidationReason}, from the seam's `LlmProviderError.llmError.kind` (never a string
@@ -424,7 +528,7 @@ export interface ProviderResolverOptions {
   readonly validatedFetch?: FetchLike;
   /** Absent on scripting paths: eligible standard variables are used directly. Interactive hosts share one policy. */
   readonly standardEnvPolicy?: Pick<StandardEnvKeyPolicy, 'allows'>;
-  readonly credentialSurface?: CredentialSurface;
+  readonly credentialSurface?: Surface;
 }
 
 export function createProviderResolver(
@@ -525,6 +629,9 @@ export function createProviderResolver(
     },
     hasKey: (id) => resolveKey(id).key !== undefined,
     availability: (id) => resolveKey(id).observation,
+    ...(options.credentialSurface === undefined
+      ? {}
+      : { credentialSurface: options.credentialSurface }),
   };
 }
 

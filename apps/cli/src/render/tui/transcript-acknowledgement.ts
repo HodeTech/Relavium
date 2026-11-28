@@ -1,4 +1,5 @@
-import { wrapTranscript } from './chat-projection.js';
+import { transcriptEntrySpan } from './chat-projection.js';
+import { chatGrid } from './chat-grid.js';
 import type { ToolDisplay } from './tool-display.js';
 import type { ChatStore } from './chat-store.js';
 import type { TranscriptEntry } from './session-view-model.js';
@@ -84,15 +85,18 @@ export function createTranscriptAcknowledgement(
               return false;
             const index = rendered.transcript.indexOf(entry);
             if (index < 0) return false;
-            // Only acknowledgement walks history; ordinary streaming frames just replace frame metadata.
-            const start = wrapTranscript(
-              rendered.transcript.slice(0, index),
-              rendered.columns,
+            // Only acknowledgement walks history; ordinary streaming frames just replace frame metadata. ONE walk over the prefix that includes
+            // the entry, on the grid the viewport drew (the same `chatGrid` of the same columns): the separator rows are counted where they are
+            // drawn, so the entry's rows are the rows on screen (a count of the entry alone would lose its separator row and clear one row early).
+            const span = transcriptEntrySpan(
+              rendered.transcript,
+              index,
+              chatGrid(rendered.columns),
               rendered.color,
               rendered.displays,
-            ).length;
-            const end = start + wrapTranscript([entry], rendered.columns, rendered.color).length;
-            return start >= rendered.firstRow && end <= rendered.endRow;
+            );
+            if (span === undefined) return false;
+            return span.start >= rendered.firstRow && span.end <= rendered.endRow;
           });
         },
       };

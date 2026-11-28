@@ -31,12 +31,7 @@ import {
   runMigrations,
   type DbClient,
 } from '@relavium/db';
-import {
-  REASONING_EFFORTS,
-  RunEventSchema,
-  type ReasoningEffort,
-  type RunEvent,
-} from '@relavium/shared';
+import { RunEventSchema, type ReasoningEffort, type RunEvent } from '@relavium/shared';
 import type { AskUserDelegate, AskUserRequest, ToolRoundLimitHook } from '@relavium/core';
 import type { LlmProvider, LlmRequest, StreamChunk } from '@relavium/llm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -62,38 +57,66 @@ import {
   type CommandGrantStore,
 } from '../permissions/command-grants.js';
 import type { ChatStoreController } from '../render/tui/chat-store.js';
+import { APPROVAL_CONFIRM_MIN_MS, APPROVAL_LOCKOUT_MS } from '../render/tui/tool-review-model.js';
 import { reconcileInterruptedRuns } from '../history/reconcile.js';
 import { terminalOutboxPath } from '../history/open.js';
 import { createFileTerminalOutbox } from '../engine/terminal-outbox.js';
 import type { OpenedSessionStore } from '../history/session-open.js';
-import type { ClackOnboardingDeps } from '../onboarding/wizard.js';
+import { DEFAULT_CHAT_MODEL } from '../chat/default-agent.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
-import { SHEET_CONFIRM_DWELL_MS } from '../render/tui/permissions-sheet.js';
 import { OwnedTtyInput, OwnedTtyOutput, seedRun } from '../test-support.js';
-import { DISABLE_MOUSE, ENABLE_MOUSE, HIDE_CURSOR, SHOW_CURSOR } from '../render/alt-screen.js';
+import { DISABLE_MOUSE, ENABLE_MOUSE, SHOW_CURSOR } from '../render/alt-screen.js';
 import type { JobControlLifecycle, SuspendPort } from '../render/suspend.js';
-import { agentSheetLines } from '../render/tui/agent-sheet.js';
-import { permissionsSheetOf } from '../render/tui/chat-sheet.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { IMPORT_PATH_MESSAGE } from '../render/tui/import-card.js';
+import { POPUP_SELECT_SETTLE_MS } from '../popups/opening-guard.js';
+import type { PopupHost } from '../popups/popup-host.js';
 import { PRICING_ACTION_SET, PRICING_NOT_RECORDED } from '../render/tui/pricing-card.js';
 import {
   defaultSubscribeProcessExit,
   defaultSubscribeSignals,
   driveHome,
   type HomeDeps,
-  type OnboardingTerminalLifecycle,
 } from './drive-home.js';
+import {
+  answerModelsPopup,
+  openModelsPopup,
+  settleModelsForm,
+} from './models-popup.test-support.js';
 import { shouldOpenHome } from './should-open-home.js';
 import { RunHost, type RunHostSnapshot } from './run-host.js';
+
+// A `/models` answer waits out the form's lockout (`models-popup.test-support.ts`: a held key's first repeat never applies a form), which is
+// real time here: the tests that answer one need more than the default five seconds.
+vi.setConfig({ testTimeout: 30_000 });
 
 /** The one named bound of every `vi.waitFor` in this file: a wait that needs it is a defect, not a slow machine. */
 const WAIT_MS = 5000;
 /** The slack a real-clock dwell is waited past its constant, so a key pressed at the edge lands inside the window it needs. */
 const SETTLE_MARGIN_MS = 200;
+
+/**
+ * The lines of the report popup the Home has open once it has opened (`/agent`, `/cost`, `/workflows`, `/help`; ADR-0148 §10): the popup is
+ * opened by the controller's routing through `openReport` and its code is loaded on first use, so it appears a moment after the line is typed.
+ */
+async function openedReport(props: RootAppProps, id: string): Promise<string> {
+  const popups = props.popups;
+  if (popups === undefined) throw new Error('the Home was rendered without a popup host');
+  await vi.waitFor(() => expect(popups.getSnapshot().frame?.spec.id).toBe(id), {
+    timeout: WAIT_MS,
+  });
+  const content = popups.getSnapshot().frame?.steps[0]?.content;
+  return content?.kind === 'report' ? content.lines.join('\n') : '';
+}
+
+/** `Esc` on the open popup: the render is injected in these tests, so nothing routes a key to the popup host but the test. */
+function closeReport(props: RootAppProps): void {
+  props.popups?.input('', { escape: true });
+  expect(props.popups?.getSnapshot().open, 'the popup closed').toBe(false);
+}
 
 // Default production mounts are intercepted only to supply owned, handle-free TTY streams.
 // Preserve every production render option and observe real Ink writes before the journal sweep.
@@ -159,25 +182,10 @@ function capturingResolver(scripts: StreamChunk[][]): {
     requests,
   };
 }
-/** The Permissions tab's sheet, while the Home's tab host is open on it (the bare Home's `/permissions`, ADR-0140 §3); `undefined` otherwise. */
-const tabSheetOf = (props: RootAppProps) => {
-  const screen = props.controller.getSnapshot().screen;
-  return screen?.kind === 'tab-host' ? screen.host.sheet : undefined;
-};
 const type = (props: RootAppProps, text: string): void => {
   for (const ch of text) props.controller.handleKey(ch, {});
 };
 
-/** A scripted onboarding prompter that CANCELS immediately (its `select` returns the cancel sentinel) — the default
- *  for every drive-home test so a key-less resolver never triggers the REAL clack prompts (which render to stdout). */
-const CANCEL_ONBOARDING: ClackOnboardingDeps = {
-  intro: () => undefined,
-  outro: () => undefined,
-  note: () => undefined,
-  select: () => Promise.resolve(Symbol('cancel')),
-  password: () => Promise.resolve(Symbol('cancel')),
-  isCancel: (v): v is symbol => typeof v === 'symbol',
-};
 const ENTER = { return: true } as const;
 const CTRL_C = { ctrl: true } as const;
 const INERT_JOB_CONTROL: JobControlLifecycle = {
@@ -186,12 +194,6 @@ const INERT_JOB_CONTROL: JobControlLifecycle = {
   onContinue: () => () => undefined,
   suspendSelf: () => undefined,
 };
-const INERT_ONBOARDING_TERMINAL: OnboardingTerminalLifecycle = {
-  onInput: () => () => undefined,
-  isRawMode: () => false,
-  setRawMode: () => undefined,
-};
-
 const NATIVE_RETURN = {
   upArrow: false,
   downArrow: false,
@@ -292,6 +294,8 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         capture(props);
         const native = props.nativePrompt;
         native?.bindVisibility((expected) => native.getSnapshot() === expected);
+        // No Home root is mounted here, so nothing binds the popup host's gate as RootApp does, and a host with none opens nothing: open.
+        props.popups?.bindOpenGate(() => undefined);
         props.onRendererReady?.(async (publish) => {
           await publish?.();
         });
@@ -314,13 +318,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       // Signal-oriented tests intentionally leave some drives pending after a simulated process exit. Keep their
       // default hermetic: dedicated G0 tests inject a recording POSIX lifecycle instead of leaking real listeners.
       jobControlLifecycle: INERT_JOB_CONTROL,
-      onboardingTerminalLifecycle: INERT_ONBOARDING_TERMINAL,
       writeControl,
       exit: () => undefined,
-      // A cancel-immediately onboarding prompter by DEFAULT, so a key-less resolver (e.g. the real keychain-backed
-      // resolver over the mocked empty keychain) never invokes the REAL clack prompts in a test (which would render
-      // to stdout / block). A wizard-specific test overrides this with a scripted flow.
-      onboardingPrompter: CANCEL_ONBOARDING,
+      // The automatic first-run setup is OFF by default, so a key-less resolver (e.g. the real keychain-backed resolver over the mocked
+      // empty keychain) does not open the setup popup over what a test drives; a first-run test takes this out (production's default).
+      firstRunSetup: 'off',
       ...overrides,
     };
     return { deps, unmount, writeControl, signalHandlers, exitHandlers };
@@ -449,16 +451,8 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         timeout: WAIT_MS,
       });
       const original = ui.controller.getSnapshot().session;
-      ui.controller.handleKey('/', {});
-      type(ui, 'models');
-      ui.controller.handleKey('', ENTER);
-      await vi.waitFor(() => expect(ui.controller.getSnapshot().modelPicker).toBeDefined(), {
-        timeout: WAIT_MS,
-      });
-      type(ui, 'claude-opus-4-8');
-      ui.controller.handleKey('', ENTER);
-      if (ui.controller.getSnapshot().modelPicker?.phase === 'effort')
-        ui.controller.handleKey('', ENTER);
+      // The `/models` popup's `This chat` on opus: the Home's reseat.
+      await answerModelsPopup(ui, 'claude-opus-4-8', { waitMs: WAIT_MS });
       await vi.waitFor(() => expect(closeMcp).toHaveBeenCalledOnce(), { timeout: WAIT_MS });
       expect(closeOutputStore).toHaveBeenCalledOnce();
       expect(ui.controller.getSnapshot().session).toBe(original);
@@ -501,6 +495,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       await vi.waitFor(() => expect(props).toBeDefined(), { timeout: WAIT_MS });
       if (props === undefined) throw new Error('Home did not mount');
       const home = props;
+      // The live host's acknowledgement: every frame of the channel is measured and flushed at once (the `/resume` popup's opening guard
+      // starts at its first such frame).
+      const native = home.nativePrompt;
+      native?.subscribe(() => native.shown(native.getSnapshot()));
       type(home, 'hello');
       home.controller.handleKey('', { return: true });
       await vi.waitFor(
@@ -526,6 +524,8 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         kind: 'session',
         id: first.sessionId,
       });
+      // The slide to the work page arrives before `Enter`: one pressed while it slides opens nothing (MVP-11 unit 7, round 1: SE71).
+      await vi.waitFor(() => expect(home.controller.getSnapshot().slide).toBeUndefined());
       const display = vi.spyOn(store, 'loadUserDisplayTexts');
       display.mockImplementationOnce(() => {
         throw new Error('PRIVATE_DISPLAY_FAILURE');
@@ -536,6 +536,13 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       });
       expect(build).not.toHaveBeenCalled();
       expect(home.nativePrompt?.getSnapshot().selected).toBe(1); // Return is the safe default.
+      // The retry question is the `/resume` popup's Restore step; an `Enter` counts once the popup's opening settle has passed on screen.
+      expect(home.nativePrompt?.getSnapshot().popup).toMatchObject({
+        title: '/resume',
+        stepNames: ['Session', 'Restore'],
+        stepIndex: 1,
+      });
+      await new Promise((resolve) => setTimeout(resolve, POPUP_SELECT_SETTLE_MS + 50));
       home.nativePrompt?.input('', NATIVE_RETURN);
       await vi.waitFor(() => expect(home.controller.getSnapshot().nativeActionBusy).toBe(false), {
         timeout: WAIT_MS,
@@ -560,11 +567,14 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       expect(build.mock.calls[0]?.[0].record.context.workingDir).toBe(realpathSync.native(cwd));
       expect(build.mock.calls[0]?.[0].deferMissingKey).toBe(true);
       expect(
-        resumed?.store
-          .getSnapshot()
-          .state.transcript.some(
-            (row) => row.role === 'notice' && row.text.includes('no usable key'),
-          ),
+        resumed?.store.getSnapshot().state.transcript.some(
+          (row) =>
+            row.role === 'notice' &&
+            row.text.includes('no usable key') &&
+            // The chat the Home hosts answers `/providers` with a pointer only: the remedy is the way back.
+            row.text.includes('Go back to the Home ([Ctrl+C] twice) and use /providers') &&
+            row.text.includes('/models'),
+        ),
       ).toBe(true);
       await resumed?.processLine('must not reach the provider');
       expect(
@@ -600,11 +610,19 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         () => expect(home.nativePrompt?.getSnapshot().options[0]?.value).toBe('foreign-session'),
         { timeout: WAIT_MS },
       );
+      // What the Home says on its one notification channel from here (ADR-0148 §6), shown or queued.
+      const channel = home.notifications;
+      if (channel === undefined) throw new Error('the Home has no notification channel');
+      const notify = vi.spyOn(channel, 'notify');
+      const notified = (): string[] => notify.mock.calls.map((call) => call[0]);
+      await new Promise((resolve) => setTimeout(resolve, POPUP_SELECT_SETTLE_MS + 50));
       home.nativePrompt?.input('', NATIVE_RETURN);
       await vi.waitFor(() => expect(home.controller.getSnapshot().nativeActionBusy).toBe(false), {
         timeout: WAIT_MS,
       });
-      expect(home.controller.getSnapshot().notice).toContain('another directory');
+      // A session of another directory is refused in one notification, never in the Home's notice or the chat.
+      expect(notified().join('\n')).toContain('another directory');
+      expect(home.controller.getSnapshot().notice ?? '').not.toContain('another directory');
       expect(build).toHaveBeenCalledTimes(1);
       home.controller.handleKey('c', { ctrl: true });
       home.controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
@@ -680,22 +698,30 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       'the picker offers this directory’s conversation and not the other one',
     ).toEqual([first.sessionId]);
 
-    // What the /agents strip lists: the agent of the project, and the picker's conversations.
+    // What the /agents popup lists: the agents of the project, read through the Home's own port. The strip's Sessions tab went with it: a saved
+    // conversation is `/resume`'s, and the popup's detail points there.
     type(home, '/agents');
     home.controller.handleKey('', ENTER);
-    const screen = home.controller.getSnapshot().screen;
-    const defined = screen?.kind === 'tab-host' ? screen.host.agents : undefined;
-    expect(defined?.read.model.rows.map((row) => [row.slug, row.state])).toEqual([
-      ['reviewer', 'ready'],
-    ]);
-    home.controller.handleKey('', { rightArrow: true });
-    const next = home.controller.getSnapshot().screen;
-    const sessions = next?.kind === 'tab-host' ? next.host.sessions : undefined;
+    const popups = home.popups;
+    if (popups === undefined) throw new Error('the Home was rendered without a popup host');
+    await vi.waitFor(() => expect(popups.getSnapshot().frame?.spec.id).toBe('agents'), {
+      timeout: WAIT_MS,
+    });
+    await vi.waitFor(
+      () => expect(popups.getSnapshot().frame?.steps[0]?.content.kind).toBe('list'),
+      { timeout: WAIT_MS },
+    );
+    const listed = popups.getSnapshot().frame?.steps[0]?.content;
     expect(
-      sessions?.read.rows.map((row) => row.id),
-      'the Sessions tab lists what the picker offers, in the same working directory',
-    ).toEqual(offered);
-    home.controller.handleKey('', { escape: true });
+      listed?.kind === 'list'
+        ? listed.rows
+            .filter((row) => row.section !== true)
+            .map((row) => [row.label.trim(), row.tail?.words])
+        : [],
+    ).toEqual([['reviewer', 'ready']]);
+    popups.input('', { escape: true });
+    expect(popups.getSnapshot().open, 'Esc closes the popup to the Home').toBe(false);
+    expect(home.controller.getSnapshot().mode).toBe('home');
     home.controller.handleKey('c', { ctrl: true });
     home.controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
     expect(await running).toBe(0);
@@ -898,6 +924,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(settled, 'the Home is still there').toBe(false);
     expect(cancel).not.toHaveBeenCalled();
     props.controller.bindHomeFrame(() => true); // the host measured the card on screen (this mount paints nothing)
+    // The person reads the card for its lockout, which runs from its appearance since MVP-11 unit 8: the guards' monotonic clock steps
+    // forward by it (restored after the test).
+    const real = performance.now.bind(performance);
+    vi.spyOn(performance, 'now').mockImplementation(() => real() + APPROVAL_LOCKOUT_MS);
     props.controller.handleKey('y', { ctrl: true }); // Ctrl+Y
     expect(cancel).toHaveBeenCalledOnce();
     expect(await running).toBe(0);
@@ -1165,7 +1195,8 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
 
     const snap = props.controller.getSnapshot().snapshot;
     expect(snap.isEmpty).toBe(true);
-    expect(snap.attention.gates).toEqual([]);
+    expect(snap.failedRuns).toEqual([]);
+    expect(snap.totals).toEqual({ attention: 0, sessions: 0, runs: 0 });
 
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
@@ -1173,11 +1204,13 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   });
 
   it('reconciles a crashed run BEFORE the first strip read (2.6.G liveness, #229)', async () => {
-    // A run whose process died: `run:started` is durable, there is no terminal and no lease.
+    // A run whose process died: `run:started` is durable, there is no terminal and no lease. It was started in this Home's directory
+    // (the Home lists this directory's runs only, MVP-11 unit 7), recorded as a run records it: canonical (round 2).
     const runs = createRunHistoryStore(client.db, {
       uuid: () => randomUUID(),
       now: () => Date.now(),
       workflow: { slug: 'crashed', name: 'crashed', definitionJson: '{}' },
+      projectRoot: realpathSync.native(cwd),
     });
     const runId = randomUUID();
     await runs.persistEvent(
@@ -1227,7 +1260,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(order).toEqual(['signals', 'exit-net', 'reconcile', 'mount']);
     // The first snapshot already shows the run as failed, in "attention" — never as a `running` row.
     const snap = props.controller.getSnapshot().snapshot;
-    expect(snap.attention.failedRuns.map((run) => run.runId)).toEqual([runId]);
+    expect(snap.failedRuns.map((run) => run.runId)).toEqual([runId]);
 
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
@@ -1491,7 +1524,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   }, 10000);
 
   it.each(['unexpected', 'known-config-refusal'] as const)(
-    'observes an owned /models default-write %s before inline picker recovery',
+    'observes an owned /models default-write %s, and says a known refusal on the Home’s channel',
     async (mode) => {
       const f = invocationFixture();
       const configFile = join(cwd, 'owned-picker-config.toml');
@@ -1511,15 +1544,14 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       const props = captured;
       if (props === undefined) throw new Error('Home did not mount');
       try {
-        props.controller.handleKey('/', {});
-        type(props, 'models');
-        props.controller.handleKey('', ENTER);
-        await flush();
-        expect(props.controller.getSnapshot().modelPicker?.entries.length).toBeGreaterThan(0);
-        const postSealHints: Array<string | undefined> = [];
+        const popups = await openModelsPopup(props, { waitMs: WAIT_MS });
+        // The bare Home's own popup: said to be from the Home, over the Home's own port.
+        expect(popups.getSnapshot().frame?.spec.origin).toBe('home');
+        // Nothing is said on the Home's channel, nor drawn as its notice, once its input has sealed.
+        const postSealNotices: Array<string | undefined> = [];
         const unsubscribe = props.controller.subscribe(() => {
           if (props.inputEnabled?.() === false)
-            postSealHints.push(props.controller.getSnapshot().modelPicker?.hint);
+            postSealNotices.push(props.controller.getSnapshot().notice);
         });
         if (mode === 'unexpected') {
           // This native entry is before the real writer's filesystem catch; no errno or arbitrary
@@ -1528,11 +1560,15 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
             throw new Error('PRIVATE_HOME_CONFIG_INVARIANT');
           });
         } else writeFileSync(configFile, '[preferences\n');
-        props.controller.handleKey('', ENTER);
-        if (props.controller.getSnapshot().modelPicker?.phase === 'effort')
-          props.controller.handleKey('', ENTER);
+        // `Enter` on opus, `Enter` on its form: the popup closes and hands the default to the Home's writer.
+        for (const ch of 'claude-opus-4-8') popups.input(ch, {});
+        popups.input('', { return: true });
+        await settleModelsForm(popups); // the form is a frame of its own, with its own settle
+        popups.input('', { return: true });
+        expect(popups.getSnapshot().open).toBe(false);
         // Native preference publication now awaits visible rewrite acknowledgement.
-        // Observe the settled write before checking owner disposition and inline recovery.
+        // Observe the settled write before checking owner disposition and the word on the Home's channel.
+        await flush();
         await flush();
         if (mode === 'unexpected') {
           expect(randomUUID).toHaveBeenCalledOnce();
@@ -1543,15 +1579,24 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
           expect(f.registry.budget.deadline()).toBe(3000);
           expect(await drive).toBe(9);
           unsubscribe();
-          expect(postSealHints, 'HOME_DEFAULT_WRITE_NO_POSTSEAL_PUBLICATION').toEqual([]);
+          expect(
+            postSealNotices.filter((notice) => notice !== undefined),
+            'HOME_DEFAULT_WRITE_NO_POSTSEAL_PUBLICATION',
+          ).toEqual([]);
         } else {
           unsubscribe();
-          expect(postSealHints).toEqual([]);
-          expect(props.controller.getSnapshot().modelPicker?.hint).toContain('could not save');
+          expect(postSealNotices.filter((notice) => notice !== undefined)).toEqual([]);
+          await vi.waitFor(
+            () =>
+              expect(props.notifications?.getSnapshot().current?.text).toBe(
+                'The default model could not be saved',
+              ),
+            { timeout: WAIT_MS },
+          );
+          // Said on the Home's channel, never as its notice; the Home takes input again.
+          expect(props.controller.getSnapshot().notice).toBeUndefined();
+          expect(props.controller.getSnapshot().submitBusy).toBe(false);
           expect(f.registry.termination).toBeUndefined();
-          props.controller.handleKey('', { escape: true });
-          props.controller.handleKey('', { escape: true });
-          expect(props.controller.getSnapshot().modelPicker).toBeUndefined();
           props.controller.handleKey('c', CTRL_C);
           props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
           expect(await drive).toBe(0);
@@ -1591,31 +1636,21 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const props = captured;
     if (props === undefined) throw new Error('the injected render was never invoked');
 
-    // Open the /models picker via the Home palette, let its background refresh settle.
-    props.controller.handleKey('/', {});
-    type(props, 'models');
-    props.controller.handleKey('', ENTER);
-    await flush();
-    const picker = props.controller.getSnapshot().modelPicker;
-    if (picker === undefined || picker.entries.length === 0) {
-      throw new Error('the /models picker did not open with catalog entries');
-    }
-    const chosen = picker.entries[picker.selected]?.modelId; // the highlighted model (filter empty ⇒ entries[0])
-    if (chosen === undefined) throw new Error('no selected model');
-
-    props.controller.handleKey('', ENTER); // accept the model
-    // ADR-0066 §6: a reasoning-capable pick advances to the bare-Home effort sub-step (writes model + effort); a
-    // non-reasoning one writes + closes directly. Accept the (default) effort too when the sub-step opened, and
-    // capture the tier it will write (the opening highlight) so the next-chat re-read can be asserted.
-    let writtenEffort: ReasoningEffort | undefined;
-    const effortStep = props.controller.getSnapshot().modelPicker;
-    if (effortStep?.phase === 'effort') {
-      writtenEffort = REASONING_EFFORTS[effortStep.effortSelected]; // the tier the opening highlight accepts
-      props.controller.handleKey('', ENTER); // accept the default effort ⇒ writeGlobalPreferences(chosen, effort)
-    }
-    await flush(); // the actual preference port acknowledges its visible notice before publication
-    expect(props.controller.getSnapshot().modelPicker).toBeUndefined(); // picker closed on accept
-    expect(props.controller.getSnapshot().notice).toContain('next chat session'); // honest success (write took effect)
+    // `/models` on the bare Home: opus (a model other than the default the popup opens on, so the write is not the no-op of a bare
+    // `Enter` chain), its form's tier as it opens (ADR-0066 §6: the default model and its effort in one write).
+    const chosen = 'claude-opus-4-8';
+    const popups = await answerModelsPopup(props, chosen, { waitMs: WAIT_MS });
+    const writtenEffort: ReasoningEffort | undefined = 'medium';
+    // The actual preference port acknowledges its visible notice before publication; what it came to is said on the Home's channel.
+    await vi.waitFor(
+      () =>
+        expect(props.notifications?.getSnapshot().current?.text).toBe(
+          'Default model: claude-opus-4-8 · applies to new chats',
+        ),
+      { timeout: WAIT_MS },
+    );
+    expect(popups.getSnapshot().open).toBe(false);
+    expect(props.controller.getSnapshot().notice).toBeUndefined();
 
     // Start a chat — the NEXT session MUST bind the just-chosen model (the fresh re-read), not a stale startup default.
     type(props, 'hello');
@@ -1699,18 +1734,23 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     props.controller.handleKey('', ENTER); // submit => startChat => the config read throws a ConfigError
     await flush();
 
-    const banner = props.controller.getSnapshot().errorText ?? '';
-    expect(banner.startsWith(`~${sep}.relavium${sep}config.toml: is not valid TOML`)).toBe(true);
+    // The failure is the Home's notice now (it wraps and pages: the one-row line it was cut the remedy off), after one fixed lead-in.
+    const banner = props.controller.getSnapshot().notice ?? '';
+    expect(banner.startsWith('Couldn’t start the chat: ')).toBe(true);
+    expect(banner).toContain(`~${sep}.relavium${sep}config.toml: is not valid TOML`);
     expect(banner, 'the operator home is not in the banner').not.toContain(testHomeDir);
+    expect(props.controller.getSnapshot().input.text, 'the message comes back to the prompt').toBe(
+      'hello',
+    );
 
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
-  it('ADR-0137: the in-Home chat is wired to the /permissions sheet through its own line handler, and a typed /permissions opens it', async () => {
-    // The wired-but-dead field: a Home session built without `permissions` would still pass every controller test that hands the controller
-    // a fake session, and `/permissions` would quietly answer "not available". This drives the REAL `startChat` and reads what it built.
+  it('ADR-0137 §2 as a popup (MVP-11 step 5c): the in-Home chat is wired to the /permissions popup through its own line handler, and a typed /permissions opens it', async () => {
+    // The wired-but-dead field: a Home session built without `settings.permissions` would still pass every controller test that hands the
+    // controller a fake session, and `/permissions` would quietly answer "not available". This drives the REAL `startChat` and reads what it built.
     let captured: RootAppProps | undefined;
     const { deps } = makeDeps((p) => (captured = p));
     const drivePromise = driveHome(deps);
@@ -1725,7 +1765,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false), {
       timeout: WAIT_MS,
     });
-    const permissions = props.controller.getSnapshot().session?.permissions;
+    const permissions = props.controller.getSnapshot().session?.settings?.permissions?.port;
     expect(permissions?.surface, 'the session carries the port').toBe('chat');
     // The port reads the real store through the mocked keychain: no key was ever written, so the project's list is empty and readable.
     expect(permissions?.load().project).toEqual({ ok: true, rows: [] });
@@ -1733,12 +1773,13 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
 
     type(props, '/permissions');
     props.controller.handleKey('', ENTER);
-    await vi.waitFor(() => expect(props.controller.getSnapshot().chatSheet).toBeDefined(), {
+    await vi.waitFor(() => expect(props.popups?.getSnapshot().frame?.spec.id).toBe('permissions'), {
       timeout: WAIT_MS,
     });
-    expect(permissionsSheetOf(props.controller.getSnapshot().chatSheet)?.surface).toBe('chat');
-    props.controller.handleKey('', { escape: true });
-    expect(props.controller.getSnapshot().chatSheet).toBeUndefined();
+    // Nothing remembered and nothing approved: the popup says so, and writes nothing into the Home's notice or the transcript.
+    expect(props.popups?.getSnapshot().frame?.steps[0]?.content.kind).toBe('empty');
+    expect(props.controller.getSnapshot().notice).toBeUndefined();
+    closeReport(props);
 
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
@@ -1748,9 +1789,9 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
-  it('ADR-0140 §3: the in-Home chat is wired to the /agent sheet through its own line handler, and a typed /agent opens the built-in agent’s fields', async () => {
-    // The wired-but-dead field again: a Home session built without `boundAgent` would still pass every controller test that hands the
-    // controller a fake session, and `/agent` would be dispatched to a chat that prints a notice behind the sheet's back. This drives the
+  it('ADR-0148 §10: the in-Home chat is wired to the /agent popup through its own line handler, and a typed /agent opens the built-in agent’s fields', async () => {
+    // The wired-but-dead field again: a Home session built without `reports` would still pass every controller test that hands the
+    // controller a fake session, and `/agent` would be dispatched to a chat that prints a notice behind the popup's back. This drives the
     // REAL `startChat` and reads what it built.
     let captured: RootAppProps | undefined;
     const { deps } = makeDeps((p) => (captured = p));
@@ -1766,20 +1807,22 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false), {
       timeout: WAIT_MS,
     });
-    const view = props.controller.getSnapshot().session?.boundAgent?.();
+    const reports = props.controller.getSnapshot().session?.reports;
+    expect(reports?.surface, 'the session carries the port of the Home’s chat').toBe('home-chat');
+    // `[c] copy` rides the Home's one clipboard closure, as `/copy` and the doctor's `[c]` do.
+    expect(typeof reports?.clipboard).toBe('function');
+    const view = reports?.agent?.();
     expect(view?.id, 'the session carries the view of its own agent').toBe('relavium-chat');
     expect(view?.builtIn).toBe(true);
 
     props.controller.handlePaste('/agent');
     props.controller.handleKey('', ENTER);
-    await vi.waitFor(() => expect(props.controller.getSnapshot().chatSheet?.kind).toBe('agent'), {
-      timeout: WAIT_MS,
-    });
-    const sheet = props.controller.getSnapshot().chatSheet;
-    expect(sheet?.kind === 'agent' ? sheet.view.detail.model : undefined).toBe(view?.detail.model);
-    expect(sheet?.kind === 'agent' ? sheet.view.sessionEffort : 'a sheet').toBeUndefined();
-    props.controller.handleKey('', { escape: true });
-    expect(props.controller.getSnapshot().chatSheet).toBeUndefined();
+    const shown = await openedReport(props, 'agent');
+    expect(shown).toContain(view?.detail.model ?? 'no model');
+    expect(shown).toMatch(/Reasoning effort\s+not set/u);
+    // Nothing reaches the Home's notice or the transcript (ADR-0148 §6).
+    expect(props.controller.getSnapshot().notice).toBeUndefined();
+    closeReport(props);
 
     // The reasoning effort the row shows is the SESSION's, the footer's: `/effort` changes the session and never the definition, so a view
     // made before it (or kept past it) would still say `not set`.
@@ -1797,20 +1840,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     });
     props.controller.handlePaste('/agent');
     props.controller.handleKey('', ENTER);
-    const afterEffort = props.controller.getSnapshot().chatSheet;
-    expect(afterEffort?.kind === 'agent' ? afterEffort.view.sessionEffort : undefined).toBe('high');
-    expect(
-      afterEffort?.kind === 'agent' ? afterEffort.view.detail.reasoningEffort : 'a sheet',
-    ).toBeUndefined();
-    const drawn =
-      afterEffort?.kind === 'agent'
-        ? agentSheetLines(afterEffort.view, { columns: 80, terminalRows: 24 }).map(
-            (line) => line.text,
-          )
-        : [];
-    expect(drawn.join('\n')).toMatch(/Reasoning effort\s+high \(declared: not set\)/u);
-    props.controller.handleKey('', { escape: true });
-    expect(props.controller.getSnapshot().chatSheet).toBeUndefined();
+    expect(await openedReport(props, 'agent')).toMatch(
+      /Reasoning effort\s+high \(declared: not set\)/u,
+    );
+    closeReport(props);
 
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
@@ -1820,7 +1853,146 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
-  it('ADR-0137 §3: the bare Home is wired to the Permissions tab over the real store, and a bare `relavium permissions` opens it and ends the run when it is closed', async () => {
+  it('ADR-0148 §3, §6: the in-Home chat is wired to the /effort popup through its own line handler, and its announcements reach the Home’s channel, never the transcript', async () => {
+    // The wired-but-dead field: a Home session built without `settings`, or a handler whose announcer the Home never bound, passes every
+    // controller test that hands it a fake session. This drives the REAL `startChat` and reads what it built.
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((p) => (captured = p));
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('the injected render was never invoked');
+    const popups = props.popups;
+    const notifications = props.notifications;
+    if (popups === undefined || notifications === undefined)
+      throw new Error('the Home was rendered without its popup host and channel');
+
+    type(props, 'hello');
+    props.controller.handleKey('', ENTER); // submit ⇒ startChat ⇒ the real createChatLineHandler
+    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'), {
+      timeout: WAIT_MS,
+    });
+    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false), {
+      timeout: WAIT_MS,
+    });
+    const session = props.controller.getSnapshot().session;
+    expect(session?.settings?.surface, 'the session carries the port of the Home’s chat').toBe(
+      'home-chat',
+    );
+    const store = session?.store;
+    if (store === undefined) throw new Error('no chat store');
+    const transcript = (): number => store.getSnapshot().state.transcript.length;
+    const before = transcript();
+
+    // A typed value applies through the dispatch and announces on the Home's channel; the transcript is untouched.
+    props.controller.handlePaste('/effort high');
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(store.getSnapshot().reasoningEffort).toBe('high'), {
+      timeout: WAIT_MS,
+    });
+    await vi.waitFor(
+      () =>
+        expect(notifications.getSnapshot().current?.text).toBe(
+          'Reasoning effort: high · applies to the next message',
+        ),
+      { timeout: WAIT_MS },
+    );
+    expect(transcript()).toBe(before);
+    expect(props.controller.getSnapshot().notice).toBeUndefined();
+
+    // The bare command opens the popup on the Home's host (the code is loaded on first use).
+    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false), {
+      timeout: WAIT_MS,
+    });
+    props.controller.handlePaste('/effort');
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(popups.getSnapshot().frame?.spec.id).toBe('effort'), {
+      timeout: WAIT_MS,
+    });
+    popups.input('', { escape: true });
+    expect(popups.getSnapshot().open).toBe(false);
+    expect(transcript()).toBe(before);
+
+    props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
+    await flush();
+    props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C);
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
+  it('ADR-0145 §7: the chat the Home hosts prints its own commands in /help and in the unknown-slash hint, the rows its palette shows', async () => {
+    // Wired through the REAL `startChat`: the line handler is built with the `home-chat` surface only where the Home's chat is built, and a
+    // handler built with the default would print a stand-alone chat's list (`/exit` reading "End the chat session.", no `/resume`).
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((p) => (captured = p));
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('the injected render was never invoked');
+
+    type(props, 'hello');
+    props.controller.handleKey('', ENTER); // submit ⇒ startChat ⇒ the real createChatLineHandler
+    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'), {
+      timeout: WAIT_MS,
+    });
+    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false), {
+      timeout: WAIT_MS,
+    });
+    const notices = (): string[] =>
+      (props.controller.getSnapshot().session?.store.getSnapshot().state.transcript ?? []).flatMap(
+        (entry) => (entry.role === 'notice' ? [entry.text] : []),
+      );
+
+    props.controller.handleKey('/', {}); // the chat's palette opens: its rows are what `/help` must list
+    const palette = props.controller.getSnapshot().palette;
+    const rows = (palette?.list.rows ?? []).map(
+      (row) => `  /${row.command.name}  ${row.description}`,
+    );
+    expect(rows.length, 'the palette lists the chat’s commands').toBeGreaterThan(10);
+    props.controller.handleKey('', { escape: true });
+
+    // ADR-0148 §10: `/help` in a chat is a popup (the plain chat prints the text, `chat.test.ts`), and it lists the rows of the chat's own
+    // palette, in its order and in the words of this surface.
+    props.controller.handlePaste('/help');
+    props.controller.handleKey('', ENTER);
+    const help = await openedReport(props, 'help');
+    const commandLines = help
+      .split('\n')
+      .slice(1, help.split('\n').indexOf(''))
+      .filter((line) => line.startsWith('  /'));
+    expect(
+      commandLines.map((line) => line.trim().split(/\s+/u)[0]),
+      'the rows of /help are the rows of the palette, in its order',
+    ).toEqual((palette?.list.rows ?? []).map((row) => `/${row.command.name}`));
+    expect(help).toMatch(/\/exit\s+Leave this chat and go back to the Home\./u);
+    expect(help).toMatch(/\/resume\s/u);
+    expect(help).not.toContain('End the chat session.');
+    expect(rows.length).toBe(commandLines.length);
+    expect(notices().some((text) => text.startsWith('Commands:'))).toBe(false); // nothing in the transcript
+    closeReport(props);
+    await flush(); // the line is done: the next one is read only when the chat is idle again
+
+    props.controller.handlePaste('/nosuchword');
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(
+      () => expect(notices().some((text) => text.includes('Available:'))).toBe(true),
+      {
+        timeout: WAIT_MS,
+      },
+    );
+    const hint = notices().find((text) => text.includes('Available:')) ?? '';
+    expect(hint).toBe(
+      `unknown command '/nosuchword'. Available: ${(palette?.list.rows ?? []).map((row) => `/${row.command.name}`).join(', ')}.`,
+    );
+
+    props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
+    await flush();
+    props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C);
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
+  it('ADR-0137 §3 as a popup (MVP-11 unit 8): a bare `relavium permissions` opens the project popup over the real store with no chat behind it, and ends the run when it is closed', async () => {
     // The wired-but-dead field again: a Home built without the port would answer "not available" and every controller test would
     // still pass. This drives the REAL `driveHome` with `openPermissions` and reads what it built.
     let captured: RootAppProps | undefined;
@@ -1828,39 +2000,90 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const drivePromise = driveHome({ ...deps, openPermissions: true });
     const props = captured;
     if (props === undefined) throw new Error('the injected render was never invoked');
-    // The tab is already open on the project's list (no key was ever written: empty and readable), with no chat behind it.
-    expect(props.controller.getSnapshot().mode).toBe('home');
-    expect(tabSheetOf(props)?.surface).toBe('project');
-    expect(tabSheetOf(props)?.snapshot.project).toEqual({
-      ok: true,
-      rows: [],
+    const popups = props.popups;
+    if (popups === undefined) throw new Error('the Home was rendered without a popup host');
+    await vi.waitFor(() => expect(popups.getSnapshot().frame?.spec.id).toBe('permissions'), {
+      timeout: WAIT_MS,
     });
-    expect(tabSheetOf(props)?.snapshot.session).toBeUndefined();
-    props.controller.handleKey('', { escape: true });
+    // The popup is the Home's own (from the Home, no session behind it): the project's list is empty and readable, so it is a report of the
+    // same lines, with no "This session" section (there is no session) and the note that says how a command becomes remembered.
+    expect(props.controller.getSnapshot().mode).toBe('home');
+    expect(props.controller.getSnapshot().session, 'no chat behind it').toBeUndefined();
+    expect(popups.getSnapshot().frame?.spec.origin).toBe('home');
+    const content = popups.getSnapshot().frame?.steps[0]?.content;
+    const lines =
+      content?.kind === 'report'
+        ? content.lines
+        : content?.kind === 'list'
+          ? content.rows.map((row) => row.label)
+          : [];
+    expect(lines.join('\n')).not.toContain('This session');
+    // Esc closes it, and the run ends with it: the popup was the whole job.
+    popups.input('', { escape: true });
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
-  it('ADR-0137 §3: an ordinary Home opens no tab of its own, and the typed command opens the project list without ending the Home', async () => {
+  it('ADR-0137 §3 as a popup: an ordinary Home opens no popup of its own, and the typed command opens the project list without ending the Home', async () => {
     let captured: RootAppProps | undefined;
     const { deps } = makeDeps((p) => (captured = p));
     const drivePromise = driveHome(deps);
     const props = captured;
     if (props === undefined) throw new Error('the injected render was never invoked');
-    expect(tabSheetOf(props)).toBeUndefined();
+    const popups = props.popups;
+    if (popups === undefined) throw new Error('the Home was rendered without a popup host');
+    expect(popups.getSnapshot().open).toBe(false);
     props.controller.handleKey('/', {});
     for (const ch of 'permissions') props.controller.handleKey(ch, {});
     props.controller.handleKey('', ENTER);
-    await vi.waitFor(() => expect(tabSheetOf(props)).toBeDefined(), {
+    await vi.waitFor(() => expect(popups.getSnapshot().frame?.spec.id).toBe('permissions'), {
       timeout: WAIT_MS,
     });
-    props.controller.handleKey('', { escape: true });
+    expect(popups.getSnapshot().frame?.spec.origin).toBe('home');
+    popups.input('', { escape: true });
+    expect(popups.getSnapshot().open).toBe(false);
     expect(props.controller.getSnapshot().mode).toBe('home');
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C);
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
-  describe('ADR-0140 §2: the bare Home’s `/workflows` is the Defined tab over the project’s own catalog and pins', () => {
+  it('ADR-0148 §10 as amended (MVP-11 unit 8): `/help` on the bare Home is a popup of the Home’s keys and commands, and its `[c] copy` rides the Home’s one clipboard', async () => {
+    // The wired-but-dead field once more: a Home that handed the popup no clipboard would still open and draw it, and `[c]` would write nowhere.
+    let captured: RootAppProps | undefined;
+    const { deps, writeControl } = makeDeps((p) => (captured = p));
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('the injected render was never invoked');
+    const popups = props.popups;
+    if (popups === undefined) throw new Error('the Home was rendered without a popup host');
+    props.controller.handlePaste('/help');
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(popups.getSnapshot().frame?.spec.id).toBe('help'), {
+      timeout: WAIT_MS,
+    });
+    expect(popups.getSnapshot().frame?.spec.origin).toBe('home');
+    popups.bindVisibility(() => true);
+    popups.bindPageRows(() => 17);
+    popups.bindInnerWidth(() => 66);
+    popups.shown(popups.getSnapshot());
+    await new Promise<void>((resolve) => setTimeout(resolve, POPUP_SELECT_SETTLE_MS + 100));
+    popups.input('c', {});
+    await vi.waitFor(() => expect(writeControl).toHaveBeenCalled(), { timeout: WAIT_MS });
+    const written = String(writeControl.mock.calls.at(-1)?.[0]);
+    const decoded = Buffer.from(
+      written.replace(/^.*52;c;/su, '').replace(/[^A-Za-z0-9+/=].*$/su, ''),
+      'base64',
+    ).toString('utf8');
+    expect(decoded, 'what was copied is the popup’s own text').toContain('Commands');
+    expect(popups.getSnapshot().open, 'copying leaves the popup open').toBe(true);
+    popups.input('', { escape: true });
+    expect(popups.getSnapshot().open).toBe(false);
+    props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C);
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
+  describe('ADR-0148 §10 as amended (MVP-11 unit 8): the bare Home’s `/workflows` is a popup over the project’s own catalog and pins', () => {
     const WORKFLOW = (id: string): string => `schema_version: '1.0'
 workflow:
   id: ${id}
@@ -1870,10 +2093,6 @@ workflow:
   edges:
     - { from: start, to: out }
 `;
-    const definedOf = (props: RootAppProps) => {
-      const screen = props.controller.getSnapshot().screen;
-      return screen?.kind === 'tab-host' ? screen.host.defined : undefined;
-    };
     /** A project with two workflows, `beta` pinned in the Home's own `history.db`. */
     function project(): void {
       mkdirSync(join(cwd, '.relavium', 'workflows'), { recursive: true });
@@ -1914,6 +2133,65 @@ workflow:
       props.controller.handlePaste(line);
       props.controller.handleKey('', ENTER);
     };
+    /** The popup host of a Home that was rendered with one. */
+    const hostOf = (props: RootAppProps): PopupHost => {
+      if (props.popups === undefined) throw new Error('the Home was rendered without a popup host');
+      return props.popups;
+    };
+    /** What the popup shows on the step it is on. */
+    const contentOf = (popups: PopupHost) => {
+      const frame = popups.getSnapshot().frame;
+      return frame?.steps[frame.stepIndex]?.content;
+    };
+    /** The catalogue's own rows (not its heading), as the popup lists them. */
+    const catalogueRows = (popups: PopupHost) => {
+      const content = contentOf(popups);
+      return content?.kind === 'list'
+        ? content.rows.filter((row) => row.id.startsWith('wf:') || row.id.startsWith('pin:'))
+        : [];
+    };
+    /**
+     * The popup is open on the Home's host and its rows are on it. No Home root is mounted, so nothing measures the frame as the popup slot does:
+     * the test is the slot and says the frame is on screen, then waits out the opening guard's settle (real time), as `/models` does.
+     */
+    async function openCatalogue(props: RootAppProps): Promise<PopupHost> {
+      const popups = hostOf(props);
+      typeLine(props, '/workflows');
+      await vi.waitFor(() => expect(popups.getSnapshot().frame?.spec.id).toBe('workflows'), {
+        timeout: WAIT_MS,
+      });
+      popups.bindVisibility(() => true);
+      popups.bindPageRows(() => 17);
+      popups.bindInnerWidth(() => 66);
+      popups.shown(popups.getSnapshot());
+      await vi.waitFor(() => expect(catalogueRows(popups).length).toBeGreaterThan(0), {
+        timeout: WAIT_MS,
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, POPUP_SELECT_SETTLE_MS + 100));
+      return popups;
+    }
+    /** `Enter` on the highlighted row, then the detail's read has landed and the step's own quiet time has passed. */
+    async function intoDetail(popups: PopupHost): Promise<void> {
+      popups.input('', { return: true });
+      await vi.waitFor(() => expect(popups.getSnapshot().frame?.stepIndex).toBe(1), {
+        timeout: WAIT_MS,
+      });
+      await vi.waitFor(
+        () => {
+          const content = contentOf(popups);
+          expect(
+            content?.kind === 'list' && content.rows.some((row) => row.label.startsWith('File')),
+          ).toBe(true);
+        },
+        { timeout: WAIT_MS },
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, POPUP_SELECT_SETTLE_MS + 100));
+    }
+    const leaveHome = async (props: RootAppProps, drivePromise: Promise<unknown>) => {
+      props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C);
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    };
 
     it('lists the catalog the Home’s `/run` offers with the pins the Home’s database holds, pinned first, and starts no chat', async () => {
       project();
@@ -1922,22 +2200,22 @@ workflow:
       const drivePromise = driveHome(deps);
       const props = captured;
       if (props === undefined) throw new Error('the injected render was never invoked');
-      typeLine(props, '/workflows');
-      await vi.waitFor(() => expect(definedOf(props)).toBeDefined(), { timeout: WAIT_MS });
-      expect(definedOf(props)?.read.model.rows.map((row) => [row.slug, row.pinWord])).toEqual([
+      const popups = await openCatalogue(props);
+      expect(popups.getSnapshot().frame?.spec.origin).toBe('home');
+      expect(catalogueRows(popups).map((row) => [row.label.trim(), row.tail?.after])).toEqual([
         ['beta', 'pinned'],
-        ['alpha', 'unpinned'],
+        ['alpha', undefined],
       ]);
       expect(props.controller.getSnapshot().session, 'no chat began').toBeUndefined();
-      props.controller.handleKey('', { escape: true });
-      props.controller.handleKey('c', CTRL_C);
-      props.controller.handleKey('c', CTRL_C);
-      expect(await drivePromise).toBe(EXIT_CODES.success);
+      popups.input('', { escape: true });
+      expect(popups.getSnapshot().open, 'Esc closes the popup to the Home').toBe(false);
+      expect(props.controller.getSnapshot().mode).toBe('home');
+      await leaveHome(props, drivePromise);
     });
 
-    it('lists a workflow pinned under ANOTHER project as an `other-project` row, and names the pins the store holds: the Home hands the tab every pin, not only this project’s', async () => {
-      // The wired-but-dead field once more: a Home built without the all-pins read would list this project's pins alone, the store's cap
-      // would count pins the tab never showed, and every controller test would still pass.
+    it('lists a workflow pinned under ANOTHER project as an `other project` row, and no run pin: the Home hands the popup every workflow pin, not only this project’s', async () => {
+      // The wired-but-dead field once more: a Home built without the all-pins read would list this project's pins alone, and every popup test
+      // (which scripts the read) would still pass.
       project();
       const otherRoot = mkdtempSync(join(tmpdir(), 'relavium-other-project-'));
       try {
@@ -1947,8 +2225,7 @@ workflow:
           ref: 'elsewhere',
           at: 2,
         });
-        // A run pin holds a slot of the store's cap too, and the tab lists none of it: the stored total must count it, so a read that fed the
-        // tab only the workflow pins (the kind filtered away) would name two stored pins where the store holds three.
+        // A run pin holds a slot of the store's cap too, and the popup lists none of it: a read that fed it every pin unfiltered would list it.
         createRunPinStore(client.db).pinItem({
           kind: 'run',
           projectRoot: '',
@@ -1960,26 +2237,171 @@ workflow:
         const drivePromise = driveHome(deps);
         const props = captured;
         if (props === undefined) throw new Error('the injected render was never invoked');
-        typeLine(props, '/workflows');
-        await vi.waitFor(() => expect(definedOf(props)).toBeDefined(), { timeout: WAIT_MS });
-        const rows = definedOf(props)?.read.model.rows ?? [];
-        expect(rows.map((row) => [row.slug, row.state, row.pinned])).toEqual([
-          ['beta', 'ready', true],
-          ['elsewhere', 'other-project', true],
-          ['alpha', 'ready', false],
+        const popups = await openCatalogue(props);
+        expect(
+          catalogueRows(popups).map((row) => [row.label.trim(), row.tail?.words.trim()]),
+        ).toEqual([
+          ['beta', 'no run yet'],
+          ['elsewhere', 'other project'],
+          ['alpha', undefined],
         ]);
-        // The pin of the other project is a row that can be removed from here, and the store's own total is what the read names.
-        expect(definedOf(props)?.read.stored).toEqual({ total: 3, elsewhere: 2 });
-        props.controller.handleKey('', { escape: true });
-        props.controller.handleKey('c', CTRL_C);
-        props.controller.handleKey('c', CTRL_C);
-        expect(await drivePromise).toBe(EXIT_CODES.success);
+        popups.input('', { escape: true });
+        await leaveHome(props, drivePromise);
       } finally {
         rmSync(otherRoot, { recursive: true, force: true });
       }
     });
 
-    it('x opens the export card over the real prepare, naming the destination in this directory; a No writes nothing', async () => {
+    it('names the root of a pin of another project from ~ when it lies under the operator’s home: the Home gives the popup its directory and its home (ADR-0145 §8)', async () => {
+      // The wired-but-dead field again: the model shortens only when it is handed the roots, so a Home that forgot to hand them would
+      // list the absolute path and every model test would still pass.
+      project();
+      const otherRoot = join(testHomeDir, 'elsewhere-project');
+      createRunPinStore(client.db).pinItem({
+        kind: 'workflow',
+        projectRoot: otherRoot,
+        ref: 'elsewhere',
+        at: 2,
+      });
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p));
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      const popups = await openCatalogue(props);
+      const row = catalogueRows(popups).find((candidate) => candidate.label.trim() === 'elsewhere');
+      expect(row?.effect).toContain(`~${sep}elsewhere-project`);
+      expect(row?.effect).not.toContain(testHomeDir);
+      popups.input('', { escape: true });
+      await leaveHome(props, drivePromise);
+    });
+
+    it('a detail lists the last runs of THIS directory for that workflow, newest first, and none of another project’s: the Home reads them through its own database and root', async () => {
+      // The wired-but-dead field once more: the popup's `lastRuns` is a closure of `driveHome`, and a Home that read every project's runs (or
+      // none) would pass every popup test, which scripts the read.
+      project();
+      const mine = await seedRun(client.db, {
+        slug: 'alpha',
+        runId: '0a1b2c3d-0000-4000-8000-0000000000a1',
+        state: 'completed',
+        atMs: 1_750_000_000_000 - 120_000,
+      });
+      const foreign = await seedRun(client.db, {
+        slug: 'alpha',
+        runId: '0a1b2c3d-0000-4000-8000-0000000000a2',
+        state: 'failed',
+        atMs: 1_750_000_000_000 - 60_000,
+      });
+      const set = client.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?');
+      set.run(realpathSync.native(cwd), mine);
+      set.run(join(testHomeDir, 'other-app'), foreign);
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p));
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      const popups = await openCatalogue(props);
+      popups.input('', { downArrow: true }); // `alpha`, after the pinned `beta`
+      await intoDetail(popups);
+      const content = contentOf(popups);
+      const runs =
+        content?.kind === 'list' ? content.rows.filter((row) => row.id.startsWith('run:')) : [];
+      expect(runs.map((row) => row.detail)).toEqual([mine.slice(0, 8)]);
+      expect(runs.map((row) => row.statusWord)).toEqual(['done']);
+      popups.input('', { escape: true });
+      popups.input('', { escape: true });
+      await leaveHome(props, drivePromise);
+    });
+
+    it('a detail lists only the runs of THAT workflow, the newest three, though the directory holds other workflows’ runs and older ones', async () => {
+      project();
+      const root = realpathSync.native(cwd);
+      const set = client.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?');
+      const alpha: string[] = [];
+      for (let n = 1; n <= 4; n += 1) {
+        const id = `0a1b2c3d-0000-4000-8000-0000000000b${String(n)}`;
+        alpha.push(
+          await seedRun(client.db, {
+            slug: 'alpha',
+            runId: id,
+            state: 'completed',
+            atMs: 1_750_000_000_000 - (10 - n) * 60_000,
+          }),
+        );
+      }
+      const beta = await seedRun(client.db, {
+        slug: 'beta',
+        runId: '0a1b2c3d-0000-4000-8000-0000000000c1',
+        state: 'failed',
+        atMs: 1_750_000_000_000 - 1_000,
+      });
+      for (const id of [...alpha, beta]) set.run(root, id);
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p));
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      const popups = await openCatalogue(props);
+      popups.input('', { downArrow: true }); // `alpha`, after the pinned `beta`
+      await intoDetail(popups);
+      const content = contentOf(popups);
+      const runs =
+        content?.kind === 'list' ? content.rows.filter((row) => row.id.startsWith('run:')) : [];
+      expect(
+        runs.map((row) => row.detail),
+        'only alpha’s, newest first, three of the four',
+      ).toEqual(
+        alpha
+          .slice(1)
+          .reverse()
+          .map((id) => id.slice(0, 8)),
+      );
+      expect(runs.map((row) => row.statusWord)).toEqual(['done', 'done', 'done']);
+      popups.input('', { escape: true });
+      popups.input('', { escape: true });
+      await leaveHome(props, drivePromise);
+    });
+
+    it('a workflow whose last runs are older than the 200 newest runs of the project still lists them: the detail resolves the workflow itself, not a page of everyone’s runs (review round 1, P-1)', async () => {
+      // The probe of the review: ONE `alpha` run and 205 newer runs of another workflow. A read that scans the project's newest page for the slug
+      // finds none, and the detail says "No run of this workflow" under a catalogue row that says `✓ done`.
+      project();
+      const root = realpathSync.native(cwd);
+      const old = await seedRun(client.db, {
+        slug: 'alpha',
+        runId: '0a1b2c3d-0000-4000-8000-0000000000d0',
+        state: 'completed',
+        atMs: 1_750_000_000_000 - 500_000_000,
+      });
+      for (let n = 0; n < 205; n += 1) {
+        await seedRun(client.db, {
+          slug: 'beta',
+          runId: `0a1b2c3d-0000-4000-8000-${String(1000 + n).padStart(12, '0')}`,
+          state: 'completed',
+          atMs: 1_750_000_000_000 - 100_000_000 + n * 1_000,
+        });
+      }
+      client.sqlite.prepare('UPDATE runs SET project_root = ?').run(root);
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p));
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      const popups = await openCatalogue(props);
+      const row = catalogueRows(popups).find((candidate) => candidate.label.trim() === 'alpha');
+      expect(row?.tail?.words, 'the catalogue row has a last run').toContain('done');
+      popups.input('', { downArrow: true }); // `alpha`, after the pinned `beta`
+      await intoDetail(popups);
+      const content = contentOf(popups);
+      const runs =
+        content?.kind === 'list' ? content.rows.filter((entry) => entry.id.startsWith('run:')) : [];
+      expect(runs.map((entry) => entry.detail)).toEqual([old.slice(0, 8)]);
+      popups.input('', { escape: true });
+      popups.input('', { escape: true });
+      await leaveHome(props, drivePromise);
+    }, 60_000);
+
+    it('[x] on a detail opens the export confirmation over the real prepare, naming the destination in this directory; a No writes nothing and the popup comes back on the workflow', async () => {
       project();
       let captured: RootAppProps | undefined;
       const { deps } = makeDeps((p) => (captured = p));
@@ -1988,25 +2410,37 @@ workflow:
       if (props === undefined) throw new Error('the injected render was never invoked');
       const prompt = props.nativePrompt;
       if (prompt === undefined) throw new Error('the Home has no native prompt channel');
-      typeLine(props, '/workflows');
-      await vi.waitFor(() => expect(definedOf(props)).toBeDefined(), { timeout: WAIT_MS });
-      props.controller.handleKey('x', {}); // the cursor is on `beta`, the pinned row
+      const popups = await openCatalogue(props);
+      await intoDetail(popups); // the highlight starts on `beta`, the pinned row
+      popups.input('x', {});
       await vi.waitFor(() => expect(prompt.getSnapshot().kind).toBe('chord'), { timeout: WAIT_MS });
       const card = prompt.getSnapshot();
       expect(card.message).toBe("Write workflow 'beta' to a file in this directory?");
       expect(card.details[0]).toBe('destination beta.relavium.yaml');
+      // a popup stacked on the catalogue: `Export`, its Review step; a No is one notification on the Home's channel
+      expect(card.popup?.title).toBe('Export');
       prompt.input('n', channelKey({ ctrl: true }));
-      await vi.waitFor(() => expect(definedOf(props)?.message).toBe('Nothing was written.'), {
-        timeout: WAIT_MS,
-      });
+      await vi.waitFor(
+        () => expect(props.notifications?.getSnapshot().current?.text).toBe('Nothing was written.'),
+        { timeout: WAIT_MS },
+      );
+      // the catalogue comes back on the workflow the export was asked from
+      await vi.waitFor(
+        () => {
+          expect(popups.getSnapshot().frame?.spec.id).toBe('workflows');
+          expect(popups.getSnapshot().frame?.stepIndex).toBe(1);
+        },
+        { timeout: WAIT_MS },
+      );
       expect(() => readFileSync(join(cwd, 'beta.relavium.yaml'), 'utf8')).toThrow();
-      props.controller.handleKey('', { escape: true });
-      props.controller.handleKey('c', CTRL_C);
-      props.controller.handleKey('c', CTRL_C);
-      expect(await drivePromise).toBe(EXIT_CODES.success);
+      expect(props.controller.getSnapshot().notice).toBeUndefined();
+      popups.input('', { escape: true });
+      popups.input('', { escape: true });
+      expect(popups.getSnapshot().open, 'Esc, Esc closes to the Home').toBe(false);
+      await leaveHome(props, drivePromise);
     });
 
-    it('r opens the launch flow at that workflow, skipping the picker: its first card is the confirmation, and Ctrl+C leaves it with nothing started', async () => {
+    it('[r] on the catalogue opens the `/run` popup at that workflow, skipping the picker: its first card is the confirmation, and Ctrl+C leaves the whole stack with nothing started', async () => {
       project();
       let captured: RootAppProps | undefined;
       const { deps } = makeDeps((p) => (captured = p));
@@ -2015,25 +2449,31 @@ workflow:
       if (props === undefined) throw new Error('the injected render was never invoked');
       const prompt = props.nativePrompt;
       if (prompt === undefined) throw new Error('the Home has no native prompt channel');
-      typeLine(props, '/workflows');
-      await vi.waitFor(() => expect(definedOf(props)).toBeDefined(), { timeout: WAIT_MS });
-      props.controller.handleKey('', { downArrow: true }); // `alpha`
-      props.controller.handleKey('r', {});
+      const popups = await openCatalogue(props);
+      popups.input('', { downArrow: true }); // `alpha`
+      popups.input('r', {});
       await vi.waitFor(() => expect(prompt.getSnapshot().message).toContain('Run alpha'), {
         timeout: WAIT_MS,
       });
-      expect(prompt.getSnapshot().options.map((option) => option.label)).toEqual(['Yes', 'No']);
+      // The confirmation is the `/run` popup's chord step (ADR-0148 §3): `Ctrl+Y` starts, `Ctrl+N` cancels.
+      expect(prompt.getSnapshot().kind).toBe('chord');
+      expect(prompt.getSnapshot().options.map((option) => option.label)).toEqual([
+        'Start it',
+        'Cancel',
+      ]);
+      expect(prompt.getSnapshot().popup).toMatchObject({ title: '/run', origin: 'workflows' });
       prompt.input('c', channelKey({ ctrl: true }));
-      await vi.waitFor(() => expect(definedOf(props)?.message).toBe('Run cancelled.'), {
-        timeout: WAIT_MS,
-      });
-      props.controller.handleKey('', { escape: true });
-      props.controller.handleKey('c', CTRL_C);
-      props.controller.handleKey('c', CTRL_C);
-      expect(await drivePromise).toBe(EXIT_CODES.success);
+      await vi.waitFor(
+        () => expect(props.notifications?.getSnapshot().current?.text).toBe('Run cancelled.'),
+        { timeout: WAIT_MS },
+      );
+      expect(popups.getSnapshot().open, 'Ctrl+C closes the whole stack').toBe(false);
+      expect(props.controller.getSnapshot().mode).toBe('home');
+      expect(props.controller.getSnapshot().session, 'nothing was started').toBeUndefined();
+      await leaveHome(props, drivePromise);
     });
 
-    it('r refuses a workflow whose file moved since the tab was read, through the Home’s own wiring: the row’s catalog path reaches the launch, and no prompt opens', async () => {
+    it('[r] refuses a workflow whose file moved since the popup was read, through the Home’s own wiring: the row’s catalog path reaches the launch, and no prompt opens', async () => {
       // The wired-but-dead field once more: a Home that passed the slug alone (`launchRun: (slug) => runLaunch.open(slug)`) would find the
       // slug in its new file and open the form for it, and every controller test (which scripts the launch) would still pass.
       project();
@@ -2044,28 +2484,34 @@ workflow:
       if (props === undefined) throw new Error('the injected render was never invoked');
       const prompt = props.nativePrompt;
       if (prompt === undefined) throw new Error('the Home has no native prompt channel');
-      typeLine(props, '/workflows');
-      await vi.waitFor(() => expect(definedOf(props)).toBeDefined(), { timeout: WAIT_MS });
-      // The tab has read `alpha` from `alpha.relavium.yaml`; the same workflow id is now declared by a file of another name.
+      const popups = await openCatalogue(props);
+      // The popup has read `alpha` from `alpha.relavium.yaml`; the same workflow id is now declared by a file of another name.
       const workflows = join(cwd, '.relavium', 'workflows');
       renameSync(
         join(workflows, 'alpha.relavium.yaml'),
         join(workflows, 'alpha-moved.relavium.yaml'),
       );
-      props.controller.handleKey('', { downArrow: true }); // `alpha`
-      props.controller.handleKey('r', {});
+      popups.input('', { downArrow: true }); // `alpha`
+      popups.input('r', {});
       await vi.waitFor(
-        () => expect(definedOf(props)?.message).toMatch(/is now in alpha-moved\.relavium\.yaml\./u),
-        {
-          timeout: WAIT_MS,
-        },
+        () =>
+          expect(props.notifications?.getSnapshot().current?.text).toBe(
+            // The popup comes back for it, so the notification is read beside its way back (54 columns): the short words (the whole sentence names
+            // the file it is in now, `launchMoved`).
+            'Not started: alpha moved. Open the list again.',
+          ),
+        { timeout: WAIT_MS },
       );
-      expect(definedOf(props)?.message).toMatch(/^Not started\. Open the list again: alpha /u);
       expect(prompt.getSnapshot().active, 'no prompt was opened for the moved file').toBe(false);
-      props.controller.handleKey('', { escape: true });
-      props.controller.handleKey('c', CTRL_C);
-      props.controller.handleKey('c', CTRL_C);
-      expect(await drivePromise).toBe(EXIT_CODES.success);
+      expect(props.controller.getSnapshot().session, 'nothing was started').toBeUndefined();
+      // The popup comes back on the workflow `r` was asked for (its detail), and `Esc` steps back out of it, to the Home.
+      await vi.waitFor(() => expect(popups.getSnapshot().frame?.spec.id).toBe('workflows'), {
+        timeout: WAIT_MS,
+      });
+      for (let presses = 0; presses < 3 && popups.getSnapshot().open; presses += 1)
+        popups.input('', { escape: true });
+      expect(popups.getSnapshot().open, 'Esc leaves to the Home').toBe(false);
+      await leaveHome(props, drivePromise);
     });
   });
 
@@ -2105,6 +2551,17 @@ workflow:
       props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       expect(await drivePromise).toBe(EXIT_CODES.success);
     };
+    /**
+     * The popup's first frame played as measured and flushed (no renderer is mounted here), and its opening settle waited out for real: a key
+     * that answers counts only on a frame that was shown, half a second after it was (ADR-0148 §3, MVP-11 unit 6).
+     */
+    const shownAndSettled = async (prompt: NonNullable<RootAppProps['nativePrompt']>) => {
+      prompt.shown(prompt.getSnapshot());
+      await new Promise((resolve) => setTimeout(resolve, POPUP_SELECT_SETTLE_MS + 50));
+    };
+    /** The one notification the Home's channel shows now. */
+    const notified = (props: RootAppProps): string | undefined =>
+      props.notifications?.getSnapshot().current?.text;
 
     it('/import asks for a path, shows the import over the Home’s own project directory, and a No writes nothing', async () => {
       mkdirSync(join(cwd, '.relavium', 'workflows'), { recursive: true });
@@ -2117,6 +2574,8 @@ workflow:
       expect(props.controller.getSnapshot().nativeActionBusy, 'the keyboard is the card’s').toBe(
         true,
       );
+      expect(prompt.getSnapshot().popup?.title).toBe('/import');
+      await shownAndSettled(prompt);
       prompt.paste('incoming/shared.relavium.yaml');
       prompt.input('', nativeKey({ return: true }));
       await vi.waitFor(() => expect(prompt.getSnapshot().kind).toBe('chord'), { timeout: WAIT_MS });
@@ -2125,10 +2584,11 @@ workflow:
       expect(card.details[0]).toMatch(/^from\s+incoming\/shared\.relavium\.yaml$/u);
       expect(card.details[1]).toMatch(/^to\s+\.relavium\/workflows\/shared\.relavium\.yaml$/u);
       prompt.input('n', nativeKey({ ctrl: true }));
-      await vi.waitFor(
-        () => expect(props.controller.getSnapshot().notice).toBe('Nothing was written.'),
-        { timeout: WAIT_MS },
-      );
+      // one notification on the Home's channel, never the Home's notice (ADR-0148 §6)
+      await vi.waitFor(() => expect(notified(props)).toBe('Nothing was written.'), {
+        timeout: WAIT_MS,
+      });
+      expect(props.controller.getSnapshot().notice).toBeUndefined();
       expect(props.controller.getSnapshot().nativeActionBusy).toBe(false);
       expect(() =>
         readFileSync(join(cwd, '.relavium', 'workflows', 'shared.relavium.yaml'), 'utf8'),
@@ -2155,6 +2615,8 @@ workflow:
       expect(prompt.getSnapshot().options[0]?.label, 'the first option is the one chosen').toBe(
         PRICING_ACTION_SET,
       );
+      expect(prompt.getSnapshot().popup?.title).toBe('/pricing');
+      await shownAndSettled(prompt);
       prompt.input('', nativeKey({ return: true })); // the first option: Set a price
       await vi.waitFor(() => expect(prompt.getSnapshot().message).toBe('Which model?'), {
         timeout: WAIT_MS,
@@ -2165,7 +2627,10 @@ workflow:
         options.length,
         'the merged catalog the /models picker lists is behind the list: more than the one row for a model it does not show',
       ).toBeGreaterThan(1);
-      prompt.input('', nativeKey({ upArrow: true })); // wraps to the last option: Another model…
+      // In a popup the arrows stop at the ends (ADR-0148 §3): down to the last option, Another model…
+      for (let at = 1; at < options.length; at += 1)
+        prompt.input('', nativeKey({ downArrow: true }));
+      expect(prompt.getSnapshot().selected).toBe(options.length - 1);
       prompt.input('', nativeKey({ return: true }));
       await vi.waitFor(() => expect(prompt.getSnapshot().message).toBe('Model id'), {
         timeout: WAIT_MS,
@@ -2176,12 +2641,12 @@ workflow:
         () => expect(prompt.getSnapshot().message).toBe("Which provider serves 'my-own-model'?"),
         { timeout: WAIT_MS },
       );
-      expect(prompt.getSnapshot().options.map((option) => option.label)).toEqual(['openai']);
+      expect(prompt.getSnapshot().options.map((option) => option.label)).toEqual(['OpenAI']); // the display name, not the id
       prompt.input('c', nativeKey({ ctrl: true })); // leaves the form: nothing was recorded
-      await vi.waitFor(
-        () => expect(props.controller.getSnapshot().notice).toBe(PRICING_NOT_RECORDED),
-        { timeout: WAIT_MS },
-      );
+      await vi.waitFor(() => expect(notified(props)).toBe(PRICING_NOT_RECORDED), {
+        timeout: WAIT_MS,
+      });
+      expect(props.controller.getSnapshot().notice).toBeUndefined();
       expect(props.controller.getSnapshot().nativeActionBusy).toBe(false);
       await leave(props, drivePromise);
     });
@@ -2240,12 +2705,33 @@ workflow:
       const props = captured;
       type(props, '/agents');
       props.controller.handleKey('', ENTER);
-      props.controller.handleKey('', ENTER);
-      const screen = props.controller.getSnapshot().screen;
-      expect(screen?.kind === 'tab-host' ? screen.host.agents?.detail?.slug : undefined).toBe(
-        'reviewer',
+      const popups = props.popups;
+      if (popups === undefined) throw new Error('the Home was rendered without a popup host');
+      await vi.waitFor(() => expect(popups.getSnapshot().frame?.spec.id).toBe('agents'), {
+        timeout: WAIT_MS,
+      });
+      // No Home root is mounted, so the test is the popup slot: the frame is measured and flushed, and the opening settle is waited out.
+      popups.bindVisibility(() => true);
+      popups.bindPageRows(() => 17);
+      popups.bindInnerWidth(() => 66);
+      popups.shown(popups.getSnapshot());
+      await vi.waitFor(
+        () => expect(popups.getSnapshot().frame?.steps[0]?.content.kind).toBe('list'),
+        { timeout: WAIT_MS },
       );
-      return { props, running, builds };
+      await new Promise<void>((resolve) => setTimeout(resolve, POPUP_SELECT_SETTLE_MS + 100));
+      popups.input('', { return: true }); // the detail of `reviewer`
+      await vi.waitFor(() => expect(popups.getSnapshot().frame?.stepIndex).toBe(1), {
+        timeout: WAIT_MS,
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, POPUP_SELECT_SETTLE_MS + 100));
+      const frame = popups.getSnapshot().frame;
+      const detail = frame?.steps[1]?.content;
+      expect(
+        detail?.kind === 'report' ? detail.lines.join('\n') : '',
+        'the detail is the one of the agent the list held',
+      ).toContain('reviewer');
+      return { props, running, builds, popups };
     }
     const leaveHome = async (props: RootAppProps, running: Promise<number>): Promise<void> => {
       props.controller.handleKey('c', CTRL_C);
@@ -2259,8 +2745,8 @@ workflow:
       // cwd-relative path finds the file only because the build resolves it against the same one.
       expect(process.cwd()).not.toBe(cwd);
       const { providers, requests } = capturingResolver([textTurn('first'), textTurn('second')]);
-      const { props, running, builds } = await onDetail({ providers });
-      props.controller.handleKey('c', {});
+      const { props, running, builds, popups } = await onDetail({ providers });
+      popups.input('c', {});
       await settledChat(props);
 
       // The build is the ordinary one with the agent the file declares: no reference to re-resolve, and the file named for the consent prompt.
@@ -2300,33 +2786,27 @@ workflow:
       await leaveHome(props, running);
     });
 
-    it('the `/agent` sheet of a chat started by `c` names the file the detail showed and marks the tool the Home’s chat does not wire; a `/clear` holds the definition and names no file', async () => {
+    it('the `/agent` popup of a chat started by `c` names the file the detail showed and marks the tool the Home’s chat does not wire; a `/clear` holds the definition and names no file', async () => {
       writeProjectAgent(['  - invoke_agent']);
       const { providers } = capturingResolver([textTurn('first')]);
-      const { props, running } = await onDetail({ providers });
-      props.controller.handleKey('c', {});
+      const { props, running, popups } = await onDetail({ providers });
+      popups.input('c', {});
       await settledChat(props);
 
       // The label is the catalog's own, relative to the Home's working directory: never the absolute path the consent prompt names.
       const label = join('.relavium', 'agents', 'reviewer.agent.yaml');
-      const view = props.controller.getSnapshot().session?.boundAgent?.();
+      const view = props.controller.getSnapshot().session?.reports?.agent?.();
       expect(view?.sourceLabel).toBe(label);
       expect(view?.sourceLabel).not.toContain(cwd);
       // The Home's chat can ask, so only the tool wired nowhere is marked.
       expect(view?.toolOffer).toEqual({ unwired: [false, false, true], declared: 3, offered: 2 });
       props.controller.handlePaste('/agent');
       props.controller.handleKey('', ENTER);
-      const sheet = props.controller.getSnapshot().chatSheet;
-      const drawn =
-        sheet?.kind === 'agent'
-          ? agentSheetLines(sheet.view, { columns: 80, terminalRows: 24 })
-              .map((line) => line.text)
-              .join('\n')
-          : '';
+      const drawn = await openedReport(props, 'agent');
       expect(drawn).toMatch(/File\s+\.relavium[\\/]agents[\\/]reviewer\.agent\.yaml/u);
       expect(drawn).toMatch(/Tools\s+2 of 3 offered: read_file, search_files,/u);
       expect(drawn).toContain('invoke_agent (not available in this chat)');
-      props.controller.handleKey('', { escape: true });
+      closeReport(props);
 
       // A `/clear` rebinds the definition the session holds, with no file behind it: the view names none, and still marks the same tool.
       const first = props.controller.getSnapshot().session;
@@ -2337,7 +2817,7 @@ workflow:
         { timeout: WAIT_MS },
       );
       await settledChat(props);
-      const cleared = props.controller.getSnapshot().session?.boundAgent?.();
+      const cleared = props.controller.getSnapshot().session?.reports?.agent?.();
       expect(cleared?.id).toBe('reviewer');
       expect(cleared?.sourceLabel).toBeUndefined();
       expect(cleared?.toolOffer?.unwired).toEqual([false, false, true]);
@@ -2396,9 +2876,9 @@ workflow:
       'an agent that %s between the list and `c` starts nothing: the landing says why, and nothing is half-open',
       async (_name, change, sentence) => {
         const file = writeProjectAgent();
-        const { props, running, builds } = await onDetail();
+        const { props, running, builds, popups } = await onDetail();
         change(file);
-        props.controller.handleKey('c', {});
+        popups.input('c', {});
         await vi.waitFor(() => expect(props.controller.getSnapshot().notice).toBe(sentence), {
           timeout: WAIT_MS,
         });
@@ -2416,9 +2896,9 @@ workflow:
     it('a refusal through an OWNED Home is a refusal and not an infrastructure failure: the Home goes on, and leaves cleanly', async () => {
       const f = invocationFixture();
       const file = writeProjectAgent();
-      const { props, running, builds } = await onDetail({ invocation: f.invocation });
+      const { props, running, builds, popups } = await onDetail({ invocation: f.invocation });
       rmSync(file);
-      props.controller.handleKey('c', {});
+      popups.input('c', {});
       await vi.waitFor(
         () =>
           expect(props.controller.getSnapshot().notice).toBe(
@@ -2435,11 +2915,11 @@ workflow:
 
     it('an agent edited between the list and `c` to a DIFFERENT, still valid definition starts nothing: the page the person read is no longer the file', async () => {
       const file = writeProjectAgent();
-      const { props, running, builds } = await onDetail();
+      const { props, running, builds, popups } = await onDetail();
       // The same id and the same file, parsing as an agent: only the tool grant is wider than the page showed.
       writeProjectAgent(['  - write_file', '  - run_command']);
       expect(readFileSync(file, 'utf8')).toContain('run_command');
-      props.controller.handleKey('c', {});
+      popups.input('c', {});
       await vi.waitFor(
         () =>
           expect(props.controller.getSnapshot().notice).toBe(
@@ -2463,10 +2943,10 @@ workflow:
       try {
         const target = join(outside, 'reviewer.agent.yaml');
         copyFileSync(file, target); // byte for byte the definition the page showed: only where it lives is wrong
-        const { props, running, builds } = await onDetail();
+        const { props, running, builds, popups } = await onDetail();
         rmSync(file);
         symlinkSync(target, file);
-        props.controller.handleKey('c', {});
+        popups.input('c', {});
         await vi.waitFor(
           () =>
             expect(props.controller.getSnapshot().notice).toBe(
@@ -2487,11 +2967,11 @@ workflow:
       writeProjectAgent();
       let keyed = true;
       const resolver = scriptedResolver([textTurn('never')]);
-      const { props, running, builds } = await onDetail({
+      const { props, running, builds, popups } = await onDetail({
         providers: { ...resolver, hasKey: () => keyed },
       });
       keyed = false;
-      props.controller.handleKey('c', {});
+      popups.input('c', {});
       await vi.waitFor(
         () =>
           expect(props.controller.getSnapshot().notice).toBe(
@@ -2526,12 +3006,12 @@ workflow:
       const startMcpClient = vi.fn(() =>
         Promise.reject(new Error('a declined server must not start')),
       );
-      const { props, running, builds } = await onDetail({}, (options) => ({
+      const { props, running, builds, popups } = await onDetail({}, (options) => ({
         ...options,
         consentGate: gate,
         startMcpClient,
       }));
-      props.controller.handleKey('c', {});
+      popups.input('c', {});
       await vi.waitFor(
         () =>
           expect(props.controller.getSnapshot().notice).toBe(
@@ -2568,7 +3048,10 @@ workflow:
         state: 'completed',
         atMs: 1_750_000_000_000 - 60_000,
       });
-      client.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?').run(cwd, runId);
+      // Recorded as a run records its directory: canonical (MVP-11 unit 7, round 2).
+      client.sqlite
+        .prepare('UPDATE runs SET project_root = ? WHERE id = ?')
+        .run(realpathSync.native(cwd), runId);
       let captured: RootAppProps | undefined;
       const { deps } = makeDeps((p) => (captured = p));
       const drivePromise = driveHome(deps);
@@ -2591,9 +3074,47 @@ workflow:
       });
       expect(historyOf(props)?.detail?.read?.model.header.runId).toBe(runId);
       expect(historyOf(props)?.detail?.read?.terminalHeld, 'the outbox is empty').toBe(false);
+      // The wired-but-dead fields of the detail's `r`: the loader is told the Home's directory (the run was recorded under it, so it reads
+      // `here`), and the detail carries the slug the run was recorded under, the key `r` finds its workflow by. Without the directory the
+      // detail says nothing of where the run was started and `r` refuses every run; each read of one in isolation would still pass.
+      expect(
+        historyOf(props)?.detail?.read?.directory,
+        'the Home told the loader its directory',
+      ).toBe('here');
+      expect(historyOf(props)?.detail?.read?.workflowSlug).toBe('wf');
 
       props.controller.handleKey('', { escape: true }); // back to the list
       props.controller.handleKey('', { escape: true }); // the screen closes
+      props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C);
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    });
+
+    it('names the project of a run of another directory from ~ when it lies under the operator’s home: the Home gives the History tab its directory and its home (ADR-0145 §8)', async () => {
+      // The wired-but-dead field once more: the rows shorten a root only when they are handed the roots, so a Home that forgot to hand them
+      // would draw the absolute path and every row-model test would still pass.
+      const runId = await seedRun(client.db, {
+        slug: 'wf',
+        runId: '0a1b2c3d-0000-4000-8000-0000000000bb',
+        state: 'completed',
+        atMs: 1_750_000_000_000 - 60_000,
+      });
+      client.sqlite
+        .prepare('UPDATE runs SET project_root = ? WHERE id = ?')
+        .run(join(testHomeDir, 'other-app'), runId);
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p));
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      expect(props.controller.openScreen('tab-host', { tab: 'history' })).toBe(true);
+      props.controller.handleKey('a', {}); // widen the scope to every project
+      const row = historyOf(props)?.read?.rows.find(
+        (entry) => entry.kind === 'run' && entry.row.id === runId,
+      );
+      expect(row?.kind === 'run' ? row.row.projectRoot : undefined).toBe(`~${sep}other-app`);
+
+      props.controller.handleKey('', { escape: true });
       props.controller.handleKey('c', CTRL_C);
       props.controller.handleKey('c', CTRL_C);
       expect(await drivePromise).toBe(EXIT_CODES.success);
@@ -2669,6 +3190,9 @@ workflow:
       expect(props.controller.openScreen('tab-host', { tab: 'active' })).toBe(true);
       await vi.waitFor(() => expect(activeOf(props)?.phase).toBe('ready'), { timeout: WAIT_MS });
       expect(classOf(props, hosted), 'the leg this Home executes').toBe('hosted');
+      // The seeded run records no directory, so it is not this directory's and the tab lists it only under `[a] all` (OD-24 D4).
+      expect(classOf(props, held), 'this directory’s runs only, by default').toBeUndefined();
+      props.controller.handleKey('a', {});
       expect(classOf(props, held), 'a run whose terminal sits in the Home’s own outbox').toBe(
         'held',
       );
@@ -2684,9 +3208,40 @@ workflow:
       props.controller.handleKey('c', CTRL_C);
       expect(await drivePromise).toBe(EXIT_CODES.success);
     });
+
+    it('names the root of a paused run of another project from ~ when it lies under the operator’s home: the Home gives the Active tab its directory and its home (ADR-0145 §8)', async () => {
+      const runId = await seedRun(client.db, {
+        slug: 'wf',
+        runId: 'else-paused',
+        state: 'paused',
+        atMs: 1_750_000_000_000 - 5_000,
+        gate: { gateId: 'g1', gateType: 'approval' },
+      });
+      client.sqlite
+        .prepare('UPDATE runs SET project_root = ? WHERE id = ?')
+        .run(join(testHomeDir, 'other-app'), runId);
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p));
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      expect(props.controller.openScreen('tab-host', { tab: 'active' })).toBe(true);
+      await vi.waitFor(() => expect(activeOf(props)?.phase).toBe('ready'), { timeout: WAIT_MS });
+      // Another project's run is not listed by default (OD-24 D4): `[a] all` lists it, read-only, with its root shortened from ~.
+      expect(activeOf(props)?.rows.find((row) => row.runId === runId)).toBeUndefined();
+      props.controller.handleKey('a', {});
+      expect(activeOf(props)?.rows.find((row) => row.runId === runId)?.projectRoot).toBe(
+        `~${sep}other-app`,
+      );
+
+      props.controller.handleKey('', { escape: true });
+      props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C);
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    });
   });
 
-  describe('ADR-0137 §3: the bare Home’s sheet reads the project’s own store, afresh every time', () => {
+  describe('ADR-0137 §3 as a popup (MVP-11 unit 8): the bare Home’s `/permissions` reads the project’s own store, afresh every time', () => {
     const memoryKeychain = (): KeychainStore => {
       const entries = new Map<string, string>();
       return {
@@ -2703,9 +3258,39 @@ workflow:
         keychain,
         findProgram: (name) => Promise.resolve(`/usr/bin/${name}`),
       });
-    const rowLabels = (props: RootAppProps): readonly string[] => {
-      const project = tabSheetOf(props)?.snapshot.project;
-      return project?.ok === true ? project.rows.map((row) => row.label) : [];
+    const hostOf = (props: RootAppProps): PopupHost => {
+      if (props.popups === undefined) throw new Error('the Home was rendered without a popup host');
+      return props.popups;
+    };
+    const contentOf = (popups: PopupHost) => {
+      const frame = popups.getSnapshot().frame;
+      return frame?.steps[frame.stepIndex]?.content;
+    };
+    /** The remembered commands the popup lists, as its rows say them. */
+    const rowLabelsOf = (popups: PopupHost): readonly string[] => {
+      const content = contentOf(popups);
+      return content?.kind === 'list'
+        ? content.rows.filter((row) => row.id.startsWith('entry:')).map((row) => row.label.trim())
+        : [];
+    };
+    /**
+     * The popup is on the Home's host. No Home root is mounted, so the test is the popup slot: the frame is on screen, and the opening guard's
+     * settle (real time) is waited out, as the other popups of this file do.
+     */
+    async function settledPopup(popups: PopupHost): Promise<void> {
+      await vi.waitFor(() => expect(popups.getSnapshot().frame?.spec.id).toBe('permissions'), {
+        timeout: WAIT_MS,
+      });
+      popups.bindVisibility(() => true);
+      popups.bindPageRows(() => 17);
+      popups.bindInnerWidth(() => 66);
+      popups.shown(popups.getSnapshot());
+      await new Promise<void>((resolve) => setTimeout(resolve, POPUP_SELECT_SETTLE_MS + 100));
+    }
+    const openFromPalette = (props: RootAppProps): void => {
+      props.controller.handleKey('/', {});
+      for (const ch of 'permissions') props.controller.handleKey(ch, {});
+      props.controller.handleKey('', ENTER);
     };
 
     it('lists the grants remembered for THIS project under THIS home: a wrong root or home would list nothing, silently', async () => {
@@ -2716,8 +3301,10 @@ workflow:
       const drivePromise = driveHome({ ...deps, openPermissions: true });
       const props = captured;
       if (props === undefined) throw new Error('the injected render was never invoked');
-      expect(rowLabels(props)).toEqual(['npm, 1 argument']);
-      props.controller.handleKey('', { escape: true });
+      const popups = hostOf(props);
+      await settledPopup(popups);
+      expect(rowLabelsOf(popups)).toEqual(['npm, 1 argument']);
+      popups.input('', { escape: true });
       expect(await drivePromise).toBe(EXIT_CODES.success);
     });
 
@@ -2729,24 +3316,19 @@ workflow:
       const drivePromise = driveHome(deps);
       const props = captured;
       if (props === undefined) throw new Error('the injected render was never invoked');
-      const openFromPalette = (): void => {
-        props.controller.handleKey('/', {});
-        for (const ch of 'permissions') props.controller.handleKey(ch, {});
-        props.controller.handleKey('', ENTER);
-      };
-      openFromPalette();
-      await vi.waitFor(() => expect(rowLabels(props)).toEqual(['npm, 1 argument']), {
-        timeout: WAIT_MS,
-      });
-      props.controller.handleKey('', { escape: true });
+      const popups = hostOf(props);
+      openFromPalette(props);
+      await settledPopup(popups);
+      expect(rowLabelsOf(popups)).toEqual(['npm, 1 argument']);
+      popups.input('', { escape: true });
+      expect(popups.getSnapshot().open).toBe(false);
       // Another terminal: `relavium permissions revoke --all` (the file and the digest key go), then a chat remembers something new.
       projectStore(keychain).revokeAll();
       await projectStore(keychain).remember(['node', '--version']);
-      openFromPalette();
-      await vi.waitFor(() => expect(rowLabels(props)).toEqual(['node, 1 argument']), {
-        timeout: WAIT_MS,
-      });
-      props.controller.handleKey('', { escape: true });
+      openFromPalette(props);
+      await settledPopup(popups);
+      expect(rowLabelsOf(popups)).toEqual(['node, 1 argument']);
+      popups.input('', { escape: true });
       props.controller.handleKey('c', CTRL_C);
       props.controller.handleKey('c', CTRL_C);
       expect(await drivePromise).toBe(EXIT_CODES.success);
@@ -2764,25 +3346,23 @@ workflow:
       const drivePromise = driveHome({ ...deps, openPermissions: true });
       const props = captured;
       if (props === undefined) throw new Error('the injected render was never invoked');
-      expect(rowLabels(props)).toEqual(['npm, 1 argument']);
-      // The controller runs on the real clock here. The sheet answers an early `d` with its own wait note (which is not typing) and arms
-      // on the first one that lands after it settled, so `d` is pressed until the sheet says the question is up. An `Enter` that comes
-      // before the question's dwell drops the question instead, so it cannot be retried: it is waited out on a timer, past the constant.
-      await vi.waitFor(
-        () => {
-          props.controller.handleKey('d', {});
-          expect(tabSheetOf(props)?.armed).toBe(true);
-        },
-        { timeout: WAIT_MS, interval: 25 },
-      );
+      const popups = hostOf(props);
+      await settledPopup(popups);
+      expect(rowLabelsOf(popups)).toEqual(['npm, 1 argument']);
+      // The controller runs on the real clock here. `[d]` arms the line of its own step; the line counts an `Enter` only on its exact frame
+      // seen on screen, after the confirmation's dwell (800 ms), so the test is the slot that says the frame is on screen and waits it out.
+      popups.input('d', {});
+      expect(popups.getSnapshot().frame?.stepIndex, '[d] arms the withdrawal line').toBe(1);
+      popups.shown(popups.getSnapshot());
       await new Promise((resolve) =>
-        setTimeout(resolve, SHEET_CONFIRM_DWELL_MS + SETTLE_MARGIN_MS),
+        setTimeout(resolve, APPROVAL_CONFIRM_MIN_MS + SETTLE_MARGIN_MS),
       );
-      props.controller.handleKey('', ENTER);
-      expect(tabSheetOf(props)?.message?.tone).toBe('done');
-      expect(rowLabels(props)).toEqual([]);
+      popups.input('', ENTER);
       expect(projectStore(keychain).list()).toEqual({ ok: true, grants: [] });
-      props.controller.handleKey('', { escape: true });
+      expect(popups.getSnapshot().frame?.stepIndex, 'back on the list').toBe(0);
+      expect(rowLabelsOf(popups)).toEqual([]);
+      expect(props.notifications?.getSnapshot().current?.text).toBe('Withdrawn: npm, 1 argument');
+      popups.input('', { escape: true });
       expect(await drivePromise).toBe(EXIT_CODES.success);
     });
 
@@ -2807,19 +3387,17 @@ workflow:
         keychain,
         findProgram: (name) => Promise.resolve(`/usr/bin/${name}`),
       }).remember(['npm', 'test']);
-      props.controller.handleKey('/', {});
-      for (const ch of 'permissions') props.controller.handleKey(ch, {});
-      props.controller.handleKey('', ENTER);
-      await vi.waitFor(() => expect(rowLabels(props)).toEqual(['npm, 1 argument']), {
-        timeout: WAIT_MS,
-      });
-      props.controller.handleKey('', { escape: true });
+      const popups = hostOf(props);
+      openFromPalette(props);
+      await settledPopup(popups);
+      expect(rowLabelsOf(popups)).toEqual(['npm, 1 argument']);
+      popups.input('', { escape: true });
       props.controller.handleKey('c', CTRL_C);
       props.controller.handleKey('c', CTRL_C);
       expect(await drivePromise).toBe(EXIT_CODES.success);
     });
 
-    it('is not a first run: a bare `relavium permissions` on a Home with no provider key opens no setup card over the sheet', async () => {
+    it('is not a first run: a bare `relavium permissions` on a Home with no provider key opens no setup card over the popup', async () => {
       const keylessResolver: ProviderResolver = {
         resolveProvider: () => undefined,
         keyFor: () => {
@@ -2833,16 +3411,17 @@ workflow:
         },
         { providers: keylessResolver, keychain: memoryKeychain() },
       );
-      // The production setup is the in-Home card, started when the renderer is ready, unless a legacy prompter is injected: take it out.
-      const { onboardingPrompter, ...production } = deps;
-      void onboardingPrompter;
+      // The production setup is the in-Home popup, started when the renderer is ready, unless the embedding turns it off: take that out.
+      const { firstRunSetup, ...production } = deps;
+      void firstRunSetup;
       const drivePromise = driveHome({ ...production, openPermissions: true });
       const props = capture.props;
       if (props === undefined) throw new Error('the injected render was never invoked');
-      await flush();
-      expect(props.nativePrompt?.getSnapshot().active, 'no card over the sheet').toBe(false);
-      expect(tabSheetOf(props)).toBeDefined();
-      props.controller.handleKey('', { escape: true });
+      const popups = hostOf(props);
+      await settledPopup(popups);
+      expect(props.nativePrompt?.getSnapshot().active, 'no card over the popup').toBe(false);
+      expect(popups.getSnapshot().frame?.spec.id).toBe('permissions');
+      popups.input('', { escape: true });
       expect(await drivePromise).toBe(EXIT_CODES.success);
     });
   });
@@ -2894,15 +3473,20 @@ workflow:
     let reseatAsk:
       | { askUser?: AskUserDelegate | undefined; checkpoint?: ToolRoundLimitHook | undefined }
       | undefined;
+    // The Home's chats say their notices in the TUI's words (`/models`, `/pricing`), on the fresh build and on the reseat's alike.
+    let freshSurface: string | undefined;
+    let reseatSurface: string | undefined;
     let captured: RootAppProps | undefined;
     const { deps } = makeDeps((p) => (captured = p), {
       providers: scriptedResolver([textTurn('sonnet reply'), textTurn('opus reply')]),
       buildSession: (options) => {
         freshAsk = { askUser: options.askUser, checkpoint: options.checkpoint };
+        freshSurface = options.noticeSurface;
         return buildChatSession(options);
       },
       buildResumedSession: (options) => {
         reseatAsk = { askUser: options.askUser, checkpoint: options.checkpoint };
+        reseatSurface = options.noticeSurface;
         return buildResumedChatSession(options);
       },
     });
@@ -2918,18 +3502,15 @@ workflow:
     expect(freshAsk).toBeDefined();
     expect(await drawsACard(first?.store, freshAsk)).toBe(true);
 
-    props.controller.handleKey('/', {});
-    type(props, 'models');
-    props.controller.handleKey('', ENTER);
-    await flush();
-    type(props, 'claude-opus-4-8');
-    props.controller.handleKey('', ENTER);
-    props.controller.handleKey('', ENTER);
+    // The `/models` popup's `This chat` on opus: the Home's reseat.
+    await answerModelsPopup(props, 'claude-opus-4-8', { waitMs: WAIT_MS });
     await vi.waitFor(() => expect(props.controller.getSnapshot().session).not.toBe(first), {
       timeout: WAIT_MS,
     });
     expect(reseatAsk).toBeDefined();
     expect(await drawsACard(props.controller.getSnapshot().session?.store, reseatAsk)).toBe(true);
+    expect(freshSurface, 'the fresh build of a Home chat').toBe('tui');
+    expect(reseatSurface, 'the reseat build of a Home chat').toBe('tui');
 
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
@@ -2971,7 +3552,8 @@ workflow:
     const props = captured;
     if (props === undefined) throw new Error('the injected render was never invoked');
 
-    // Start a chat (bound to the default claude-sonnet-4-6) + run one turn so the transcript persists.
+    // Start a chat (bound to the zero-config default, the starter table's Anthropic model since MVP-11 unit 6) + run one turn so the
+    // transcript persists.
     type(props, 'first');
     props.controller.handleKey('', ENTER);
     await vi.waitFor(() => expect(props.controller.getSnapshot().session).toBeDefined(), {
@@ -2982,36 +3564,21 @@ workflow:
     const sessionId = oldSession?.sessionId ?? '';
     expect(sessionId).not.toBe('');
 
-    // ADR-0140 §3: `/agent` on the session as it starts shows the sonnet pair (no effort tier). Opened BEFORE the reseat on purpose: a view
+    // ADR-0148 §10: `/agent` on the session as it starts shows the sonnet pair (no effort tier). Opened BEFORE the reseat on purpose: a view
     // kept past the swap would be read here first, and the reseated chat would then show this one.
     props.controller.handlePaste('/agent');
     props.controller.handleKey('', ENTER);
-    const before = props.controller.getSnapshot().chatSheet;
-    expect(before?.kind === 'agent' ? before.view.detail.model : undefined).toBe(
-      'claude-sonnet-4-6',
-    );
-    expect(
-      before?.kind === 'agent' ? before.view.detail.reasoningEffort : 'a sheet',
-    ).toBeUndefined();
-    props.controller.handleKey('', { escape: true });
-    expect(props.controller.getSnapshot().chatSheet).toBeUndefined();
+    const before = await openedReport(props, 'agent');
+    expect(before).toContain(DEFAULT_CHAT_MODEL);
+    expect(before).toMatch(/Reasoning effort\s+not set/u);
+    closeReport(props);
 
-    // Open the reseat picker from the chat palette, filter to a DIFFERENT available model (opus), accept.
-    props.controller.handleKey('/', {});
-    type(props, 'models');
-    props.controller.handleKey('', ENTER);
-    await flush();
-    expect(props.controller.getSnapshot().modelPicker).toBeDefined();
+    // The `/models` popup from the chat palette, filtered to a DIFFERENT available model (opus): its form (opus is reasoning-capable: the
+    // ADR-0066 tier, opened on `medium`, and `This chat`), then `Enter` ⇒ the REAL reseatChat.
     // Filter to EXACTLY one model. `'opus'` matched a single row while the shipped table had twelve; the generated
     // catalog carries eighty, and several are Opus — so a substring filter now selects whichever sorts first, and
     // the test would silently be asserting about a different model than it names (ADR-0071 §1).
-    type(props, 'claude-opus-4-8');
-    props.controller.handleKey('', ENTER); // opus is reasoning-capable ⇒ the ADR-0066 effort sub-step (not an
-    // immediate reseat). The picker advanced to the effort phase over the pending model.
-    const effortPicker = props.controller.getSnapshot().modelPicker;
-    expect(effortPicker?.phase).toBe('effort');
-    expect(effortPicker?.pending?.modelId).toBe('claude-opus-4-8');
-    props.controller.handleKey('', ENTER); // apply the highlighted tier (default 'medium') ⇒ the REAL reseatChat
+    const popups = await answerModelsPopup(props, 'claude-opus-4-8', { waitMs: WAIT_MS });
     await vi.waitFor(
       () => expect(invocation.registry.activeOwners, 'NATIVE_HOME_RESEAT_FORWARDING').toBe(6),
       { timeout: WAIT_MS },
@@ -3042,26 +3609,23 @@ workflow:
     // The MARKER, through the real Home builder — the only place the Home's argument order is pinned. `toContain` on
     // the new model alone would pass a REVERSED marker just as happily.
     const marker = carried.at(-1)?.text ?? '';
-    expect(marker).toContain('claude-sonnet-4-6 → claude-opus-4-8');
+    expect(marker).toContain(`${DEFAULT_CHAT_MODEL} → claude-opus-4-8`);
     expect(marker).toContain('@-attached file contents included'); // ADR-0059's bound disclosure clause
     // The effort sub-step's tier bound onto the reseated agent (ADR-0066) — surfaced in the footer via the store.
     expect(reseated?.store.getSnapshot().reasoningEffort).toBe('medium');
-    expect(props.controller.getSnapshot().modelPicker).toBeUndefined(); // the picker closed
+    expect(popups.getSnapshot().open).toBe(false); // the popup closed
     expect(props.controller.getSnapshot().mode).toBe('chat'); // stayed in chat
 
-    // ADR-0140 §3: `/agent` on the RESEATED session shows the pair it runs on now. The real reseat built a new session over the swapped
-    // definition, and the sheet reads THAT one, not the definition the chat started on (sonnet, no effort tier).
+    // ADR-0148 §10: `/agent` on the RESEATED session shows the pair it runs on now. The real reseat built a new session over the swapped
+    // definition, and the popup reads THAT one, not the definition the chat started on (sonnet, no effort tier).
     props.controller.handlePaste('/agent');
     props.controller.handleKey('', ENTER);
-    const agentSheet = props.controller.getSnapshot().chatSheet;
-    expect(agentSheet?.kind).toBe('agent');
-    const shown = agentSheet?.kind === 'agent' ? agentSheet.view : undefined;
-    expect(shown?.detail.model).toBe('claude-opus-4-8');
-    expect(shown?.detail.provider).toBe('anthropic');
-    expect(shown?.detail.reasoningEffort).toBe('medium');
-    expect(shown?.builtIn, 'the reseat kept the built-in agent, and the sheet knows it').toBe(true);
-    props.controller.handleKey('', { escape: true });
-    expect(props.controller.getSnapshot().chatSheet).toBeUndefined();
+    const shown = await openedReport(props, 'agent');
+    expect(shown).toContain('claude-opus-4-8');
+    expect(shown).toContain('anthropic');
+    expect(shown).toMatch(/Reasoning effort\s+medium/u);
+    expect(shown).toContain('the built-in chat agent'); // the reseat kept the built-in agent, and the popup knows it
+    closeReport(props);
 
     // The durable row's agent snapshot updates to the switched model after the reseated session ends.
     props.controller.handleKey('c', CTRL_C); // /cancel ⇒ back to Home (the reseated session's terminal writes 'ended')
@@ -3140,6 +3704,8 @@ workflow:
           render: (props, options) => {
             captured = props;
             if (!actualInk) {
+              // No Home root is mounted here, so nothing binds the popup host's gate as RootApp does (the `/models` popup opens on it).
+              props.popups?.bindOpenGate(() => undefined);
               props.onRendererReady?.(async (publish) => {
                 await publish?.();
               });
@@ -3232,14 +3798,7 @@ workflow:
           journal.settle(identity, state, 'synthetic private result');
         }
         const pick = async (model: string) => {
-          props.controller.handleKey('/', {});
-          type(props, 'models');
-          props.controller.handleKey('', ENTER);
-          await flush();
-          type(props, model);
-          props.controller.handleKey('', ENTER);
-          if (props.controller.getSnapshot().modelPicker?.phase === 'effort')
-            props.controller.handleKey('', ENTER);
+          await answerModelsPopup(props, model, { waitMs: WAIT_MS });
           if (typeof mode === 'string')
             await vi.waitFor(() => expect(rendererError).toBeInstanceOf(Error), {
               timeout: WAIT_MS,
@@ -3376,13 +3935,9 @@ workflow:
     const sessionId = props.controller.getSnapshot().session?.sessionId ?? '';
     expect(sessionId).not.toBe('');
 
-    props.controller.handleKey('/', {});
-    type(props, 'models');
-    props.controller.handleKey('', ENTER);
-    await flush();
-    type(props, 'claude-opus-4-8');
-    props.controller.handleKey('', ENTER); // reasoning-capable ⇒ effort sub-step
-    props.controller.handleKey('', ENTER); // apply the default tier ⇒ the REAL reseatChat (fires the mid-build note)
+    // The `/models` popup on opus (reasoning-capable: its form opens on the default tier), `This chat` ⇒ the REAL reseatChat (fires the
+    // mid-build note).
+    await answerModelsPopup(props, 'claude-opus-4-8', { waitMs: WAIT_MS });
     await flush();
 
     const transcript =
@@ -3401,74 +3956,28 @@ workflow:
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
-  it('a KEY-LESS first run runs the onboarding wizard BEFORE mounting the Home (2.5.G S8)', async () => {
-    // A scripted clack slice + a key-less resolver (keyFor throws for every provider) ⇒ the wizard triggers.
-    const outros: string[] = [];
-    const select = vi.fn(() => Promise.resolve('anthropic'));
-    const onboardingPrompter: ClackOnboardingDeps = {
-      intro: () => undefined,
-      outro: (m) => outros.push(m),
-      note: () => undefined,
-      select,
-      password: () => Promise.resolve('sk-home-9999'),
-      isCancel: (v): v is symbol => typeof v === 'symbol',
-    };
-    const keylessResolver: ProviderResolver = {
-      resolveProvider: () => undefined,
-      keyFor: () => {
-        throw new Error('no key');
-      },
-    };
-    let captured: RootAppProps | undefined;
-    const { deps } = makeDeps((p) => (captured = p), {
-      providers: keylessResolver,
-      onboardingPrompter,
-      // An ISOLATED config file in the per-test cwd — the wizard's success path writes the chosen provider's starter
-      // model here (via writeGlobalDefaultModel), so it must not touch the shared tmp configPath other tests use.
-      global: { ...global, configPath: join(cwd, 'wizard-config.toml') },
-    });
-    const drivePromise = driveHome(deps);
-    await flush(); // the wizard is async — let it settle before render() mounts ink
-    const props = captured;
-    if (props === undefined) throw new Error('the Home did not mount after the wizard');
-    expect(select).toHaveBeenCalledTimes(1); // the wizard ran (provider select)
-    // The wizard reached its success path + handed off to the Home. (Real keychain STORAGE is proven in
-    // wizard.test.ts with an inspectable keychain; here the module-level vi.mock discards the key, which is what
-    // keeps the test off the developer's/CI's real OS keychain.)
-    expect(outros.some((o) => o.includes('all set'))).toBe(true);
-
-    props.controller.handleKey('c', CTRL_C); // clean exit
-    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
-    expect(await drivePromise).toBe(EXIT_CODES.success);
-  });
-
-  it('registers the exit-safety nets BEFORE a key-less onboarding prompt can await the network (G0, #50)', async () => {
-    // Hold the first clack prompt open. The old ordering subscribed only AFTER the wizard settled, so a Ctrl-C or
-    // Ctrl-Z during the wizard's later key-validation request had no Home-owned safety net at all. Capture the
-    // ordering before settling the prompt, then complete the normal clean-exit path so this regression test leaves
-    // no open db handle or pending Home promise behind.
+  it('registers every exit-safety net BEFORE the pre-mount await, and a stop there with no Ink tree touches no terminal state (G0, #50)', async () => {
+    // Ported from the deleted Clack onboarding tests (MVP-11 unit 6): the pre-mount wizard is gone, and the await left before the mount is
+    // the run reconciliation. Hold it open: the signal, exit and job-control nets must already be live, and a stop that lands there (there is
+    // no Ink tree and no prompt that owns the terminal) is forwarded as it is, with no raw-mode or cursor write of the Home's.
     const order: string[] = [];
-    let resolveSelect: ((value: string | symbol) => void) | undefined;
-    const select = new Promise<string | symbol>((resolve) => {
-      resolveSelect = resolve;
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
     });
-    const onboardingPrompter: ClackOnboardingDeps = {
-      ...CANCEL_ONBOARDING,
-      select: () => {
-        order.push('wizard-select');
-        return select;
-      },
-    };
-    const keylessResolver: ProviderResolver = {
-      resolveProvider: () => undefined,
-      keyFor: () => {
-        throw new Error('no key');
-      },
-    };
+    const terminalEvents: string[] = [];
+    let suspend: (() => void) | undefined;
     let captured: RootAppProps | undefined;
     const { deps } = makeDeps((props) => (captured = props), {
-      providers: keylessResolver,
-      onboardingPrompter,
+      openSessionStore: () => ({
+        store: createSessionStore(client.db),
+        db: client.db,
+        close: closeSpy,
+        reconcileInterruptedRuns: async () => {
+          order.push('reconcile');
+          await held;
+        },
+      }),
       subscribeSignals: () => {
         order.push('signals');
         return () => undefined;
@@ -3477,295 +3986,36 @@ workflow:
         order.push('exit-net');
         return () => undefined;
       },
+      writeControl: (sequence) => terminalEvents.push(`control:${sequence}`),
       jobControlLifecycle: {
         supported: true,
-        onSuspend: () => {
+        onSuspend: (listener) => {
           order.push('job-suspend');
+          suspend = listener;
           return () => undefined;
         },
         onContinue: () => {
           order.push('job-continue');
           return () => undefined;
         },
-        suspendSelf: () => undefined,
-      },
-    });
-
-    const drivePromise = driveHome(deps);
-    await flush();
-    const beforeWizardSettles = [...order];
-
-    if (resolveSelect === undefined) throw new Error('the onboarding select did not start');
-    resolveSelect(Symbol('cancel'));
-    await flush();
-    const props = captured;
-    if (props === undefined) throw new Error('the Home did not mount after onboarding');
-    props.controller.handleKey('c', CTRL_C);
-    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
-    expect(await drivePromise).toBe(EXIT_CODES.success);
-
-    expect(beforeWizardSettles).toEqual([
-      'signals',
-      'exit-net',
-      'job-continue',
-      'job-suspend',
-      'wizard-select',
-    ]);
-  });
-
-  it('hands Clack raw input + cursor back around BOTH raw Ctrl-Z and external SIGTSTP during onboarding (G0)', async () => {
-    // Hold Clack's first raw-mode prompt open. Unlike the earlier order-only regression, this models the terminal
-    // custody that exists before Ink mounts: Ctrl-Z is a SUB byte here, and an external SIGTSTP has no SuspendPort.
-    let resolveSelect: ((value: string | symbol) => void) | undefined;
-    const select = new Promise<string | symbol>((resolve) => {
-      resolveSelect = resolve;
-    });
-    const onboardingPrompter: ClackOnboardingDeps = {
-      ...CANCEL_ONBOARDING,
-      select: () => select,
-    };
-    const keylessResolver: ProviderResolver = {
-      resolveProvider: () => undefined,
-      keyFor: () => {
-        throw new Error('no key');
-      },
-    };
-    const terminalEvents: string[] = [];
-    let clackOwnsRawMode = true;
-    let rawInput: ((input: string) => void) | undefined;
-    let suspend: (() => void) | undefined;
-    let activeSuspend: (() => void) | undefined;
-    let captured: RootAppProps | undefined;
-    const { deps } = makeDeps((props) => (captured = props), {
-      providers: keylessResolver,
-      onboardingPrompter,
-      writeControl: (sequence) => terminalEvents.push(`control:${sequence}`),
-      onboardingTerminalLifecycle: {
-        onInput: (listener) => {
-          rawInput = listener;
-          return () => {
-            rawInput = undefined;
-          };
-        },
-        isRawMode: () => clackOwnsRawMode,
-        setRawMode: (enabled) => {
-          clackOwnsRawMode = enabled;
-          terminalEvents.push(`raw:${String(enabled)}`);
-        },
-      },
-      jobControlLifecycle: {
-        supported: true,
-        onSuspend: (listener) => {
-          activeSuspend = listener;
-          suspend = listener;
-          return () => {
-            if (activeSuspend === listener) activeSuspend = undefined;
-          };
-        },
-        onContinue: () => () => undefined,
-        // In production this returns only after `fg`/SIGCONT. The synchronous fake therefore observes the exact
-        // release → stop → reclaim order without suspending Vitest itself.
         suspendSelf: () => terminalEvents.push('self-stop'),
       },
     });
 
     const drivePromise = driveHome(deps);
     await flush();
-    if (rawInput === undefined || suspend === undefined)
-      throw new Error('onboarding did not install its raw-input/job-control handoff');
-
-    rawInput('\x1a');
-    expect(terminalEvents).toEqual([
-      'raw:false',
-      `control:${SHOW_CURSOR}`,
+    expect(order).toEqual(['signals', 'exit-net', 'job-continue', 'job-suspend', 'reconcile']);
+    expect(captured, 'the Home is not mounted while the await holds').toBeUndefined();
+    if (suspend === undefined) throw new Error('the job-control listener was not installed');
+    suspend();
+    expect(terminalEvents, 'only the stop itself: no raw-mode or cursor write').toEqual([
       'self-stop',
-      'raw:true',
-      `control:${HIDE_CURSOR}`,
     ]);
 
-    terminalEvents.length = 0;
-    activeSuspend?.(); // the external `kill -TSTP` path uses the SAME no-Ink custody pair
-    expect(terminalEvents).toEqual([
-      'raw:false',
-      `control:${SHOW_CURSOR}`,
-      'self-stop',
-      'raw:true',
-      `control:${HIDE_CURSOR}`,
-    ]);
-
-    // After Clack closes its spinner/prompt it has returned cooked input + a visible cursor. The wizard may still be
-    // awaiting keychain/config work, but that interval owns no terminal modes and must not synthesize raw+hidden
-    // state merely because a SIGTSTP arrives.
-    terminalEvents.length = 0;
-    clackOwnsRawMode = false;
-    activeSuspend?.();
-    expect(terminalEvents).toEqual(['self-stop']);
-
-    if (resolveSelect === undefined) throw new Error('the onboarding select did not start');
-    resolveSelect(Symbol('cancel'));
+    release();
     await flush();
     const props = captured;
-    if (props === undefined) throw new Error('the Home did not mount after onboarding');
-    props.controller.handleKey('c', CTRL_C);
-    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
-    expect(await drivePromise).toBe(EXIT_CODES.success);
-  });
-
-  it('reclaims Clack cursor ownership when the release write faults after raw mode is handed off (G0)', async () => {
-    // stdout can fail after the terminal accepts part of an escape sequence. In particular, a failed SHOW_CURSOR
-    // must be treated as a possible visible cursor: rolling raw mode back alone would return Clack to a live prompt
-    // with its cursor exposed.
-    let resolveSelect: ((value: string | symbol) => void) | undefined;
-    const select = new Promise<string | symbol>((resolve) => {
-      resolveSelect = resolve;
-    });
-    const keylessResolver: ProviderResolver = {
-      resolveProvider: () => undefined,
-      keyFor: () => {
-        throw new Error('no key');
-      },
-    };
-    const terminalEvents: string[] = [];
-    let clackOwnsRawMode = true;
-    let rawInput: ((input: string) => void) | undefined;
-    let captured: RootAppProps | undefined;
-    const { deps } = makeDeps((props) => (captured = props), {
-      providers: keylessResolver,
-      onboardingPrompter: { ...CANCEL_ONBOARDING, select: () => select },
-      writeControl: (sequence) => {
-        terminalEvents.push(`control:${sequence}`);
-        if (sequence === SHOW_CURSOR) throw new Error('partial cursor write');
-      },
-      onboardingTerminalLifecycle: {
-        onInput: (listener) => {
-          rawInput = listener;
-          return () => {
-            rawInput = undefined;
-          };
-        },
-        isRawMode: () => clackOwnsRawMode,
-        setRawMode: (enabled) => {
-          clackOwnsRawMode = enabled;
-          terminalEvents.push(`raw:${String(enabled)}`);
-        },
-      },
-      jobControlLifecycle: {
-        supported: true,
-        onSuspend: () => () => undefined,
-        onContinue: () => () => undefined,
-        // A failed terminal release must never forward SIGTSTP: there is no safe stopped state to return from.
-        suspendSelf: () => terminalEvents.push('self-stop'),
-      },
-    });
-
-    const drivePromise = driveHome(deps);
-    await flush();
-    if (rawInput === undefined) throw new Error('onboarding did not install its raw-input handoff');
-
-    rawInput('\x1a');
-    expect(terminalEvents).toEqual([
-      'raw:false',
-      `control:${SHOW_CURSOR}`,
-      'raw:true',
-      `control:${HIDE_CURSOR}`,
-    ]);
-    expect(clackOwnsRawMode).toBe(true);
-
-    if (resolveSelect === undefined) throw new Error('the onboarding select did not start');
-    resolveSelect(Symbol('cancel'));
-    await flush();
-    const props = captured;
-    if (props === undefined) throw new Error('the Home did not mount after onboarding');
-    props.controller.handleKey('c', CTRL_C);
-    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
-    expect(await drivePromise).toBe(EXIT_CODES.success);
-  });
-
-  it('retries a failed Clack cursor reclaim before a later stop request (G0)', async () => {
-    let resolveSelect: ((value: string | symbol) => void) | undefined;
-    const select = new Promise<string | symbol>((resolve) => {
-      resolveSelect = resolve;
-    });
-    const keylessResolver: ProviderResolver = {
-      resolveProvider: () => undefined,
-      keyFor: () => {
-        throw new Error('no key');
-      },
-    };
-    const terminalEvents: string[] = [];
-    let clackOwnsRawMode = true;
-    let rawInput: ((input: string) => void) | undefined;
-    let captured: RootAppProps | undefined;
-    let failShowOnce = true;
-    let failHideOnce = true;
-    const { deps } = makeDeps((props) => (captured = props), {
-      providers: keylessResolver,
-      onboardingPrompter: { ...CANCEL_ONBOARDING, select: () => select },
-      writeControl: (sequence) => {
-        terminalEvents.push(`control:${sequence}`);
-        if (sequence === SHOW_CURSOR && failShowOnce) {
-          failShowOnce = false;
-          throw new Error('partial cursor release');
-        }
-        if (sequence === HIDE_CURSOR && failHideOnce) {
-          failHideOnce = false;
-          throw new Error('partial cursor reclaim');
-        }
-      },
-      onboardingTerminalLifecycle: {
-        onInput: (listener) => {
-          rawInput = listener;
-          return () => {
-            rawInput = undefined;
-          };
-        },
-        isRawMode: () => clackOwnsRawMode,
-        setRawMode: (enabled) => {
-          clackOwnsRawMode = enabled;
-          terminalEvents.push(`raw:${String(enabled)}`);
-        },
-      },
-      jobControlLifecycle: {
-        supported: true,
-        onSuspend: () => () => undefined,
-        onContinue: () => () => undefined,
-        suspendSelf: () => terminalEvents.push('self-stop'),
-      },
-    });
-
-    const drivePromise = driveHome(deps);
-    await flush();
-    if (rawInput === undefined) throw new Error('onboarding did not install its raw-input handoff');
-
-    rawInput('\x1a');
-    expect(terminalEvents).toEqual([
-      'raw:false',
-      `control:${SHOW_CURSOR}`,
-      'raw:true',
-      `control:${HIDE_CURSOR}`,
-    ]);
-
-    // The second request must first retry the cursor reclaim left latched above, then safely release/stop/reclaim.
-    rawInput('\x1a');
-    expect(terminalEvents).toEqual([
-      'raw:false',
-      `control:${SHOW_CURSOR}`,
-      'raw:true',
-      `control:${HIDE_CURSOR}`,
-      `control:${HIDE_CURSOR}`,
-      'raw:false',
-      `control:${SHOW_CURSOR}`,
-      'self-stop',
-      'raw:true',
-      `control:${HIDE_CURSOR}`,
-    ]);
-    expect(clackOwnsRawMode).toBe(true);
-
-    if (resolveSelect === undefined) throw new Error('the onboarding select did not start');
-    resolveSelect(Symbol('cancel'));
-    await flush();
-    const props = captured;
-    if (props === undefined) throw new Error('the Home did not mount after onboarding');
+    if (props === undefined) throw new Error('the Home did not mount after the await');
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
@@ -3856,29 +4106,6 @@ workflow:
       .map((call) => String(call[0]));
     expect(controlsAfterTerminalTeardown).not.toContain(ENABLE_MOUSE);
     expect(exit).toHaveBeenCalledWith(143);
-  });
-
-  it('a run WITH a resolvable key SKIPS the onboarding wizard entirely', async () => {
-    // The default scriptedResolver's keyFor returns 'test-key' ⇒ not key-less ⇒ the wizard must never run.
-    const select = vi.fn(() => Promise.resolve('anthropic'));
-    const onboardingPrompter: ClackOnboardingDeps = {
-      intro: () => undefined,
-      outro: () => undefined,
-      note: () => undefined,
-      select,
-      password: () => Promise.resolve('sk-x'),
-      isCancel: (v): v is symbol => typeof v === 'symbol',
-    };
-    let captured: RootAppProps | undefined;
-    const { deps } = makeDeps((p) => (captured = p), { onboardingPrompter });
-    const drivePromise = driveHome(deps);
-    const props = captured;
-    if (props === undefined) throw new Error('render was not invoked');
-    expect(select).not.toHaveBeenCalled(); // no wizard on a keyed run
-
-    props.controller.handleKey('c', CTRL_C);
-    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
-    expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
   it('an external SIGINT tears the live chat down and exits 130 (128+SIGINT)', async () => {
@@ -4106,6 +4333,7 @@ workflow:
       throw new Error('missing Home host');
     applyChatMode(
       makeChatModeEnv({
+        commandPaths: undefined,
         session: built.session,
         tools: built.tools,
         workspaceDir: built.context.workingDir,
@@ -4273,6 +4501,8 @@ workflow:
             timeout: WAIT_MS,
           });
           props.controller.handleKey('', { downArrow: true });
+          // The slide to the work page arrives before `Enter`: one pressed while it slides opens nothing (MVP-11 unit 7, round 1: SE71).
+          await vi.waitFor(() => expect(props.controller.getSnapshot().slide).toBeUndefined());
           props.controller.handleKey('', ENTER);
           await vi.waitFor(
             () => {
@@ -4292,15 +4522,7 @@ workflow:
             { timeout: WAIT_MS },
           );
         } else if (surface === 'reseated') {
-          type(props, '/models');
-          props.controller.handleKey('', ENTER);
-          await vi.waitFor(() => expect(props.controller.getSnapshot().modelPicker).toBeDefined(), {
-            timeout: WAIT_MS,
-          });
-          type(props, 'claude-opus-4-8');
-          props.controller.handleKey('', ENTER);
-          if (props.controller.getSnapshot().modelPicker?.phase === 'effort')
-            props.controller.handleKey('', ENTER);
+          await answerModelsPopup(props, 'claude-opus-4-8', { waitMs: WAIT_MS });
           await vi.waitFor(() => expect(props.controller.getSnapshot().session).not.toBe(first), {
             timeout: WAIT_MS,
           });
@@ -4312,6 +4534,7 @@ workflow:
         });
         applyChatMode(
           makeChatModeEnv({
+            commandPaths: undefined,
             session: built.session,
             tools: built.tools,
             workspaceDir: built.context.workingDir,

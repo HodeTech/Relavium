@@ -27,11 +27,12 @@ import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 import { HOSTED_RUN_POLL_MS } from './tui-constants.js';
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 
@@ -127,10 +128,12 @@ function mount(options: Options = {}) {
   const close = vi.fn(() => Promise.resolve());
   const onExit = vi.fn();
   const startChat = options.startChat ?? vi.fn(() => new Promise<HomeChatSession>(() => {}));
+  // The Home's one notification channel: what `/run` says once its popup has closed (ADR-0148 §6).
+  const announced: string[] = [];
   const controller = createHomeController({
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat,
     homeStore: { read: () => EMPTY },
+    announce: (text) => announced.push(text),
     ...(options.launchRun === undefined ? {} : { launchRun: options.launchRun }),
     ...(options.runStore === undefined ? {} : { runStore: options.runStore }),
     ...(options.withHost === false
@@ -156,6 +159,7 @@ function mount(options: Options = {}) {
     onExit,
     startChat,
     timers,
+    announced,
     set: (next: RunHostSnapshot): void => {
       current = next;
     },
@@ -548,7 +552,7 @@ describe('how the view is reached', () => {
   });
 
   it('opens nothing when the launch started nothing (refused, cancelled, no workflow)', async () => {
-    const { controller } = mount({
+    const { controller, announced } = mount({
       initial: IDLE,
       launchRun: () => Promise.resolve('Not started.'),
     });
@@ -556,11 +560,13 @@ describe('how the view is reached', () => {
     controller.handleKey('', ENTER);
     await flush();
     expect(controller.getSnapshot().screen).toBeUndefined();
-    expect(controller.getSnapshot().notice).toBe('Not started.');
+    // What the launch said is one notification (ADR-0148 §6), never the Home's notice.
+    expect(announced).toEqual(['Not started.']);
+    expect(controller.getSnapshot().notice).toBeUndefined();
   });
 
   describe('a /run that started no run opens no view, however it ended, while another run executes or starts', () => {
-    // The launch flow ends in a notice: the view is for the run it STARTED, told by the leg it left behind, as `r` on a Defined row tells it.
+    // The launch flow ends in a notice: the view is for the run it STARTED, told by the leg it left behind, as `r` on a `/workflows` row tells it.
     // A view of ANOTHER run that is executing would hide the notice and is not what `/run` asked for.
     const scenarios: readonly {
       readonly name: string;
@@ -600,9 +606,9 @@ describe('how the view is reached', () => {
     ];
 
     it.each(scenarios)(
-      '$name: the notice stays on the landing and no view opens',
+      '$name: what it said is one notification and no view opens',
       async ({ initial, after, notice }) => {
-        const { controller, set } = mount({
+        const { controller, set, announced } = mount({
           initial,
           launchRun: () => {
             if (after !== undefined) set(after);
@@ -615,7 +621,8 @@ describe('how the view is reached', () => {
         await flush();
         const snapshot = controller.getSnapshot();
         expect(snapshot.screen, 'no view of another run').toBeUndefined();
-        expect(snapshot.notice).toBe(notice);
+        expect(announced).toEqual([notice]);
+        expect(snapshot.notice).toBeUndefined();
         expect(snapshot.nativeActionBusy).toBe(false);
         expect(snapshot.mode).toBe('home');
       },

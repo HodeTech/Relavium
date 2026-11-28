@@ -20,11 +20,12 @@ import {
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -76,7 +77,6 @@ function controller(startChat: () => Promise<HomeChatSession>) {
   return createHomeController({
     startChat,
     homeStore: { read: () => EMPTY },
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     onExit: vi.fn(),
     onError: vi.fn(),
   });

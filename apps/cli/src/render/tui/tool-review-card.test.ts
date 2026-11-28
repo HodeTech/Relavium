@@ -111,7 +111,7 @@ describe('cardVerb', () => {
 describe('cardStats', () => {
   it('gives the added/removed lines and changed bytes, or nothing without a diff', () => {
     const document = createReviewDocument(preview({ after: 'hello\n' }));
-    expect(cardStats(document)).toBe('+1 −0 · 6 bytes');
+    expect(cardStats(document)).toBe('+1 -0 · 6 bytes');
     expect(cardStats(createReviewDocument({ kind: 'operation', fields: [] }))).toBe('');
     expect(cardStats(undefined)).toBe('');
   });
@@ -355,9 +355,9 @@ describe('cardKeyRows (ADR-0129 §5)', () => {
   it('names the scope of "always" and what Esc does, in exactly two rows', () => {
     const rows = cardKeyRows({ inspected: true, cacheable: true, scope: 'file writes' });
     expect(rows).toHaveLength(CARD_KEY_ROWS);
-    expect(rows[0]).toBe('[Ctrl+Y] Allow   [Ctrl+G] Allow all file writes this session');
+    expect(rows[0]).toBe('[Ctrl+Y] Allow · [Ctrl+G] Allow all file writes this session');
     expect(rows[1]).toBe(
-      '[Ctrl+N] Deny   [Ctrl+R] Deny + reason   [v] Full diff   Esc stops the turn',
+      '[Ctrl+N] Deny · [Ctrl+R] Deny + reason · [v] full diff · Esc stops the turn',
     );
   });
   it('omits "always" when the answer would not be remembered', () => {
@@ -366,7 +366,7 @@ describe('cardKeyRows (ADR-0129 §5)', () => {
     expect(rows[0]).not.toContain('Ctrl+G');
     // Deny stays on the second row: the refusals do not depend on what would be remembered.
     expect(rows[1]).toBe(
-      '[Ctrl+N] Deny   [Ctrl+R] Deny + reason   [v] Full diff   Esc stops the turn',
+      '[Ctrl+N] Deny · [Ctrl+R] Deny + reason · [v] full diff · Esc stops the turn',
     );
   });
   it('does not offer Allow while it is locked, and says why', () => {
@@ -415,7 +415,7 @@ describe('cardKeyRows while the session-wide grant waits for its confirmation (G
     });
     expect(rows).toHaveLength(CARD_KEY_ROWS);
     expect(rows[0]).toBe('Press Enter to allow all file writes this session');
-    expect(rows[1]).toBe('Any other key cancels \u00b7 Esc stops the turn');
+    expect(rows[1]).toBe('any other key cancels \u00b7 Esc stops the turn');
     expect(rows.join('\n'), 'a second Ctrl+G is no longer the confirmation').not.toContain(
       'Ctrl+G',
     );
@@ -580,11 +580,11 @@ describe('the command card chrome (ADR-0118 §1)', () => {
   it('words the grants for THIS exact command, and offers Ctrl+O only when it is offered', () => {
     const base = { inspected: true, cacheable: true, scope: 'run_command calls', command: true };
     expect(cardKeyRows({ ...base, remember: true })).toEqual([
-      '[Ctrl+Y] Allow once   [Ctrl+G] Allow this session   [Ctrl+O] Allow + remember',
-      '[Ctrl+N] Deny   [Ctrl+R] Deny + reason   [v] Full view   Esc stops the turn',
+      '[Ctrl+Y] Allow once · [Ctrl+G] Allow this session · [Ctrl+O] Allow + remember',
+      '[Ctrl+N] Deny · [Ctrl+R] Deny + reason · [v] full view · Esc stops the turn',
     ]);
     expect(cardKeyRows({ ...base, remember: false })[0]).toBe(
-      '[Ctrl+Y] Allow once   [Ctrl+G] Allow this session',
+      '[Ctrl+Y] Allow once · [Ctrl+G] Allow this session',
     );
     expect(cardKeyRows({ ...base, cacheable: false, remember: false })[0]).toBe(
       '[Ctrl+Y] Allow once',
@@ -602,7 +602,7 @@ describe('the command card chrome (ADR-0118 §1)', () => {
       }),
     ).toEqual([
       'Press Enter to allow this exact command for this session',
-      'Enter confirms · any other key cancels, allowing nothing · Esc stops the turn',
+      'Enter confirm · any other key cancels, allowing nothing · Esc stops the turn',
     ]);
     expect(
       cardKeyRows({
@@ -615,7 +615,7 @@ describe('the command card chrome (ADR-0118 §1)', () => {
       }),
     ).toEqual([
       'Press Enter to allow this exact command now and remember it for this project',
-      'Enter confirms · any other key cancels, allowing nothing · Esc stops the turn',
+      'Enter confirm · any other key cancels, allowing nothing · Esc stops the turn',
     ]);
   });
 
@@ -631,10 +631,10 @@ describe('the command card chrome (ADR-0118 §1)', () => {
     ).toBe('(Allow is locked until you read the whole command)');
   });
 
-  it('keeps a non-command card exactly as it was: no Ctrl+O, the tool’s own grant words, Full diff', () => {
+  it('keeps a non-command card exactly as it was: no Ctrl+O, the tool’s own grant words, full diff', () => {
     expect(cardKeyRows({ inspected: true, cacheable: true, scope: 'file writes' })).toEqual([
-      '[Ctrl+Y] Allow   [Ctrl+G] Allow all file writes this session',
-      '[Ctrl+N] Deny   [Ctrl+R] Deny + reason   [v] Full diff   Esc stops the turn',
+      '[Ctrl+Y] Allow · [Ctrl+G] Allow all file writes this session',
+      '[Ctrl+N] Deny · [Ctrl+R] Deny + reason · [v] full diff · Esc stops the turn',
     ]);
   });
 

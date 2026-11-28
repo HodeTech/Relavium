@@ -1,5 +1,5 @@
 /**
- * The Defined tab's read ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+ * The `/workflows` popup's read ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
  * §2, MVP-8 step 4, increment 4b): the catalog and the pins in, rows that name their entries by index out. The export half of the same
  * file is proved with the card in `render/tui/export-card.test.ts`, over a real temporary project.
  */
@@ -56,27 +56,49 @@ describe('createDefinedPort', () => {
     ]);
   });
 
+  it('names the root of a pin of another project from ~ when it was given the directory and the home (ADR-0145 §8)', () => {
+    const otherPin = { kind: 'workflow' as const, ref: 'deploy', rowid: 9, oversized: false };
+    const read = (paths?: { cwd: string; home: string }) =>
+      createDefinedPort({
+        catalog: { list: () => [] },
+        pins: () => [],
+        allPins: () => [{ ...otherPin, projectRoot: '/home/ada/other' }],
+        ...(paths === undefined ? {} : { paths }),
+      })
+        .read()
+        .model.rows.map((row) => row.projectRoot);
+    expect(read({ cwd: '/home/ada/work/app', home: '/home/ada' })).toEqual(['~/other']);
+    expect(read()).toEqual(['/home/ada/other']);
+  });
+
   it('adds each workflow’s latest run, by slug, to a ready row only, and shows none when no read is given', () => {
     const catalog = { list: () => [entry('alpha'), entry('torn', { valid: false, error: 'bad' })] };
-    const lastRuns = vi.fn(
+    const at = '2026-11-27T10:00:00.000Z';
+    const latestRuns = vi.fn(
       () =>
-        new Map<string, RunStatus>([
-          ['alpha', 'completed'],
-          ['torn', 'failed'],
+        new Map<string, { status: RunStatus; at: string }>([
+          ['alpha', { status: 'completed', at }],
+          ['torn', { status: 'failed', at }],
         ]),
     );
-    const withRuns = createDefinedPort({ catalog, pins: () => [], lastRuns }).read();
+    const withRuns = createDefinedPort({ catalog, pins: () => [], latestRuns }).read();
     expect(
-      withRuns.model.rows.map((row) => [row.slug, row.lastRunStatus, row.lastRunGlyph]),
+      withRuns.model.rows.map((row) => [
+        row.slug,
+        row.lastRunStatus,
+        row.lastRunGlyph,
+        row.lastRunAt,
+      ]),
     ).toEqual([
-      ['alpha', 'completed', '✓'],
-      ['torn', undefined, undefined], // a file that did not parse borrows no run
+      ['alpha', 'completed', '✓', at],
+      ['torn', undefined, undefined, undefined], // a file that did not parse borrows no run
     ]);
+    expect(latestRuns, 'status and age come from ONE read').toHaveBeenCalledTimes(1);
     const without = createDefinedPort({ catalog, pins: () => [] }).read();
     expect(without.model.rows.map((row) => row.lastRunStatus)).toEqual([undefined, undefined]);
   });
 
-  it('lists the workflow pins of other projects as rows, and says what the store holds in all', () => {
+  it('lists the workflow pins of other projects as rows, the run pins of the store not at all', () => {
     const mine = {
       kind: 'workflow' as const,
       ref: 'beta',
@@ -101,11 +123,6 @@ describe('createDefinedPort', () => {
       ['beta', 'ready'],
       ['x', 'other-project'],
     ]);
-    expect(read.stored).toEqual({ total: 3, elsewhere: 2 });
-    expect(
-      createDefinedPort({ catalog: { list: () => [] }, pins: () => [] }).read().stored,
-      'a port that cannot list every pin knows no total',
-    ).toBeUndefined();
   });
 
   it('lets a failing catalog or a failing pin read throw, so the tab says it cannot list rather than draw half of it', () => {

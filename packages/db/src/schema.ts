@@ -1,5 +1,6 @@
 import {
   CATALOG_METADATA_ORIGINS,
+  CHAT_MODES,
   ERROR_CODES,
   EXECUTION_MODES,
   FS_SCOPE_TIERS,
@@ -7,6 +8,7 @@ import {
   MEDIA_SCOPE_KINDS,
   RunStatusSchema,
   SESSION_INTERRUPTION_REASONS,
+  SESSION_RECORD_KINDS,
   SessionStatusSchema,
   type CatalogMetadataOrigin,
   type ExecutionMode,
@@ -317,8 +319,9 @@ export const runs = sqliteTable(
       .where(sql`${t.deletedAt} is null`),
     // Backs the project-scoped keyset page of the Home's History tab (ADR-0140 §2, migration 0022): the cursor
     // `(created_at, id)` order within one `project_root` is served off this partial index with no filesort. A
-    // project-and-status filter rides the same index with a residual filter; a second index is added only if its
-    // plan test (apps/cli/src/harness/perf-budget.e2e.test.ts) fails.
+    // project-and-terminal-status filter rides the same index with a residual filter; a project with the status of a
+    // run in flight (the Home's paused runs) reads `idx_runs_status` instead (run-history-store.ts `projectTerm`, MVP-11
+    // unit 7). A second index is added only if its plan test (apps/cli/src/harness/perf-budget.e2e.test.ts) fails.
     index('idx_runs_project_created')
       .on(t.projectRoot, desc(t.createdAt), desc(t.id))
       .where(sql`${t.deletedAt} is null`),
@@ -563,6 +566,13 @@ export const sessionMessages = sqliteTable(
     // other row. Additive nullable columns; CHECK-constrained so a forged value cannot be stored (see the checks below).
     interruptionReason: text('interruption_reason'),
     interruptionCode: text('interruption_code'),
+    // ADR-0148 §6: present ONLY on a RECORD row (role='system', empty content) — a content-free fact about the session: an
+    // effective mode change (`mode_change`: from → to, two different closed modes) or a released estimate (`cost_release`: the
+    // durable amount in micro-cents). NULL on every other row. Additive nullable columns, CHECK-constrained like the interruption's.
+    recordKind: text('record_kind'),
+    recordFrom: text('record_from'),
+    recordTo: text('record_to'),
+    recordMicrocents: integer('record_microcents'),
     createdAt: epochMs('created_at').notNull(),
   },
   (t) => [
@@ -583,6 +593,30 @@ export const sessionMessages = sqliteTable(
     check(
       'session_messages_interruption_shape_check',
       sql`(${t.interruptionReason} is null and ${t.interruptionCode} is null) or (${t.interruptionReason} is not null and ${t.role} = 'system' and ${t.compactionDroppedThroughSequence} is null and (${t.contentParts} is null or ${t.contentParts} = '[]') and ((${t.interruptionReason} = 'failed') = (${t.interruptionCode} is not null)))`,
+    ),
+    // ADR-0148 §6, the record row. Each column holds only its closed set, and the amount only a non-negative integer.
+    check(
+      'session_messages_record_kind_check',
+      sql`${t.recordKind} is null or ${t.recordKind} in (${inList(SESSION_RECORD_KINDS)})`,
+    ),
+    check(
+      'session_messages_record_from_check',
+      sql`${t.recordFrom} is null or ${t.recordFrom} in (${inList(CHAT_MODES)})`,
+    ),
+    check(
+      'session_messages_record_to_check',
+      sql`${t.recordTo} is null or ${t.recordTo} in (${inList(CHAT_MODES)})`,
+    ),
+    check(
+      'session_messages_record_microcents_check',
+      sql`${t.recordMicrocents} is null or (typeof(${t.recordMicrocents}) = 'integer' and ${t.recordMicrocents} between 0 and 9007199254740991)`,
+    ),
+    // The record row's SHAPE, at rest: no kind means no field; a kind belongs to a system row that is neither a compaction boundary
+    // marker nor an interruption row (the mutual exclusion the interruption shape check above cannot state from its side without a
+    // rebuild) and carries no content; a mode change names two different modes and no amount; a release names an amount and no mode.
+    check(
+      'session_messages_record_shape_check',
+      sql`(${t.recordKind} is null and ${t.recordFrom} is null and ${t.recordTo} is null and ${t.recordMicrocents} is null) or (${t.recordKind} is not null and ${t.role} = 'system' and ${t.compactionDroppedThroughSequence} is null and ${t.interruptionReason} is null and ${t.interruptionCode} is null and (${t.contentParts} is null or ${t.contentParts} = '[]') and ((${t.recordKind} = 'mode_change' and ${t.recordFrom} is not null and ${t.recordTo} is not null and ${t.recordFrom} <> ${t.recordTo} and ${t.recordMicrocents} is null) or (${t.recordKind} = 'cost_release' and ${t.recordMicrocents} is not null and ${t.recordFrom} is null and ${t.recordTo} is null)))`,
     ),
   ],
 );

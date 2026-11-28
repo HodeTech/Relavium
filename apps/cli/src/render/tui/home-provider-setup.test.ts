@@ -1,24 +1,26 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { HomeSnapshot } from '../../home/home-store.js';
 import {
-  CHAT_PALETTE_COMMANDS,
   HOME_CHAT_PALETTE_COMMANDS,
   HOME_PALETTE_COMMANDS,
+  REPL_COMMANDS,
 } from '../../commands/repl-commands.js';
 import {
   createHomeController,
   type HomeChatSession,
   type HomeModelsPort,
 } from './home-controller.js';
+import type { SettingsPort } from '../../popups/settings-port.js';
 import { createChatStore } from './chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 
 const snapshot: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
@@ -26,9 +28,14 @@ function fixture(
   options: { keyless?: boolean; open?: () => Promise<void>; models?: HomeModelsPort } = {},
 ) {
   const open = options.open ?? vi.fn(() => Promise.resolve());
+  // The `/models` popup is opened over the Home's own port: what it applies through is that port's writer.
+  const opened: SettingsPort[] = [];
   const c = createHomeController({
+    openSettings: ({ chat }) => {
+      opened.push(chat);
+    },
+    announce: () => {},
     homeStore: { read: () => snapshot },
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => {
       throw new Error('unexpected chat');
     },
@@ -37,14 +44,14 @@ function fixture(
     providerSetup: { initialKeyless: options.keyless ?? true, open },
     ...(options.models === undefined ? {} : { models: options.models }),
   });
-  return { c, open };
+  return { c, open, opened };
 }
 
 describe('Home provider setup', () => {
-  it('exposes provider setup in Home palettes but never standalone chat', () => {
+  it('exposes provider setup in the Home palette only: not in a standalone chat and, since OD-2, not in the chat the Home hosts', () => {
     expect(HOME_PALETTE_COMMANDS.some((item) => item.name === 'providers')).toBe(true);
-    expect(HOME_CHAT_PALETTE_COMMANDS.some((item) => item.name === 'providers')).toBe(true);
-    expect(CHAT_PALETTE_COMMANDS.some((item) => item.name === 'providers')).toBe(false);
+    expect(HOME_CHAT_PALETTE_COMMANDS.some((item) => item.name === 'providers')).toBe(false);
+    expect(REPL_COMMANDS.some((item) => item.name === 'providers')).toBe(false);
     expect(HOME_PALETTE_COMMANDS.find((item) => item.name === 'providers')?.description).toContain(
       'keys',
     );
@@ -92,7 +99,7 @@ describe('Home provider setup', () => {
     await flush();
     expect(open).toHaveBeenCalledTimes(2);
   });
-  it('intercepts /providers in Home chat without sending it as a chat line', async () => {
+  it('answers /providers in the chat the Home hosts with a pointer to the Home: it opens nothing and is not sent as a chat line', async () => {
     const lines: string[] = [];
     const session: HomeChatSession = {
       store: createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND),
@@ -108,7 +115,6 @@ describe('Home provider setup', () => {
     const open = vi.fn(() => Promise.resolve());
     const c = createHomeController({
       homeStore: { read: () => snapshot },
-      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
       startChat: () => Promise.resolve(session),
       onExit: () => {},
       onError: () => {},
@@ -121,8 +127,18 @@ describe('Home provider setup', () => {
     c.handlePaste('/providers');
     c.handleKey('', { return: true });
     await flush();
-    expect(open).toHaveBeenCalledOnce();
+    expect(open, 'the setup is the Home’s: a chat opens nothing').not.toHaveBeenCalled();
     expect(lines).toEqual(['hello']);
+    expect(
+      session.store
+        .getSnapshot()
+        .state.transcript.some(
+          (entry) =>
+            entry.role === 'notice' && entry.text === '/providers is available from the Home.',
+        ),
+      'one line names the Home',
+    ).toBe(true);
+    expect(c.getSnapshot().mode).toBe('chat');
   });
 
   it('samples key availability once on return to Home, not on render or initial chat open', async () => {
@@ -138,7 +154,6 @@ describe('Home provider setup', () => {
     };
     const c = createHomeController({
       homeStore: { read: () => snapshot },
-      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
       startChat: () => Promise.resolve(session),
       onExit: () => {},
       onError: () => {},
@@ -209,16 +224,18 @@ describe('Home provider setup', () => {
           release = resolve;
         }),
     };
-    const { c } = fixture({ keyless: false, models });
+    const { c, opened } = fixture({ keyless: false, models });
     c.handleKey('/', {});
     for (const ch of 'models') c.handleKey(ch, {});
     c.handleKey('', { return: true });
     await flush();
-    c.handleKey('', { return: true });
+    // The popup's hand-off on another model: the Home's writer, its durability what it comes to (the popup says it on the hint row).
+    const saved = opened.at(-1)?.models?.saveDefault?.({ modelId: 'other', provider: 'openai' });
     expect(c.getSnapshot().submitBusy).toBe(true);
     expect(c.getSnapshot().notice).toBeUndefined();
     release({ durability: 'unconfirmed' });
-    await flush();
-    expect(c.getSnapshot().notice).toContain('Crash persistence is unconfirmed');
+    await expect(saved).resolves.toMatchObject({ kind: 'saved', durability: 'unconfirmed' });
+    expect(c.getSnapshot().submitBusy).toBe(false);
+    expect(c.getSnapshot().notice).toBeUndefined();
   });
 });

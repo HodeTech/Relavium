@@ -255,6 +255,32 @@ describe('statusCommand', () => {
     for (const control of ['\u001b', '\u0007', '\u202e']) expect(text).not.toContain(control);
   });
 
+  it('masks a secret-shaped upstream gate message on the human line, and leaves the --json record as stored', async () => {
+    // The gate message is interpolated upstream node output: the human line goes through the same untrusted-text floor as the TUI card
+    // (secrets masked, then controls stripped); the machine record is a contract and keeps the stored text.
+    const key = ['sk-', 'ant-', 'api03-', 'AbCdEf0123456789xyz'].join('');
+    await seedRun(db, {
+      slug: 'demo',
+      runId: 'paused-secret',
+      state: 'paused',
+      gate: { gateId: 'gate-1', gateType: 'approval', message: `use ${key}\u001b[2J now` },
+    });
+
+    const human = captureIo();
+    await statusCommand({ ...deps(human.io), readTerminalOutbox: () => Promise.resolve([]) });
+    expect(human.out()).toContain('pending gate gate-1');
+    expect(human.out()).not.toContain('0123456789xyz');
+    expect(human.out()).not.toContain('\u001b');
+    expect(human.out()).toContain('[REDACTED]');
+
+    const machine = captureIo();
+    await statusCommand({
+      ...deps(machine.io, true),
+      readTerminalOutbox: () => Promise.resolve([]),
+    });
+    expect(machine.out()).toContain('0123456789xyz');
+  });
+
   it('keeps healthy status beside a future event and explicitly marks unavailable usage in human and JSON output', async () => {
     await seedRun(db, { slug: 'healthy', runId: 'healthy', state: 'running' });
     await seedRun(db, { slug: 'future', runId: 'future', state: 'running' });
@@ -440,11 +466,27 @@ describe('statusCommand', () => {
     expect(text).toContain('n1 [transform]'); // the completed node step
     expect(text).toContain('g [human_in_the_loop]'); // the gate node still 'running'
     expect(text).toContain(
-      '  ⏸ pending gate gate-1 (approval) at g — "ship it?"\n' +
+      '  || pending gate gate-1 (approval) at g — "ship it?"\n' +
         '    approve: relavium gate paused-1 --gate gate-1 --approve\n' +
         '    reject: relavium gate paused-1 --gate gate-1 --reject\n',
     ); // the gate message is shown, then the commands that continue it
     expect(text).not.toContain('run done'); // a terminal run is not active
+  });
+
+  it('leads a pending gate with the paused glyph of the glyph table: `‖` with colour on, `||` with colour off (ADR-0145 §5)', async () => {
+    await seedRun(db, {
+      slug: 'demo',
+      runId: 'paused-1',
+      state: 'paused',
+      gate: { gateId: 'gate-1', gateType: 'approval', message: 'ship it?' },
+    });
+    const off = captureIo();
+    await statusCommand(deps(off.io));
+    expect(off.out()).toContain('  || pending gate gate-1 (approval)');
+    const on = captureIo();
+    await statusCommand({ ...deps(on.io), global: { ...globalOptions(), color: true } });
+    expect(on.out()).toContain('  ‖ pending gate gate-1 (approval)');
+    expect(on.out()).not.toContain('⏸');
   });
 
   it('prints the command that continues each pending human gate, by its type (MVP-1)', async () => {
@@ -466,12 +508,12 @@ describe('statusCommand', () => {
     );
     const text = out();
     expect(text).toContain(
-      '  ⏸ pending gate review-1 (review) at g — "look"\n' +
+      '  || pending gate review-1 (review) at g — "look"\n' +
         '    approve: relavium gate fan-1 --gate review-1 --approve\n' +
         '    reject: relavium gate fan-1 --gate review-1 --reject\n',
     );
     expect(text).toContain(
-      '  ⏸ pending gate input-1 (input) at g — "name?"\n' +
+      '  || pending gate input-1 (input) at g — "name?"\n' +
         '    input: relavium gate fan-1 --gate input-1 --input <json>\n' +
         '    reject: relavium gate fan-1 --gate input-1 --reject\n',
     );

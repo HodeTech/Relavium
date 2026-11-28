@@ -37,8 +37,8 @@ describe('effortRejectedNote — what the model refused, and what it would take'
   });
 
   it('degrades to the unavailable note when NOTHING is accepted — never "it takes " with an empty list', () => {
-    expect(effortRejectedNote('deepseek-reasoner', 'high', [])).toBe(
-      effortUnavailableNote('deepseek-reasoner'),
+    expect(effortRejectedNote('deep-research-preview-04-2026', 'high', [])).toBe(
+      effortUnavailableNote('deep-research-preview-04-2026'),
     );
   });
 
@@ -59,8 +59,8 @@ describe('effortRejectedNote — what the model refused, and what it would take'
 
 describe('effortUnavailableNote — the two empty lists are NOT the same sentence', () => {
   it('a model with no published knob will never have one — say so', () => {
-    // `deepseek-reasoner` ships `reasoning: {}`: it reasons, and upstream describes no controllable tier.
-    expect(effortUnavailableNote('deepseek-reasoner')).toContain(
+    // `deep-research-preview-04-2026` ships `reasoning: {}`: it reasons, and upstream describes no controllable tier.
+    expect(effortUnavailableNote('deep-research-preview-04-2026')).toContain(
       'publishes no controllable reasoning tier',
     );
   });
@@ -71,6 +71,32 @@ describe('effortUnavailableNote — the two empty lists are NOT the same sentenc
     const note = effortUnavailableNote('some-custom-endpoint-model');
     expect(note).toContain('not in Relavium');
     expect(note).toContain('models refresh');
+  });
+});
+
+describe('effortUnavailableNote — the refresh it offers is the one the surface has (ADR-0146 §6, MVP-11 OD-20)', () => {
+  it('names `relavium models refresh` in the shell wording and the /models popup’s `Refresh the list` row in the interactive chat', () => {
+    const shell = effortUnavailableNote('some-custom-endpoint-model');
+    expect(shell).toContain('`relavium models refresh`');
+    const tui = effortUnavailableNote('some-custom-endpoint-model', 'tui');
+    expect(tui).toContain('Open /models and choose "Refresh the list"');
+    expect(tui).not.toMatch(/relavium models|`/u);
+    // The sentence that needs no refresh is the same on both surfaces.
+    expect(effortUnavailableNote('deep-research-preview-04-2026', 'tui')).toBe(
+      effortUnavailableNote('deep-research-preview-04-2026'),
+    );
+  });
+
+  it('carries the surface through the two sentences that fall back to it', () => {
+    expect(effortRejectedNote('some-custom-endpoint-model', 'low', [], 'tui')).toContain(
+      'Open /models',
+    );
+    expect(
+      effortWithheldNote({ kind: 'uncontrollable' }, 'some-custom-endpoint-model', 'tui'),
+    ).toContain('Open /models');
+    expect(effortWithheldNote({ kind: 'uncontrollable' }, 'some-custom-endpoint-model')).toContain(
+      '`relavium models refresh`',
+    );
   });
 });
 
@@ -137,16 +163,17 @@ describe('onceEffortNotice — a standing condition is not an event', () => {
 });
 
 describe('capUsd + unpricedModelNote — the cost-cap notice (ADR-0071 §K7)', () => {
-  it('formats a cap as fixed-decimal USD, never scientific notation', () => {
-    expect(capUsd(5_000_000)).toBe('$0.05'); // the workflow-yaml-spec's own example cap
-    expect(capUsd(1_000_000_000)).toBe('$10.00');
-    expect(capUsd(1)).toBe('$0.00'); // a sub-cent cap rounds to $0.00 — NOT `$1e-8`, the bug this fixed
+  it('formats a cap as the exact USD of the integer, never scientific notation and never rounded', () => {
+    expect(capUsd(5_000_000)).toBe('$0.0500'); // the workflow-yaml-spec's own example cap
+    expect(capUsd(1_000_000_000)).toBe('$10.0000');
+    // A sub-cent cap keeps its digits: it reads $0.00000001, NOT `$1e-8` and NOT $0.00, which would say the cap is zero.
+    expect(capUsd(1)).toBe('$0.00000001');
   });
 
   it('names the model, the cap, the fix, AND the surface-specific strict setting', () => {
     const chat = unpricedModelNote('my-local-model', 5_000_000, '[chat] strict_cost_cap');
     expect(chat).toContain('my-local-model');
-    expect(chat).toContain('$0.05');
+    expect(chat).toContain('$0.0500');
     // QUOTED in the command — the id is pasted into a shell, and it is not ours (it comes from the live
     // catalog or a user's config). The prose occurrence above is unquoted; only the argument is escaped.
     expect(chat).toContain("models pricing 'my-local-model'");

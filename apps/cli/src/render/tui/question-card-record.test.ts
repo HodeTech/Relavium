@@ -72,12 +72,24 @@ describe('the transcript entry (ADR-0132 §6)', () => {
       };
       const text = questionTranscriptText(hostile, answer);
       for (let cols = 30; cols <= 120; cols++) {
-        const rows = wrapTranscript([{ role: 'notice', text } as never], cols).map(
-          (row) => row.text,
+        // The entry names its lead, as both producers of the record do (`settleQuestionWith`, the restored transcript). On the grid (unit 9,
+        // moved from the row guard of ADR-0145 §6) the host's `›` leaves the text and is the `yourTurn` margin role of the first row of each of
+        // the record's lines that leads with it, and of no other row: exactly one row here, the asked line's first, however the model's text breaks.
+        const rows = wrapTranscript(
+          [{ role: 'notice', text, hostLead: 'yourTurn' } as never],
+          cols,
+          true,
         );
-        expect(rows.filter((row) => row.startsWith('› ')).length).toBe(1);
-        expect(rows.filter((row) => row.startsWith('  └ ')).length).toBe(1);
-        expect(rows.find((row) => row.startsWith('  └ '))).toBe('  └ alpha.ts');
+        expect(rows.filter((row) => row.margin === 'yourTurn').length).toBe(1);
+        expect(rows.find((row) => row.margin === 'yourTurn')?.text.startsWith('Asked: ')).toBe(
+          true,
+        );
+        expect(rows.filter((row) => row.margin !== undefined && row.margin !== 'yourTurn')).toEqual(
+          [],
+        );
+        const texts = rows.map((row) => row.text);
+        expect(texts.filter((row) => row.startsWith('  └ ')).length).toBe(1);
+        expect(texts.find((row) => row.startsWith('  └ '))).toBe('  └ alpha.ts');
       }
     }
   });

@@ -22,12 +22,12 @@ Turborepo + pnpm monorepo (`packages/shared`, `packages/llm`, `packages/core`,
 **cloud** (BYOK-central, Phase 2), and **managed** (Relavium's own keys via a metered egress
 gateway; engine stays local, Phase 2) — split across build phase 5 (managed inference) and
 phase 6 (cloud execution + portal); the engine is identical across all three (ADR-0012..0015).
-**Status (2026-11-19): the CLI MVP comes first.** Phases 1, 2 and 2.5 are complete (`relavium@0.1.1` is
+**Status (2026-11-28): the CLI MVP comes first.** Phases 1, 2 and 2.5 are complete (`relavium@0.1.1` is
 published); Phase 2.6.5 is complete with approved deferrals (49/51, PR #92). Phase 2.5.5's Waves 0–2 and Wave 3
 Steps 1–8 are merged (PR #94, PR #95), and Steps 9a.1–9b.2 and NI are accepted and on `main` since the
 `development`→`main` checkpoint (PR #96, 2026-11-04). On 2026-10-26
 the maintainer paused Wave 3 (Steps 9c–19 pending, not declined) and put the CLI MVP first: `relavium` v0.2.0
-(milestone M3.5), ordered as MVP-1…MVP-10 under decisions D58–D72 in
+(milestone M3.5), ordered as MVP-1…MVP-10 under decisions D58–D72 (plus MVP-11, D79–D82, 2026-11-24) in
 [current.md](docs/roadmap/current.md#next-work--the-cli-mvp). Phase 2.6 is in progress (2.6.C and 2.6.F done,
 2.6.Q P1–P5 landed). MVP-1 is accepted and on `main` (PR #97, 2026-11-07).
 MVP-2 is complete and on `main` through PR #98 (`0db4c940`, 2026-11-11), including all four steps,
@@ -42,8 +42,8 @@ commit's identical tree passed it); and one acceptance-tool test timed out in th
 PR #100 (`1e71f652`, merged 2026-11-18) then put the native adapter's first increment on `main` (concurrent processes on one operator home wait for the allocation claim, ADR-0135),
 with CI once per commit and a coverage run narrowed to `packages/`; a separate security sitting on its Linux parent-snapshot change is still owed
 ([merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#pr-100-merge-checkpoint-2026-11-18)).
-MVP-4 is complete and on `main` through PR #101 (`0a599a36`, merged 2026-11-21; ADR-0115, ADR-0118 and ADR-0136 accepted 2026-11-19, ADR-0137 2026-11-20, ADR-0138 2026-11-21); MVP-8 is implemented and reviewed on `development` (steps 1 to 5); its pull request is open ([PR #102](https://github.com/HodeTech/Relavium/pull/102)), its independent review is answered in the phase record, the whole local gate passed on a still tree at its code head, and CI is the authority. CLAUDE.md carries the full summary.
-The Home is the interactive product (ADR-0122). The interim release guard blocks npm publication until the pre-1.0 release ADR (D59) is
+MVP-4 is complete and on `main` through PR #101 (`0a599a36`, merged 2026-11-21; ADR-0115, ADR-0118 and ADR-0136 accepted 2026-11-19, ADR-0137 2026-11-20, ADR-0138 2026-11-21); MVP-8 (the Home as hub) is complete and on `main` through [PR #102](https://github.com/HodeTech/Relavium/pull/102) (`c17e9763`, merged 2026-11-24; its independent review is answered in the phase record, and its [merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#pr-102-merge-checkpoint-2026-11-24) lists what is still owed). MVP-11 (one surface language for the CLI: popups for reports and settings, sheets, an ordered palette, a speaker marker, the Home and the first run) follows MVP-8 and comes before MVP-5 (its four ADRs, 0145 to 0148, are Accepted); the plan is [docs/roadmap/phases/mvp-11.md](docs/roadmap/phases/mvp-11.md). CLAUDE.md carries the full summary.
+MVP-11 (one surface language for the CLI) is built on `development` and in review as [PR #103](https://github.com/HodeTech/Relavium/pull/103) (open, not merged): units 1 to 10 are built (unit 8: the sheets with a wait clock, the inspection popup, the Home's management popups and the Runs screen, the one-list `/mode`; unit 9: the transcript grid, a margin the host owns and a content column; unit 10: the close-out evidence and the pull request); see [docs/roadmap/current.md](docs/roadmap/current.md) and [docs/roadmap/phases/mvp-11/implementation-log.md](docs/roadmap/phases/mvp-11/implementation-log.md). The Home is the interactive product (ADR-0122). The interim release guard blocks npm publication until the pre-1.0 release ADR (D59) is
 Accepted; the acceptance bar is tiered (D64), with security-touching increments keeping a full review round and
 a separate security sitting. CLAUDE.md carries the full summary.
 

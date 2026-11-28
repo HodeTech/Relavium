@@ -119,7 +119,7 @@ describe('a message that does not fit', () => {
   it('keeps every key it had: the message being cut takes nothing away from the answer chords', () => {
     const projection = project([gate({ message: lines(30) })]);
     expect(projection.rows.at(-1)?.text).toBe(
-      'Ctrl+Y approves · Ctrl+N rejects · Esc leaves it pending',
+      '[Ctrl+Y] Approve · [Ctrl+N] Reject · Esc leaves it pending',
     );
   });
 
@@ -136,6 +136,8 @@ describe('a message that does not fit', () => {
     );
     // The message takes exactly what the rest of the card leaves of the terminal, so the card fills the 23 rows and no more.
     expect(projection.rows).toHaveLength(MOST_ROWS_AT_24);
+    // Seven rows: the expired gate's facts no longer spend one on the stored timestamp (`Overdue since …`), and the sheet's heavy rule
+    // (ADR-0147 §1, unit 8) takes one of the eight the message had.
     expect(authorRows(projection)).toHaveLength(7);
     expect(texts(projection)).toContain(CONTINUES);
     for (const row of projection.rows) expect(displayWidth(row.text)).toBeLessThanOrEqual(78);
@@ -233,7 +235,7 @@ describe('a gate that takes a typed value', () => {
     expect(texts(projection)).toContain(
       'Rejecting does not stop the run: the workflow routes on a rejection.',
     );
-    expect(projection.rows.at(-1)?.text).toBe('Ctrl+N rejects · Esc leaves it pending');
+    expect(projection.rows.at(-1)?.text).toBe('[Ctrl+N] Reject · Esc leaves it pending');
   });
 
   it('names the flags only when the recorded ids would not be a safe command, and still fits', () => {

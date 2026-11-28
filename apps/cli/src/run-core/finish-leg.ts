@@ -8,6 +8,7 @@ import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { RemainingBudget } from '../process/invocation-registry.js';
 import type { CliIo } from '../process/io.js';
+import type { NoticeSurface } from '../render/notice-surface.js';
 import { displayRunId, relaviumRunCommand } from '../render/run-command-text.js';
 import { sanitizeInline } from '../render/sanitize.js';
 
@@ -39,8 +40,20 @@ export interface LegLifetime {
   readonly effectNoticeOwner: EffectNoticeOwner;
 }
 
+/**
+ * Where the Home's card says a run is read: its own browser. The Runs screen has no command of its own; `/workflows` opens it, and `[h]` in that
+ * popup lands on the History tab, where a finished run is listed.
+ */
+export const READ_RUN_IN_HOME = 'the run in /workflows, then [h]';
+
 export interface FinishLegInput {
   readonly leg: LegKind;
+  /**
+   * Where the line a taken-over run writes to {@link io} is READ: the shell names `relavium logs`, a hosted leg (every line becomes a
+   * notice inside the TUI) names the Home's own run browser ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §7.4,
+   * MVP-11 OD-20). REQUIRED, so a host that forgets it fails the typecheck.
+   */
+  readonly noticeSurface: NoticeSurface;
   /** The run's id as the caller holds it: `handle.runId` for a start, the requested run id for a resume. */
   readonly runId: string;
   readonly lifetime: LegLifetime;
@@ -146,8 +159,10 @@ export async function finishLeg(input: FinishLegInput): Promise<ExitCode> {
   // summary falls through to a bare "run ended" and the user is left with an exit code and no explanation of
   // why their run stopped. stderr, so `--json` stdout stays a clean stream.
   if (leg === 'start' && exitCode === EXIT_CODES.runOwnedElsewhere) {
+    const where =
+      input.noticeSurface === 'tui' ? READ_RUN_IN_HOME : relaviumRunCommand('logs', runId);
     io.writeErr(
-      `run ${displayRunId(runId)} was taken over by another process; this one stopped without recording an outcome — read ${relaviumRunCommand('logs', runId)} for what actually happened\n`,
+      `run ${displayRunId(runId)} was taken over by another process; this one stopped without recording an outcome — read ${where} for what actually happened\n`,
     );
   }
   return exitCode;

@@ -65,7 +65,7 @@ describe('compileIgnore', () => {
     const start = process.hrtime.bigint();
     expect(m.ignores(path, false)).toBe(false); // no `zzz` segment ⇒ no match
     const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
-    expect(elapsedMs).toBeLessThan(50); // linear — nowhere near a backtracking stall
+    expect(elapsedMs).toBeLessThan(1_000); // linear — nowhere near a backtracking stall (which takes seconds; 50 ms was noise on a CI runner)
   });
 
   it('`*` stays within a segment; `**` crosses directories', () => {

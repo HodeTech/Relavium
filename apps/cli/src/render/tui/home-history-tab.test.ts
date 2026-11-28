@@ -23,11 +23,12 @@ import type { HistoryPort } from './tab-host-history.js';
 import type { PinPort } from './tab-host-pin.js';
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const IDLE: RunHostSnapshot = { launching: false, active: undefined, last: undefined };
@@ -91,7 +92,6 @@ function mount() {
   };
   const onError = vi.fn();
   const deps: HomeControllerDeps = {
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: vi.fn(() => new Promise<HomeChatSession>(() => {})),
     homeStore: { read: () => EMPTY },
     history,

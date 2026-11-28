@@ -1,6 +1,6 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { join, sep } from 'node:path';
 
 import { createClient, createSessionStore, runMigrations, type DbClient } from '@relavium/db';
 import { AgentSchema, type AgentSessionRecord, type SessionMessage } from '@relavium/shared';
@@ -118,7 +118,7 @@ describe('chatExportCommand (2.P)', () => {
           }),
         ]);
       } else {
-        expect(out()).toBe(`Exported session s1 to ${join(cwd, 's1.relavium.yaml')}\n`);
+        expect(out()).toBe('Exported session s1 to s1.relavium.yaml\n'); // project-relative, never the absolute path
       }
     },
   );
@@ -158,12 +158,40 @@ describe('chatExportCommand (2.P)', () => {
 
     const path = join(cwd, 's1.relavium.yaml'); // named from the unique session id
     expect(existsSync(path)).toBe(true);
-    expect(out()).toBe(`Exported session s1 to ${path}\n`);
+    expect(out()).toBe('Exported session s1 to s1.relavium.yaml\n'); // a path inside the project is shown project-relative
+    expect(out()).not.toContain(cwd);
 
     // The session row is marked `exported` with the written path (provenance, ADR-0026).
     const loaded = opened.store.loadFull('s1');
     expect(loaded?.session.status).toBe('exported');
     expect(loaded?.session.exportedWorkflowPath).toBe(path);
+  });
+
+  it('keeps the absolute path for a file outside both the project and the home: it cannot be shortened without hiding where it is', () => {
+    const elsewhere = mkdtempSync(join(tmpdir(), 'relavium-export-elsewhere-'));
+    try {
+      const target = join(elsewhere, 'out.relavium.yaml');
+      const { io, out } = captureIo();
+      expect(chatExportCommand({ sessionId: 's1', force: false, out: target }, deps(io))).toBe(
+        EXIT_CODES.success,
+      );
+      // A machine whose temp directory is under the home (Windows) shows it from `~`: then the path is not outside both.
+      if (target.startsWith(homedir())) expect(out()).toContain('to ~');
+      else expect(out()).toBe(`Exported session s1 to ${target}\n`);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('prints a file under a project folder named `~` as ./~/…, never as if it were in the home (bash leaves --out=~/x unexpanded)', () => {
+    const { io, out } = captureIo();
+    // `chat export --out=~/x.yaml`: the shell passes the `~` through, so the file lands in <project>/~/x.yaml
+    expect(chatExportCommand({ sessionId: 's1', out: '~/x.yaml', force: false }, deps(io))).toBe(
+      EXIT_CODES.success,
+    );
+    expect(existsSync(join(cwd, '~', 'x.yaml'))).toBe(true);
+    expect(out()).toBe(`Exported session s1 to .${sep}~${sep}x.yaml\n`);
+    expect(out()).not.toMatch(/to ~/u);
   });
 
   it('emits a single session:exported event under --json (stdout pure)', () => {
@@ -262,7 +290,7 @@ describe('chatExportCommand (2.P)', () => {
           }),
         ]);
       } else {
-        expect(out()).toBe(`Exported session s1 to ${join(cwd, 's1.relavium.yaml')}\n`);
+        expect(out()).toBe('Exported session s1 to s1.relavium.yaml\n'); // project-relative, never the absolute path
       }
     },
   );

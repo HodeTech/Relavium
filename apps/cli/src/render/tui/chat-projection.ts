@@ -1,19 +1,26 @@
 import type { ToolDisplay } from './tool-display.js';
-import type { Memory, ReasoningEffort } from '@relavium/shared';
+import type { Memory } from '@relavium/shared';
 
-import { MODE_LABEL, type ChatMode } from '../../chat/chat-mode.js';
-import { effortRowLabel } from '../../chat/effort-notice.js';
 import { sanitizeInline, sanitizeUntrustedInline, stripTerminalControls } from '../sanitize.js';
 import { parseMarkdown, layoutMarkdown, type MarkdownBlock } from '../markdown/index.js';
-import { formatReportedCost, formatDuration, formatElapsed, formatTokens } from './format.js';
+import type { MarkdownSpan } from '../markdown/types.js';
+import { formatReportedCost, formatTokens } from './format.js';
+import { blankMarkerGlyphs, glyph, glyphWithWord, withGlyphForm } from './glyphs.js';
+import { noticeLines, TEXT_FORM_YOUR_TURN } from './transcript-guard.js';
+import { startsWithMarginWord, type ChatGrid, type MarginRole } from './chat-grid.js';
+import { screenPieces, screenText } from './screen-text.js';
+import { selectionText, type SelectionRange } from './selection.js';
+import { formatDuration, formatElapsed, formatUsd } from '../notation.js';
 import type {
   SessionViewState,
   ToolCallView,
   TranscriptEntry,
   TurnSummary,
 } from './session-view-model.js';
+import { exitKey, keyToken, legend } from './legend.js';
 import type { ScrollGeometry } from './scroll.js';
-import { wrapText, type DisplayLine } from './viewport.js';
+import { expandTabs, wrapText, type DisplayLine, type LineStyle } from './viewport.js';
+import { clipLine } from './sheet-frame.js';
 
 /**
  * Pure projection helpers for the `relavium chat` ink `ChatApp` (workstream **2.M**) — extracted so the
@@ -22,7 +29,7 @@ import { wrapText, type DisplayLine } from './viewport.js';
  * arranges them in `ink` `Box`/`Text`.
  */
 
-export { sanitizeInline, stripTerminalControls };
+export { stripTerminalControls };
 
 /** The max length of a typed denial reason (`[c]`, Step 14) — bounds what rides the `ToolDeniedByUserError` into
  *  the turn outcome / `--json` / logs, so a pasted wall of text can't blow up one error line. */
@@ -224,7 +231,7 @@ export function errorRecoveryHint(
     case 'provider_unavailable':
       return 'The provider was unavailable — Relavium tried the fallback chain. The session is still active; try again.';
     case 'provider_auth':
-      return 'Provider authentication failed — check the API key, or unlock the OS keychain if it locked mid-session. The session is still active; fix the key (`relavium provider …`) and resend.';
+      return 'Provider authentication failed — check the API key, or unlock the OS keychain if it locked mid-session. The session is still active; fix the key from the Home (/providers) and resend.';
     case 'content_filter':
       return 'The provider blocked the content by its policy. The session is still active; rephrase and resend.';
     case 'context_overflow':
@@ -279,9 +286,12 @@ export function errorRecoveryHint(
  * unwrapped for the `/edit` hatch (2.6.F Step 5d) — so the on-screen transcript and the one handed to `$EDITOR` can
  * never disagree about what the conversation said.
  *
- * Sanitization happens HERE, once, for every consumer: a `user` entry becomes `> {text}`; a `notice` its text; an
- * `assistant` entry its text, then the one-line summary (a leading space, as `TranscriptLine`), then the optional
- * recovery-hint line.
+ * Sanitization happens HERE, once, for every consumer: a `user` entry becomes `> {text}` (the TEXT FORM's own prefix,
+ * {@link TEXT_FORM_YOUR_TURN}, in every form of the screen: the `/edit`, `/copy` and `/scrollback` documents keep it, and
+ * the screen takes it off and draws the host's marker in the margin instead, {@link wrapEntry}); a `notice` its text; an
+ * `assistant` entry its text, then the one-line summary (a leading space), then the optional recovery-hint line (the
+ * screen draws both at the content column without the space). A `tools` entry is up to four calls joined per row (the
+ * screen draws one call per row, {@link wrapEntry}). These are the documents, byte for byte (ADR-0145 §6).
  */
 export function entryLines(
   entry: TranscriptEntry,
@@ -309,7 +319,7 @@ export function entryLines(
     return lines;
   }
   if (entry.role === 'user') {
-    return [{ text: `> ${stripTerminalControls(entry.text)}`, style: 'user' }];
+    return [{ text: `${TEXT_FORM_YOUR_TURN}${stripTerminalControls(entry.text)}`, style: 'user' }];
   }
   if (entry.role === 'notice') {
     return [{ text: stripTerminalControls(entry.text), style: 'notice' }];
@@ -326,33 +336,174 @@ export function entryLines(
   return lines;
 }
 
-/** Wrap ONE transcript entry to its width-wrapped display lines — the per-entry unit {@link wrapTranscript} caches. */
+/** The parsed markdown of a reply, per entry: a re-wrap at a new width lays the same blocks out again. */
 const entryParseCache = new WeakMap<TranscriptEntry, readonly MarkdownBlock[]>();
 
+/**
+ * `text` wrapped at `cols` as rows of `style`: the first row carries `margin` (absent: a blank margin) and every later row, a wrapped row or a line
+ * after a newline, HANGS under it with a blank margin, starting at its text (the space the wrap broke at is dropped: review round 1, D-2). The one
+ * way a row gets a host mark: from the host's role, never from the text. The text goes through the screen's filter BEFORE it is wrapped (review
+ * round 3, R3S-1: a rewrite can change the width the wrap measures, so a row is laid out from the text as it is drawn).
+ */
+function hangingRows(
+  text: string,
+  style: LineStyle,
+  cols: number,
+  margin?: MarginRole,
+): DisplayLine[] {
+  return wrapText(screenText(text), cols, true).map((row, index) =>
+    index === 0 && margin !== undefined ? { text: row, style, margin } : { text: row, style },
+  );
+}
+
+/**
+ * A reply's own rows: the markdown laid out at `cols` with colour, the plain text wrapped at `cols` without; either from the source as the screen
+ * draws it (the filter runs before the parse and the layout: review round 3, R3S-1).
+ */
+function replyBodyRows(
+  entry: TranscriptEntry,
+  source: string,
+  cols: number,
+  color: boolean,
+): DisplayLine[] {
+  if (!color) return hangingRows(source, 'assistant', cols);
+  let blocks = entryParseCache.get(entry);
+  if (blocks === undefined) {
+    blocks = parseMarkdown(screenText(source));
+    entryParseCache.set(entry, blocks);
+  }
+  return layoutMarkdown(blocks, cols).map((line): DisplayLine => ({ ...line, style: 'assistant' }));
+}
+
+/** The screen's form of a reply's summary or hint line: the document's leading space is the content column's job on the grid (OQ8). */
+function contentOfLine(line: DisplayLine): string {
+  return line.text.startsWith(' ') ? line.text.slice(1) : line.text;
+}
+
+/** The rows of one call per row, `▸` in the margin and the call's words in the content; the omitted tail is a row of its own, unmarked. */
+function toolCallRows(
+  entry: Extract<TranscriptEntry, { role: 'tools' }>,
+  cols: number,
+  displays: ReadonlyMap<string, ToolDisplay> | undefined,
+): DisplayLine[] {
+  const rows = entry.calls.flatMap((call) =>
+    hangingRows(toolCallText(call, displays?.get(call.id)), 'notice', cols, 'toolCall'),
+  );
+  if ((entry.omitted ?? 0) > 0)
+    rows.push(...hangingRows(`${entry.omitted} omitted calls`, 'notice', cols));
+  return rows;
+}
+
+/**
+ * The rows of one entry as the layout builds them from its text as the screen draws it (every text goes through the screen's filter before its
+ * layout: {@link hangingRows}, {@link replyBodyRows}): content only, the host's roles set (see {@link wrapEntry}).
+ */
+function entryRows(
+  entry: TranscriptEntry,
+  cols: number,
+  color: boolean,
+  displays: ReadonlyMap<string, ToolDisplay> | undefined,
+): DisplayLine[] {
+  if (entry.role === 'tools') return toolCallRows(entry, cols, displays);
+  const source = entryLines(entry, displays);
+  const first = source[0]?.text ?? '';
+  if (entry.role === 'user')
+    return hangingRows(first.slice(TEXT_FORM_YOUR_TURN.length), 'user', cols, 'yourTurn');
+  if (entry.role === 'notice')
+    return noticeLines(first, entry.hostLead).flatMap((line) =>
+      hangingRows(line.text, 'notice', cols, line.margin),
+    );
+  // A reply with no words of its own (a turn stopped or failed before its first token, a restored empty final) draws no body row: its summary is
+  // its first row, and an entry with neither draws nothing (review round 1, C-2). Judged on the text as drawn: a reply of only the host's marker
+  // glyphs, which the row blanks, is empty too (review round 2, M2-2).
+  const rows = screenModelText(first).trim() === '' ? [] : replyBodyRows(entry, first, cols, color);
+  for (const line of source.slice(1))
+    rows.push(...hangingRows(contentOfLine(line), line.style, cols));
+  const head = rows[0];
+  if (head !== undefined) rows[0] = { ...head, margin: 'agent' };
+  return rows;
+}
+
+/**
+ * One row as the screen draws it (review round 1, S-1; OQ4 as revised after the security sitting): the host's marker glyphs (`›`, `▸`, `⇄`) blanked,
+ * in the text and in every span alike (one column for one column), and the screen's filter again. The row was laid out from filtered text, so the
+ * filter changes nothing in it (it is idempotent), except where the layout joined two pieces the source kept apart (markdown emphasis between an
+ * emoji and a joiner: {@link screenPieces}); such a row can grow by a column, and the full-screen viewport clips a row to its cell, so a row stays
+ * one physical row (review round 3, R3S-1). The documents are built from {@link entryLines}, not from these rows, and keep every byte.
+ */
+function screenRow(row: DisplayLine): DisplayLine {
+  const text = screenModelText(row.text);
+  return row.spans === undefined
+    ? { ...row, text }
+    : { ...row, text, spans: screenModelSpans(row.spans) };
+}
+
+/** A row's styled pieces through the screen's filter ({@link screenPieces}) with the marker glyphs blanked in each. */
+function screenModelSpans(spans: readonly MarkdownSpan[]): readonly MarkdownSpan[] {
+  return screenPieces(spans).map((span) => {
+    const guarded = blankMarkerGlyphs(span.text);
+    return guarded === span.text ? span : { ...span, text: guarded };
+  });
+}
+
+/**
+ * Text a model wrote, made fit for the screen outside the transcript (the reasoning, the busy line's tokens, a running tool's words): the screen's
+ * filter ({@link screenText}) and the marker glyphs blanked, as {@link screenRow} does for a transcript row. Newlines kept. Run it before the text is
+ * laid out or measured (review round 3, R3S-1).
+ */
+export function screenModelText(text: string): string {
+  return blankMarkerGlyphs(screenText(text));
+}
+
+/**
+ * A laid-out markdown row of the live tail, through the same filter and blank as a finished reply's row, in its text and in every span. The stream
+ * was filtered before its layout (`ScreenStream`, `chat-store.ts`), so this changes the row's width only where the layout joined two pieces.
+ */
+export function screenStreamRow<
+  Row extends { readonly text: string; readonly spans: readonly MarkdownSpan[] },
+>(row: Row): Row {
+  return { ...row, text: screenModelText(row.text), spans: screenModelSpans(row.spans) };
+}
+
+/**
+ * The entry's own role on a row that starts with a margin word ({@link startsWithMarginWord}) and has no role of its own: `agent` for a reply and
+ * for a tool call's words, `notice` for a notice. They have no glyph, so the full-screen margin stays blank; the inline renderer writes the word,
+ * so a screen reader hears `agent you …` where the row would have read as the person's turn (review round 1, S-2). The person's own turn is not
+ * given one: its words are theirs.
+ */
+function speakerWord(row: DisplayLine, role: MarginRole): DisplayLine {
+  return row.margin === undefined && startsWithMarginWord(row.text)
+    ? { ...row, margin: role }
+    : row;
+}
+
+/** The role {@link speakerWord} gives a row of an entry of `kind`, none for the person's turn. */
+function speakerOf(kind: TranscriptEntry['role']): MarginRole | undefined {
+  if (kind === 'user') return undefined;
+  return kind === 'notice' ? 'notice' : 'agent';
+}
+
+/**
+ * Wrap ONE transcript entry to its rows on the grid ([ADR-0145](../../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §6,
+ * MVP-11 unit 9): every row's text is CONTENT at most `cols` (the content column) wide, and the host's mark is the row's `margin`, a role of the
+ * closed set, set here and nowhere else. The person's turn is the document's line without its text-form prefix, `yourTurn` on its first row; a
+ * reply's first row is `agent` (drawn only as the inline renderer's word); a tool entry is one call per row with `toolCall`; a notice line the host
+ * leads ({@link noticeLines}) carries the lead's role. A wrapped row hangs. Every row then goes through the screen's filter ({@link screenRow}),
+ * and a row of a reply, a tool call or a notice that starts with a margin word gets its entry's word ({@link speakerWord}). Built in the form the
+ * colour setting asks for (ADR-0145 §5). The per-entry unit {@link wrapTranscript} caches.
+ */
 function wrapEntry(
   entry: TranscriptEntry,
   cols: number,
   color: boolean,
   displays?: ReadonlyMap<string, ToolDisplay>,
 ): DisplayLine[] {
-  const wrapped: DisplayLine[] = [];
-  const source = entryLines(entry, displays);
-  let offset = 0;
-  if (color && entry.role === 'assistant') {
-    let blocks = entryParseCache.get(entry);
-    if (blocks === undefined) {
-      blocks = parseMarkdown(source[0]?.text ?? '');
-      entryParseCache.set(entry, blocks);
-    }
-    for (const line of layoutMarkdown(blocks, cols)) {
-      wrapped.push({ ...line, style: 'assistant' });
-    }
-    offset = 1;
-  }
-  for (const line of source.slice(offset)) {
-    for (const row of wrapText(line.text, cols)) wrapped.push({ text: row, style: line.style });
-  }
-  return wrapped;
+  const rows = withGlyphForm(!color, () => entryRows(entry, cols, color, displays));
+  const speaker = speakerOf(entry.role);
+  return rows.map((row) => {
+    const screened = screenRow(row);
+    return speaker === undefined ? screened : speakerWord(screened, speaker);
+  });
 }
 
 /**
@@ -381,41 +532,170 @@ const entryWrapCache = new WeakMap<
   { cols: number; color: boolean; lines: readonly DisplayLine[] }
 >();
 
+/** One entry's rows, from the per-entry cache when its width and colour match (a tool entry with live displays is never cached). */
+function cachedEntryRows(
+  entry: TranscriptEntry,
+  cols: number,
+  color: boolean,
+  displays: ReadonlyMap<string, ToolDisplay> | undefined,
+): readonly DisplayLine[] {
+  if (entry.role === 'tools' && displays !== undefined)
+    return wrapEntry(entry, cols, color, displays);
+  const cached = entryWrapCache.get(entry);
+  if (cached?.cols === cols && cached.color === color) return cached.lines;
+  const lines = wrapEntry(entry, cols, color);
+  entryWrapCache.set(entry, { cols, color, lines });
+  return lines;
+}
+
 /**
- * Flatten the completed transcript into width-wrapped, style-tagged {@link DisplayLine}s for the full-screen
- * alt-screen viewport (2.6.F Step 4b, ADR-0068 §c) — the counterpart of ink's `<Static>` on the inline renderer.
- * Reproduces `TranscriptLine`'s CONTENT + prefixes + styles + sanitization: a `user` entry becomes `> {text}` (style
- * `user`); a `notice` its dim text; an `assistant` entry its text, then the gray one-line summary (a leading space,
- * as `TranscriptLine`), then the optional yellow recovery-hint line. Every text is sanitized here at the display
- * boundary (`stripTerminalControls`, newlines kept) exactly as `TranscriptLine` does, so a streamed/pasted control
- * sequence can neither forge a row nor inject ANSI. The wrapping counts RENDERED terminal rows (the viewport scroll
- * math is defined over the returned line count). Inline and full-screen share these word-wrapped rows and semantic
- * spans; color-disabled output wraps the sanitized source, preserving its markers.
+ * Whether one blank row separates `entry` from the entry drawn before it (OQ3, the frame `chat-idle-80x24.png`): before each turn of the person
+ * and each reply, except the first entry of all; a tool entry and a notice hug the entry above. The separator is drawn, not cached: it depends on
+ * the neighbour, not on the entry.
+ */
+export function entryGap(previous: TranscriptEntry | undefined, entry: TranscriptEntry): boolean {
+  return previous !== undefined && (entry.role === 'user' || entry.role === 'assistant');
+}
+
+/** The separator row {@link entryGap} asks for: no content, no mark. */
+const GAP_ROW: DisplayLine = Object.freeze({ text: '', style: 'assistant' });
+
+/** One step of {@link walkTranscript}: an entry, whether a separator row precedes it, and its own rows. */
+interface TranscriptStep {
+  readonly gap: boolean;
+  readonly rows: readonly DisplayLine[];
+}
+
+/** The transcript's entries in order, each with its separator and its rows at `cols`: the ONE walk that rows, counts and spans read. */
+function* walkTranscript(
+  transcript: readonly TranscriptEntry[],
+  cols: number,
+  color: boolean,
+  displays: ReadonlyMap<string, ToolDisplay> | undefined,
+  previous: TranscriptEntry | undefined,
+): Generator<TranscriptStep> {
+  let before = previous;
+  for (const entry of transcript) {
+    const rows = cachedEntryRows(entry, cols, color, displays);
+    // An entry that draws no row (a reply with neither words nor a summary) has no separator either (review round 1, C-2), and it is not what the
+    // next entry follows: a turn after it at the top of the transcript gets no separator above it (review round 2, C2-4).
+    yield { gap: rows.length > 0 && entryGap(before, entry), rows };
+    if (rows.length > 0) before = entry;
+  }
+}
+
+/**
+ * Whether `entry` draws a row on `grid` (a reply with neither words nor a summary, or a tool entry with no call, draws none): the inline renderer
+ * prints one entry at a time and skips such an entry when it looks for the one its next entry follows, as {@link transcriptRows} does.
+ */
+export function entryDrawsRows(
+  entry: TranscriptEntry,
+  grid: ChatGrid,
+  color = false,
+  displays?: ReadonlyMap<string, ToolDisplay>,
+): boolean {
+  if (!Number.isFinite(grid.content) || grid.content < 1) return false;
+  return cachedEntryRows(entry, grid.content, color, displays).length > 0;
+}
+
+/**
+ * Flatten the completed transcript into width-wrapped, style-tagged {@link DisplayLine}s at `cols` (the low-level form: the chat's callers
+ * pass a grid to {@link transcriptRows}, which calls this at the content column's width). Every entry's rows are {@link wrapEntry}'s (content
+ * only, the host's mark as the row's `margin`, a wrapped row hanging), with one blank row before a turn and a reply ({@link entryGap}).
+ * `previous` is the entry drawn before `transcript[0]` (the inline renderer prints one entry at a time). Every text is sanitized at the display
+ * boundary ({@link entryLines}), so a streamed or pasted control sequence can neither forge a row nor inject ANSI. The scroll math is defined
+ * over the returned line count: one line is one terminal row.
  */
 export function wrapTranscript(
   transcript: readonly TranscriptEntry[],
   cols: number,
   color = false,
   displays?: ReadonlyMap<string, ToolDisplay>,
+  previous?: TranscriptEntry,
 ): DisplayLine[] {
   if (!Number.isFinite(cols) || cols < 1) return [];
   const out: DisplayLine[] = [];
-  for (const entry of transcript) {
-    if (entry.role === 'tools' && displays !== undefined) {
-      out.push(...wrapEntry(entry, cols, color, displays));
-      continue;
-    }
-    const cached = entryWrapCache.get(entry);
-    let lines: readonly DisplayLine[];
-    if (cached?.cols === cols && cached.color === color) {
-      lines = cached.lines;
-    } else {
-      lines = wrapEntry(entry, cols, color);
-      entryWrapCache.set(entry, { cols, color, lines });
-    }
-    for (const line of lines) out.push(line);
+  for (const step of walkTranscript(transcript, cols, color, displays, previous)) {
+    if (step.gap) out.push(GAP_ROW);
+    for (const line of step.rows) out.push(line);
   }
   return out;
+}
+
+/**
+ * The transcript's rows on the chat's grid (MVP-11 unit 9): wrapped at the content column ({@link ChatGrid.content}). The ONE function the
+ * viewport's rows, the scroll geometry, the drag-copy and the inline renderer read, so the width they lay the transcript out at cannot differ
+ * (a source-pin test holds every other caller off {@link wrapTranscript} and {@link liveScrollGeometry}). A suspended grid has no rows.
+ */
+export function transcriptRows(
+  transcript: readonly TranscriptEntry[],
+  grid: ChatGrid,
+  color = false,
+  displays?: ReadonlyMap<string, ToolDisplay>,
+  previous?: TranscriptEntry,
+): DisplayLine[] {
+  return wrapTranscript(transcript, grid.content, color, displays, previous);
+}
+
+/** The live scroll geometry ({@link liveScrollGeometry}) of the transcript on the chat's grid. */
+export function transcriptScrollGeometry(
+  transcript: readonly TranscriptEntry[],
+  grid: ChatGrid,
+  measuredHeight: number,
+  color = false,
+  displays?: ReadonlyMap<string, ToolDisplay>,
+): ScrollGeometry {
+  return liveScrollGeometry(transcript, grid.content, measuredHeight, color, displays);
+}
+
+/**
+ * What a drag-copy of `range` puts on the clipboard (OQ9): the selected cells of the transcript's rows on the grid, the CONTENT a person sees
+ * and nothing of the margin (the rows' text is content only), so the person's turn copies as their words without a `> ` (the `/copy` document
+ * is the text form with it). The one copy path of both chat hosts.
+ */
+export function transcriptSelectionText(
+  transcript: readonly TranscriptEntry[],
+  grid: ChatGrid,
+  range: SelectionRange,
+  color = false,
+  displays?: ReadonlyMap<string, ToolDisplay>,
+): string {
+  return selectionText(
+    transcriptRows(transcript, grid, color, displays).map((line) => line.text),
+    range,
+  );
+}
+
+/**
+ * The rows `transcript[index]` occupies in {@link transcriptRows} on `grid`, its separator row excluded: `[start, end)`. Counted in ONE walk
+ * over the prefix that includes the entry, so the separator before it is counted where it is drawn and the entry's rows are the very rows
+ * drawn (the measured-frame acknowledgement reads it: a two-pass count that wraps the entry alone loses its separator and claims one row too
+ * few). `undefined` for an index outside the transcript or a suspended grid.
+ */
+export function transcriptEntrySpan(
+  transcript: readonly TranscriptEntry[],
+  index: number,
+  grid: ChatGrid,
+  color = false,
+  displays?: ReadonlyMap<string, ToolDisplay>,
+): { readonly start: number; readonly end: number } | undefined {
+  if (!Number.isInteger(index) || index < 0 || index >= transcript.length) return undefined;
+  if (!Number.isFinite(grid.content) || grid.content < 1) return undefined;
+  let row = 0;
+  let at = 0;
+  for (const step of walkTranscript(
+    transcript.slice(0, index + 1),
+    grid.content,
+    color,
+    displays,
+    undefined,
+  )) {
+    if (step.gap) row += 1;
+    if (at === index) return { start: row, end: row + step.rows.length };
+    row += step.rows.length;
+    at += 1;
+  }
+  return undefined;
 }
 
 /**
@@ -442,6 +722,15 @@ export function liveScrollGeometry(
   };
 }
 
+/**
+ * What `Esc` says while a turn runs (ADR-0145 §2, the decide class: it stops the turn and keeps the session, EA7). One constant for the
+ * busy line, the abort hint under streamed content and the paused-display line, so the key says the same words on every state of the turn.
+ */
+export const STOP_THE_TURN = exitKey.decide('stops the turn');
+
+/** What `Esc` says while a compaction or a `!` command runs: the same abort, stated for what is being cancelled. */
+const CANCEL_IT = exitKey.decide('cancels it');
+
 /** The in-flight busy line: its text plus whether it renders as a DIM, truncate-end STATUS line (compaction /
  *  shell / the pre-token "Working…" line) or as PLAIN, full-width streaming CONTENT (the answer token line). */
 export interface BusyLine {
@@ -454,7 +743,7 @@ export interface BusyLine {
  * without mounting React. Four states in priority order:
  *  1. the labeled compaction moment (ADR-0062 §7);
  *  2. the `!`-shell command line (2.5.D);
- *  3. the pre-first-token live-turn STATUS — `Working… {elapsed} · Esc to stop`, a whole-second timer + the abort
+ *  3. the pre-first-token live-turn STATUS — `Working… {elapsed} · Esc stops the turn`, a whole-second timer + the abort
  *     hint, so a running turn never reads as a frozen bare spinner;
  *  4. the streaming answer CONTENT — with a leading `…` elision marker when the live buffer's head scrolled out (a
  *     VISIBLE loss, not the old silent drop).
@@ -474,11 +763,6 @@ export function formatBusyLine(input: {
    *  streamed this turn AND no tool call is currently executing), NOT the raw "any reasoning streamed" flag, so a
    *  tool round shows "Working…". Absent/false ⇒ a plain (or tool-running) turn shows "Working…". */
   readonly reasoningActive?: boolean | undefined;
-  /**
-   * Milliseconds an approval card has been open, when one is. The turn is then WAITING FOR THE PERSON, not working:
-   * the line says so (and what Esc does) instead of "Working…", and its timer is the wait, never the turn's.
-   */
-  readonly awaitingApprovalMs?: number | undefined;
   /** The terminal's width, for the row estimate. Absent ⇒ the projection's fallback. */
   readonly columns?: number | undefined;
   /** How many rendered rows the streaming content may occupy ({@link liveAnswerRowBudget}). Absent ⇒ unbounded, the
@@ -487,25 +771,32 @@ export function formatBusyLine(input: {
 }): BusyLine {
   const { spinner } = input;
   if (input.compacting) {
-    return { text: `${spinner} ⟳ Summarizing conversation… · Esc to cancel`, dim: true };
+    return {
+      text: legend([{ text: `${spinner} ⟳ Summarizing conversation…` }], CANCEL_IT),
+      dim: true,
+    };
   }
   if (input.busyCommand !== undefined) {
     return {
-      text: `${spinner} ! ${sanitizeInline(input.busyCommand)} — running · Esc to cancel`,
+      text: legend(
+        [{ text: `${spinner} ! ${screenText(sanitizeInline(input.busyCommand))} — running` }],
+        CANCEL_IT,
+      ),
       dim: true,
     };
   }
-  if (input.awaitingApprovalMs !== undefined) {
-    return {
-      text: `${spinner} Waiting for your answer ${formatElapsed(input.awaitingApprovalMs)} · Esc stops the turn`,
-      dim: true,
-    };
-  }
-  const sanitized = stripTerminalControls(input.liveTokens);
+  // While a card waits for the person there is no busy line: the sheet takes the prompt block's place and its rule carries the wait clock
+  // (ADR-0147 §2: the `Waiting for your answer` row and its spinner retired).
+  // The streamed answer is the model's, drawn in the content column of the grid above the prompt (unit 9): the margin beside it is the host's and
+  // blank. It goes through the screen's filter and its marker glyphs are blanked, as a finished reply's rows are ({@link screenModelText}): the
+  // margin is exact in the layout, not on a terminal that measures a character wider (ADR-0145 §6, OQ4 as revised after review round 1). Both run
+  // HERE, before the tail's row estimate below and before Ink lays the line out: a rewrite of the filter can change the width (review round 3).
+  // Tabs expanded here too, before the row math: a terminal moves a tab to its next stop, which the layout counts as 0 columns (round 2, S2-1).
+  const sanitized = expandTabs(screenModelText(stripTerminalControls(input.liveTokens)));
   if (sanitized.length === 0) {
     const label = input.reasoningActive === true ? 'Thinking…' : 'Working…';
     const elapsed = input.elapsedMs === undefined ? '' : ` ${formatElapsed(input.elapsedMs)}`;
-    return { text: `${spinner} ${label}${elapsed} · Esc to stop`, dim: true };
+    return { text: legend([{ text: `${spinner} ${label}${elapsed}` }], STOP_THE_TURN), dim: true };
   }
   // The alt screen's live region is a FIXED-HEIGHT box: an unbounded busy line does not scroll, it collides with its
   // siblings and overwrites them. Bound it to the caller's row budget, the same discipline the reasoning panel uses.
@@ -519,8 +810,8 @@ export function formatBusyLine(input: {
 }
 
 /**
- * The compact mid-stream abort hint (2.5.H / EA7). The pre-first-token STATUS line carries "· Esc to stop"
- * inline, and the compaction/shell status lines carry their own "· Esc to cancel" — but once answer CONTENT
+ * The compact mid-stream abort hint (2.5.H / EA7). The pre-first-token STATUS line carries "· Esc stops the turn"
+ * inline, and the compaction/shell status lines carry their own "· Esc cancels it" — but once answer CONTENT
  * streams the busy line becomes full-width, wrapping text with no room for the affordance, even though `Esc`
  * still aborts the whole turn. Returns the standalone hint the caller renders as a dim line BENEATH the streaming
  * content, or `undefined` for a STATUS line (`busy.dim`) that already shows its inline hint — so the affordance
@@ -528,7 +819,7 @@ export function formatBusyLine(input: {
  * there is one source of truth for status-vs-content.
  */
 export function streamingAbortHint(busy: BusyLine): string | undefined {
-  return busy.dim ? undefined : 'Esc to stop';
+  return busy.dim ? undefined : legend([], STOP_THE_TURN);
 }
 
 /**
@@ -553,6 +844,97 @@ export interface ReasoningPanel {
   readonly header: string;
   /** The reasoning text — present only when EXPANDED (`visible`); absent when collapsed. */
   readonly body?: string;
+}
+
+/** A row of the in-flight turn drawn above a docked sheet, by its role: the view colours it as the prompt block colours the same row. */
+export interface DockedTurnRow {
+  readonly text: string;
+  readonly tone: 'warning' | 'tool' | 'reasoning' | 'note';
+}
+
+/**
+ * The rows of the reasoning panel's body a docked sheet leaves it, at most, expanded or not ({@link dockedTurnRows}): the sheet's rule must never
+ * stand under a screenful of the model's words.
+ */
+export const DOCKED_REASONING_BODY_ROWS = 3;
+/**
+ * The indent of a reasoning body row above a docked sheet, inside the content column: the docked rows stand on the grid (unit 9), so the margin
+ * already keeps the model's words off the column where the sheet's rule begins; the indent sets the body under its header, as a panel's body.
+ */
+const DOCKED_REASONING_INDENT = '  ';
+
+/**
+ * The in-flight turn as it stays on screen while a sheet is docked ([ADR-0147](../../../../../docs/decisions/0147-a-system-started-question-is-a-sheet-with-a-frame-and-a-wait-clock.md)
+ * §1, ADR-0129 "the conversation visible above it"): the lead row's warnings (newest first, one row), this turn's tool-call lines with their
+ * outcomes, the reasoning panel's header and body, and the interrupt note, each cut to `columns`. NOT the busy line: under a card that waits it
+ * would say `Working…`, which is false. At most `maxRows`. The HOST's rows come first (unit 8 fix wave 2, S2-2): the warnings row, the interrupt
+ * note and the newest tool lines keep their room, and the reasoning gets only what is left: its header, then at most
+ * {@link DOCKED_REASONING_BODY_ROWS} rows of its body (the newest, `…` where the rest was cut), each set in by two columns, so the model's words
+ * never fill the rows above the sheet and none of them begins where the sheet's rule does. Pure; it reads the glyph form in force (the caller
+ * runs it inside `withGlyphForm`).
+ */
+export function dockedTurnRows(input: {
+  readonly warnings: readonly string[];
+  /** The words of each call ({@link toolCallText}): the mark is the margin's, drawn by the host's `MarginRow` (unit 9), so a row here has none. */
+  readonly toolLines: readonly string[];
+  readonly reasoning: ReasoningPanel | undefined;
+  readonly interrupt: string | undefined;
+  readonly columns: number;
+  readonly maxRows: number;
+}): readonly DockedTurnRow[] {
+  const width = Math.max(1, Math.floor(input.columns));
+  const maxRows = Math.max(0, Math.floor(input.maxRows));
+  const row = (text: string, tone: DockedTurnRow['tone']): DockedTurnRow => ({
+    text: clipLine(text, width),
+    tone,
+  });
+  const warning =
+    input.warnings.length === 0
+      ? []
+      : [
+          row(
+            [...input.warnings]
+              .reverse()
+              .map((said) => `${glyph('warning')} ${screenText(stripTerminalControls(said))}`)
+              .join('  '),
+            'warning',
+          ),
+        ];
+  const interrupt = input.interrupt === undefined ? [] : [row(input.interrupt, 'note')];
+  // The newest tool lines take the rows the warnings and the interrupt note leave; the reasoning takes what the tool lines leave.
+  const toolRoom = Math.max(0, maxRows - warning.length - interrupt.length);
+  const tools =
+    toolRoom === 0 ? [] : input.toolLines.slice(-toolRoom).map((line) => row(line, 'tool'));
+  const reasoning = dockedReasoningRows(input.reasoning, width, toolRoom - tools.length);
+  // Drawn in the turn's own order; a room smaller than the host's own rows keeps the newest of them (the interrupt note last).
+  const rows = [...warning, ...tools, ...reasoning, ...interrupt];
+  return rows.slice(Math.max(0, rows.length - maxRows));
+}
+
+/** The reasoning panel's rows above a docked sheet, in at most `room` rows: its header, then the newest rows of its body, set in, capped. */
+function dockedReasoningRows(
+  panel: ReasoningPanel | undefined,
+  width: number,
+  room: number,
+): readonly DockedTurnRow[] {
+  if (panel === undefined || room < 1) return [];
+  const header: DockedTurnRow = { text: clipLine(panel.header, width), tone: 'reasoning' };
+  const inner = Math.max(1, width - DOCKED_REASONING_INDENT.length);
+  const body = panel.body ?? '';
+  const lines = body === '' ? [] : body.split('\n').flatMap((line) => wrapText(line, inner));
+  const keep = Math.min(DOCKED_REASONING_BODY_ROWS, room - 1, lines.length);
+  if (keep < 1) return [header];
+  const shown = lines.slice(-keep);
+  if (shown.length < lines.length) shown[0] = `…${shown[0] ?? ''}`;
+  return [
+    header,
+    ...shown.map(
+      (line): DockedTurnRow => ({
+        text: clipLine(`${DOCKED_REASONING_INDENT}${line}`, width),
+        tone: 'reasoning',
+      }),
+    ),
+  ];
 }
 
 /**
@@ -658,12 +1040,13 @@ export function formatReasoningPanel(input: {
    *  or < 1 ⇒ the {@link REASONING_PANEL_FALLBACK_COLUMNS} default, so the row bound still applies headless/in tests. */
   readonly columns?: number | undefined;
 }): ReasoningPanel {
-  const header = `✻ Reasoning · Ctrl+T ${input.visible ? 'hide' : 'show'}`;
+  const header = `✻ Reasoning · ${keyToken('Ctrl+T')} ${input.visible ? 'hide' : 'show'}`;
   if (!input.visible) {
     return { header };
   }
+  // The reasoning is the model's words in the live region, drawn in the content column like the streamed answer, and filtered and blanked as it is.
   const { body, tailed } = tailToRenderedRows(
-    stripTerminalControls(input.liveReasoning),
+    expandTabs(screenModelText(stripTerminalControls(input.liveReasoning))),
     input.columns,
   );
   const elided = input.liveReasoningTruncated || tailed;
@@ -676,20 +1059,36 @@ export function formatReasoningPanel(input: {
  * which (being model-named) is sanitized so it cannot inject terminal control sequences.
  */
 export function formatToolCall(call: ToolCallView, display?: ToolDisplay): string {
+  return `${glyph('toolCall')} ${toolCallText(call, display)}`;
+}
+
+/**
+ * The words of a tool-call row without the host's `▸` that leads it: the margin draws the mark on the grid (unit 9), the content column carries
+ * this. {@link formatToolCall} is the two joined, so the plain driver and the documents keep today's row byte for byte.
+ */
+export function toolCallText(call: ToolCallView, display?: ToolDisplay): string {
   const outcome = display?.outcome ?? call.outcome ?? legacyToolOutcome(call);
+  // A mark is never alone: the word stands beside the glyph (`denied` is the cancelled glyph with the call's own word).
   const marks = {
-    success: '✓',
-    failure: '✗ failed',
-    denied: '⊘ denied',
+    success: glyphWithWord('completed'),
+    failure: glyphWithWord('failed'),
+    denied: `${glyph('cancelled')} denied`,
     unknown: '? outcome unknown',
     running: '…',
   };
-  const target = display?.target === undefined ? '' : ` → ${display.target}`;
+  // The host's `▸` is the row's margin on the grid (and leads `formatToolCall`'s string, which the plain driver and the documents write); the tool's
+  // id and its target are not the host's (a model names the id, a path names the target), so a glyph of the speaker marker's set in either is blanked
+  // here, where the words are built, for every consumer of this string (ADR-0145 §6). The target is sanitised by the store that built it; the row
+  // strips terminal controls from it again (and makes it one line) rather than trust that. The screen's filter is the drawing site's (`screenText`).
+  const target =
+    display?.target === undefined
+      ? ''
+      : ` → ${blankMarkerGlyphs(sanitizeInline(stripTerminalControls(display.target)))}`;
   const stats =
     display?.stats === undefined
       ? ''
-      : ` · +${display.stats.addedLines}/-${display.stats.removedLines} lines`;
-  return `→ ${sanitizeInline(call.toolId)} ${marks[outcome]}${target}${stats}`;
+      : ` · +${display.stats.addedLines} -${display.stats.removedLines}`;
+  return `${blankMarkerGlyphs(sanitizeInline(stripTerminalControls(call.toolId)))} ${marks[outcome]}${target}${stats}`;
 }
 
 function legacyToolOutcome(call: ToolCallView): NonNullable<ToolCallView['outcome']> | 'running' {
@@ -706,6 +1105,12 @@ function legacyToolOutcome(call: ToolCallView): NonNullable<ToolCallView['outcom
  * window). Clamped to [0, 100] so a preamble-heavy over-window turn never prints a nonsensical >100%.
  */
 function formatContextFullness(state: SessionViewState): string | undefined {
+  const pct = contextFullnessPercent(state);
+  return pct === undefined ? undefined : `${pct}% ctx`;
+}
+
+/** The figure behind {@link formatContextFullness}, 0 to 100, or `undefined` when there is none to give (no turn completed, or the window is unknown). */
+export function contextFullnessPercent(state: SessionViewState): number | undefined {
   const { lastInputTokens, contextWindowTokens } = state;
   if (
     lastInputTokens === undefined ||
@@ -714,8 +1119,7 @@ function formatContextFullness(state: SessionViewState): string | undefined {
   ) {
     return undefined;
   }
-  const pct = Math.min(100, Math.max(0, Math.round((lastInputTokens / contextWindowTokens) * 100)));
-  return `${pct}% ctx`;
+  return Math.min(100, Math.max(0, Math.round((lastInputTokens / contextWindowTokens) * 100)));
 }
 
 /**
@@ -734,21 +1138,24 @@ export function formatSessionFooter(state: SessionViewState): string {
 }
 
 /**
- * The footer including the active chat mode (ADR-0057) and — when set — the reasoning-effort tier (ADR-0066), each
- * always shown so neither `auto` mode nor a non-default effort is a hidden state. The effort is omitted when unset
- * (a non-reasoning model / no tier), so a plain chat's footer is unchanged.
+ * The chat's cost in the two forms its status line needs ([ADR-0146](../../../../../docs/decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md)
+ * §2). `full` is what the old footer wrote, word for word ({@link formatReportedCost}: `$0.1235`, or `$0.1235 known; usage unverified` when the
+ * accounting could not verify the figure). `qualified` is whether any qualifier is present, which is whether the amount is only what is KNOWN.
+ * `short` is the same amount with the language's own qualifier and no reasons: `$0.1235 known`. It is the FIRST WORDS of the full form, so the
+ * short form needs no new notation and no legend of its own (`known` says the figure is the known part of a bigger unknown), a bare amount
+ * never stands for a qualified one, and the full form, which has room whenever the line does, says why. An unqualified cost is its own short form.
  */
-export function formatSessionFooterWithMode(
-  state: SessionViewState,
-  mode: ChatMode,
-  reasoningEffort?: ReasoningEffort,
-): string {
-  const base = formatSessionFooter(state);
-  const modePart = `${MODE_LABEL[mode]} mode`;
-  const withMode = base.length > 0 ? `${base} · ${modePart}` : modePart;
-  if (reasoningEffort === undefined) return withMode;
-  // A budget model's bound `medium` reads "on" here, matching the picker (ADR-0066 amendment); a graded tier reads
-  // its own name. `state.model` absent (pre-session) ⇒ the label falls back to the tier name.
-  const effortLabel = effortRowLabel(state.model ?? '', reasoningEffort).label;
-  return `${withMode} · effort: ${effortLabel}`;
+export function chatCostForms(state: SessionViewState): {
+  readonly full: string;
+  readonly short: string;
+  readonly qualified: boolean;
+} {
+  const full = formatReportedCost(
+    state.cumulativeCostMicrocents,
+    state.usageCoverage,
+    state.unpricedCalls,
+  );
+  const amount = formatUsd(state.cumulativeCostMicrocents);
+  const qualified = full !== amount;
+  return { full, short: qualified ? `${amount} known` : full, qualified };
 }

@@ -14,17 +14,17 @@ describe('Home native prompt custody', () => {
     async (color) => {
       const channel = createNativePromptChannel();
       const controller = createHomeController({
-        doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
         startChat: () => {
           throw new Error('unexpected chat');
         },
         homeStore: {
           read: () => ({
-            attention: { gates: [], failedRuns: [] },
+            failedRuns: [],
             recentSessions: [],
             recentRuns: [],
             recentAgents: [],
-            unreadableRunIds: [],
+            unreadableRuns: [],
+            totals: { attention: 0, sessions: 0, runs: 0 },
             isEmpty: true,
           }),
         },
@@ -74,15 +74,15 @@ describe('Home native prompt custody', () => {
         teardown: () => Promise.resolve(),
       };
       const controller = createHomeController({
-        doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
         startChat: () => Promise.resolve(session),
         homeStore: {
           read: () => ({
-            attention: { gates: [], failedRuns: [] },
+            failedRuns: [],
             recentSessions: [],
             recentRuns: [],
             recentAgents: [],
-            unreadableRunIds: [],
+            unreadableRuns: [],
+            totals: { attention: 0, sessions: 0, runs: 0 },
             isEmpty: true,
           }),
         },

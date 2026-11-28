@@ -126,7 +126,7 @@ describe('starting auto at the real captured-turn final dispatch gate', () => {
     });
     const events = collectSubscribedSessionEvents(built.handle);
     const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    const control = createChatModeControl(built, store);
+    const control = createChatModeControl(built, store, { commandPaths: undefined });
     expect(store.getSnapshot().mode).toBe('auto');
     if (change === 'explicit-before-turn') {
       authority.revoke();

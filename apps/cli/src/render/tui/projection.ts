@@ -1,7 +1,8 @@
-import type { Text } from 'ink';
+import type { Text } from './text.js';
 import type { ComponentProps } from 'react';
 import type { DisplayLine } from './viewport.js';
-import { formatDuration, type StatusColor } from './format.js';
+import { formatDuration } from '../notation.js';
+import type { StatusColor } from './format.js';
 import type { NodeView } from './run-view-model.js';
 
 /**
@@ -42,14 +43,18 @@ export function nodeSuffix(node: NodeView): string {
   return '';
 }
 
-/** Shared style mapping for the same wrapped row in inline and full-screen chat. */
+/**
+ * Shared style mapping for the same wrapped row in inline and full-screen chat. The person's turn takes no row-wide style: its words are bold
+ * (`UserRowText`) and its mark in the margin is the accent (`TranscriptRow`, `transcript-row.tsx`, which both renderers use), because the mark is
+ * the host's own and only the first row has one.
+ */
 export function transcriptStyleProps(
   style: DisplayLine['style'],
   color: boolean,
 ): Partial<ComponentProps<typeof Text>> {
   switch (style) {
     case 'user':
-      return colorProps(color, 'cyan');
+      return {};
     case 'notice':
       return dimProps(color);
     case 'summary':

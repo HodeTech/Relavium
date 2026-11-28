@@ -15,7 +15,7 @@
  * connections to one file, as two Homes would. Every operator home is a temporary directory handed in as `homeDir`; the module's two
  * nets (a config load with no home, `os.homedir()`) throw, so no path here reaches the real `~/.relavium`.
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -605,7 +605,8 @@ describe('an overdue gate is answered in both orders, and never runs twice', () 
     const runId = await park(r, TWO_GATES, 'two.relavium.yaml');
     vi.setSystemTime(Date.now() + 2 * GATE_DEADLINE_MS);
     const reader = createRunHistoryReader(client.db);
-    const read = readRunGates(reader, root, runId);
+    // The Home reads by its canonical root, the one a run records (MVP-11 unit 7, round 2): a temp directory and its realpath differ.
+    const read = readRunGates(reader, realpathSync.native(root), runId);
     const gate = (nodeId: string): { gateId: string } => {
       const found = read?.gates.find((entry) => entry.nodeId === nodeId);
       if (found === undefined) throw new Error(`no open gate at ${nodeId}`);
@@ -645,7 +646,7 @@ describe('an overdue gate is answered in both orders, and never runs twice', () 
     ]);
     expect(runStatus(client, runId)).toBe('paused');
     expect(
-      readRunGates(createRunHistoryReader(client.db), root, runId)?.gates.map(
+      readRunGates(createRunHistoryReader(client.db), realpathSync.native(root), runId)?.gates.map(
         (gate) => gate.gateId,
       ),
     ).toEqual([g1]);
@@ -702,7 +703,7 @@ describe('a gate answered from the Home that another process already decided', (
     const theirs = rig({}, root, second, home);
     const runId = await park(mine, yaml, 'shared.relavium.yaml');
     const reader = createRunHistoryReader(first.db);
-    const gates = readRunGates(reader, root, runId)?.gates ?? [];
+    const gates = readRunGates(reader, realpathSync.native(root), runId)?.gates ?? [];
     return { mine, theirs, runId, first, second, gates };
   }
 
@@ -866,7 +867,9 @@ describe('a resumed leg that finds the run taken over by another process', () =>
         safety: 6,
       });
       expect(end.terminal.headline).toContain('taken over by another process');
-      expect(end.terminal.remedy).toContain(`relavium logs ${runId}`);
+      // The card is inside the TUI (the Home's `/workflows`); the shell line printed after the Home closes keeps the command.
+      expect(end.terminal.remedy).toContain('/workflows');
+      expect(end.terminal.shellRemedy).toContain(`relavium logs ${runId}`);
       expect(end.fault, 'a takeover is a disposition, not a fault of this leg').toBeUndefined();
       expect(end.handedOff, 'this host did not hand the run off').toBe(false);
       expect(
@@ -939,7 +942,9 @@ describe('a resumed leg that finds the run taken over by another process', () =>
     expect(calls, 'the host asked a third time, and was refused').toBeGreaterThanOrEqual(3);
     expect(end.terminal).toMatchObject({ disposition: 'taken_over', safety: 6 });
     expect(end.terminal.headline).toContain('taken over by another process');
-    expect(end.terminal.remedy).toContain(`relavium logs ${runId}`);
+    // The card is inside the TUI (the Home's `/workflows`); the shell line printed after the Home closes keeps the command.
+    expect(end.terminal.remedy).toContain('/workflows');
+    expect(end.terminal.shellRemedy).toContain(`relavium logs ${runId}`);
     expect(end.fault, 'a takeover is a disposition, not a fault of this leg').toBeUndefined();
     expect(JSON.stringify([end, r.host.notices.snapshot()])).not.toContain(
       'PRIVATE_LATE_DEPARTURE_FAULT',

@@ -188,6 +188,10 @@ flowchart TD
 | 0142 | [A literal search is linear in the text it reads, and its work budget charges what it reads](0142-a-literal-search-is-linear-and-its-work-budget-charges-what-it-reads.md) | Accepted | 2026-11-23 |
 | 0143 | [A wide table keeps its grid, with each cell wrapped inside its column; records are the last resort](0143-a-wide-table-keeps-its-grid-and-records-are-the-last-resort.md) | Accepted | 2026-11-23 |
 | 0144 | [Fenced code is highlighted by an in-house lexical scanner](0144-fenced-code-is-highlighted-by-an-in-house-lexical-scanner.md) | Accepted | 2026-11-23 |
+| 0145 | [The CLI has one surface language: who started it decides the surface, one `Esc` grammar, one glyph table, and a registry that orders the palette](0145-the-cli-has-one-surface-language.md) | Accepted | 2026-11-24 |
+| 0146 | [The Home and the chat share one calm layout, and the first run has no dead end](0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md) | Accepted | 2026-11-24 |
+| 0147 | [A system-started question is a sheet with one frame and a wait clock that no guard reads](0147-a-system-started-question-is-a-sheet-with-a-frame-and-a-wait-clock.md) | Accepted | 2026-11-24 |
+| 0148 | [A report, setting or flow the user starts is a centred popup, closed by `Esc` and leaving nothing behind](0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) | Accepted | 2026-11-24 |
 
 ## Creating a new ADR
 

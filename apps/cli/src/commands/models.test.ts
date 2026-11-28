@@ -209,6 +209,10 @@ describe('modelsCommand — list', () => {
     const text = out();
     expect(text).toContain('Model refresh failed for anthropic');
     expect(text).not.toContain('No models cached'); // not the misleading add-a-key line
+    // The remedy names what exists: `relavium doctor` is not a command (MVP-11 Step 2 review round 2, N4); `/doctor` is a chat's.
+    expect(text).toContain('`relavium models refresh`');
+    expect(text).toContain('/doctor in a chat');
+    expect(text).not.toContain('relavium doctor');
   });
 });
 

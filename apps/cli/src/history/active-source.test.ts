@@ -741,6 +741,32 @@ describe('the asynchronous read', () => {
     expect(rowOf(again.rows, 'run-a').class).toBe('held');
   });
 
+  it('a read that failed forgets what an older stamp held: the earlier stamp is parsed again, never trusted', async () => {
+    await seedRun(client.db, { slug: 'wf', runId: 'run-a', state: 'running', atMs: NOW });
+    let stamp = '10:1';
+    let fail = false;
+    const listHeld = vi.fn(() =>
+      fail ? Promise.reject(new Error('EACCES')) : Promise.resolve([{ runId: 'run-a' }]),
+    );
+    const read = createActiveReader({
+      reader,
+      projectRoot: HERE,
+      hostedRunId: () => undefined,
+      listHeld,
+      outboxStamp: () => stamp,
+      now: () => NOW,
+      leaseTtlMs: TTL,
+    });
+    await read(); // stamp A is parsed and kept
+    stamp = '40:2';
+    fail = true;
+    expect((await read()).heldUnread).toBe(true); // stamp B cannot be read: what was kept under A goes
+    stamp = '10:1';
+    fail = false;
+    await read(); // the file is at A again, but A was forgotten with the failed read
+    expect(listHeld).toHaveBeenCalledTimes(3);
+  });
+
   it('a stamp that throws is no stamp: the outbox is listed', async () => {
     const listHeld = vi.fn(() => Promise.resolve([]));
     const read = createActiveReader({
@@ -901,5 +927,26 @@ describe('one read, one snapshot (ADR-0140 §2)', () => {
     expect(home.sqlite.inTransaction, 'rolled back, not left open').toBe(false);
     // And another process can still write.
     other.sqlite.prepare("UPDATE runs SET status = 'paused' WHERE id = ?").run('run-x');
+  });
+});
+
+describe('the project roots the reader hands its rows (ADR-0145 §8)', () => {
+  it('names the root of a run of another project from ~ when it was given the directory and the home; without them the root is as stored', async () => {
+    await seedRun(client.db, { slug: 'wf', runId: 'run-else', state: 'paused', atMs: T0 });
+    inProject('run-else', '/home/ada/other');
+    const rootOf = async (paths: { cwd: string; home: string } | undefined) => {
+      const read = createActiveReader({
+        reader,
+        projectRoot: HERE,
+        hostedRunId: () => undefined,
+        listHeld: () => Promise.resolve([]),
+        now: () => NOW,
+        leaseTtlMs: TTL,
+        ...(paths === undefined ? {} : { paths }),
+      });
+      return (await read()).rows.find((row) => row.runId === 'run-else')?.projectRoot;
+    };
+    expect(await rootOf({ cwd: HERE, home: '/home/ada' })).toBe('~/other');
+    expect(await rootOf(undefined)).toBe('/home/ada/other');
   });
 });

@@ -8,10 +8,12 @@
  */
 
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -23,13 +25,19 @@ import { dirname, join, sep } from 'node:path';
 import type { McpServerRef } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { createNativeConsentPrompter } from '../home/consent-card.js';
+import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { isCliError } from '../process/errors.js';
 import type { GlobalOptions } from '../process/options.js';
+import { createNativePromptChannel } from '../render/tui/native-prompt-channel.js';
 import { captureIo } from '../test-support.js';
+import { appendGrant } from './mcp-consent.js';
 import {
   assertStdioConsent,
+  CONSENT_PATH_UNSHOWN,
   createConsentGate,
   mcpConsentPath,
+  type ConsentPrompter,
   type ConsentSubject,
 } from './mcp-consent-gate.js';
 
@@ -492,6 +500,390 @@ describe('what the prompt is given (ADR-0084 §7)', () => {
     expect(lines).toHaveLength(1);
   });
 });
+
+// Real files whose names hold a control character are a POSIX fact, and so is the executable bit.
+describe.skipIf(process.platform === 'win32')(
+  'a path reaches a prompt exactly as it is, or no prompt at all: the Home`s card and the shell`s question (M1 at the gate)',
+  () => {
+    /**
+     * Each makes a different file from its visible twin `srv`. All but the last are what the gate's own sanitizer strips; the soft
+     * hyphen is kept by it and drawn by nothing, so the shell would show it raw and the person would read `srv`.
+     */
+    const HIDDEN: readonly (readonly [string, string])[] = [
+      ['U+200B, a zero-width space', '\u200B'],
+      ['U+200D, a zero-width joiner', '\u200D'],
+      ['U+2060, a word joiner', '\u2060'],
+      ['U+FEFF, a byte-order mark', '\uFEFF'],
+      ['U+202E, a bidi override', '\u202E'],
+      ['0x07, a bell', '\u0007'],
+      ['0x1b, an escape', '\u001B'],
+      ['U+00AD, a soft hyphen', '\u00AD'],
+    ];
+
+    /** What the end of a row draws as nothing: `srv` and `srv ` look the same there. */
+    const TRAILING: readonly (readonly [string, string])[] = [
+      ['a space', ' '],
+      ['U+00A0, a no-break space', '\u00A0'],
+      ['U+2800, the Braille blank', '\u2800'],
+    ];
+
+    /** Blanks that are not the ordinary space, so `my srv` with one of them reads as `my srv` with a space. */
+    const MIDDLE: readonly (readonly [string, string])[] = [
+      ['U+00A0, a no-break space', '\u00A0'],
+      ['U+2800, the Braille blank', '\u2800'],
+      ['U+3000, an ideographic space', '\u3000'],
+      ['U+2028, a line separator', '\u2028'],
+    ];
+
+    /** The longest path a prompt shows (the gate's `MAX_PATH_CHARS`: what an 80x24 card holds whole for the executable and its directory). */
+    const BOUND = 520;
+
+    /** A directory name the secret scrubber masks (the shape of a provider key): a prompt would show `[REDACTED]` where the path has it. */
+    const CREDENTIAL_SHAPED = 'sk-ant-api03-Q9zXw7TokenValue12345abcdef';
+
+    /**
+     * A real file or directory under `base` whose path, as the gate resolves it, is exactly `length` characters: directories of 200
+     * characters (a name's limit is 255), then the last name. Its path is returned.
+     */
+    function pathOfLength(base: string, length: number, kind: 'file' | 'directory'): string {
+      let path = realpathSync(base);
+      while (length - path.length > 201) path = join(path, 'd'.repeat(199));
+      mkdirSync(path, { recursive: true });
+      const last = join(path, 'n'.repeat(length - path.length - 1));
+      if (kind === 'directory') mkdirSync(last);
+      else executable(last);
+      return last;
+    }
+
+    /** A production prompter, and every line it put on screen. */
+    interface Surface {
+      readonly prompt: ConsentPrompter;
+      readonly lines: () => readonly string[];
+      readonly close: () => Promise<void>;
+    }
+
+    /** The Home's consent card on a real native prompt channel; a card that opens is read, then refused by cancelling the flow. */
+    function card(): Surface {
+      const channel = createNativePromptChannel();
+      channel.flow.begin();
+      const lines: string[] = [];
+      let read: unknown;
+      const stop = channel.ui.subscribe(() => {
+        const snapshot = channel.ui.getSnapshot();
+        if (snapshot.kind !== 'chord' || snapshot === read) return;
+        read = snapshot;
+        lines.push(snapshot.message, ...snapshot.details);
+        queueMicrotask(() => channel.flow.cancel());
+      });
+      return {
+        prompt: createNativeConsentPrompter(channel.flow),
+        lines: () => lines,
+        close: async () => {
+          stop();
+          await channel.flow.end();
+        },
+      };
+    }
+
+    /** The shell's clack question, with clack replaced by a recorder that answers no. */
+    function shell(): Surface {
+      const lines: string[] = [];
+      return {
+        prompt: createConsentPrompter({
+          log: {
+            message: (text) => {
+              lines.push(...text.split('\n'));
+            },
+          },
+          confirm: (options) => {
+            lines.push(options.message);
+            return Promise.resolve(false);
+          },
+          isCancel: (value): value is symbol => typeof value === 'symbol',
+        }),
+        lines: () => lines,
+        close: () => Promise.resolve(),
+      };
+    }
+
+    const SURFACES = [
+      ['the card', card],
+      ['the shell', shell],
+    ] as const;
+
+    /** A repository with the visible twin `tools/srv` in it: the file a person would inspect, and the one a prompt must not name instead. */
+    function repository(): string {
+      const repo = join(home, 'repo');
+      mkdirSync(join(repo, 'tools'), { recursive: true });
+      executable(join(repo, 'tools', 'srv'));
+      return repo;
+    }
+
+    function executable(path: string): void {
+      writeFileSync(path, '#!/bin/sh\nexit 0\n');
+      chmodSync(path, 0o755);
+    }
+
+    /** Ask through the REAL gate, which resolves the real file. */
+    async function ask(surface: Surface, cwd: string, command: string): Promise<unknown> {
+      const { io: cliIo } = io();
+      try {
+        return await assertStdioConsent([ref({ id: 'docs', command })], cwd, {
+          io: cliIo,
+          global: globalOptions({ cwd }),
+          homeDir: home,
+          prompt: surface.prompt,
+        }).then(
+          () => 'resolved',
+          (error: unknown) => error,
+        );
+      } finally {
+        await surface.close();
+      }
+    }
+
+    /** The value of the row `label` starts, with the label and the space after it removed: the same reading on both surfaces. */
+    const rowValue = (lines: readonly string[], label: string): string | undefined =>
+      lines
+        .map((line) => line.trimStart())
+        .find((line) => line.startsWith(`${label} `))
+        ?.slice(label.length)
+        .trimStart();
+
+    function expectRefusedUnseen(outcome: unknown, surface: Surface): void {
+      expect(isCliError(outcome) && outcome.code).toBe('invalid_invocation');
+      expect(isCliError(outcome) && outcome.message).toBe(CONSENT_PATH_UNSHOWN);
+      expect(surface.lines(), 'nothing was put on screen').toEqual([]);
+      expect(existsSync(mcpConsentPath(home)), 'no grant was written').toBe(false);
+    }
+
+    describe.each(SURFACES)('%s', (_name, surfaceOf) => {
+      it('an ordinary program is asked about, its executable and directory rows equal to the paths on disk (the control)', async () => {
+        const repo = repository();
+        const surface = surfaceOf();
+        const outcome = await ask(surface, repo, './tools/srv');
+        expect(isCliError(outcome) && outcome.message).toContain('was not approved');
+        expect(rowValue(surface.lines(), 'executable')).toBe(
+          realpathSync(join(repo, 'tools', 'srv')),
+        );
+        expect(rowValue(surface.lines(), 'directory')).toBe(realpathSync(repo));
+      });
+
+      it.each(HIDDEN)(
+        'an executable whose name holds %s is refused: no prompt names its twin',
+        async (_label, hidden) => {
+          const repo = repository();
+          executable(join(repo, 'tools', `srv${hidden}`));
+          const surface = surfaceOf();
+          expectRefusedUnseen(await ask(surface, repo, `./tools/srv${hidden}`), surface);
+        },
+      );
+
+      it.each(TRAILING)(
+        'an executable whose name ends in %s is refused: the end of a row draws it as nothing',
+        async (_label, blank) => {
+          const repo = repository();
+          executable(join(repo, 'tools', `srv${blank}`));
+          const surface = surfaceOf();
+          expectRefusedUnseen(await ask(surface, repo, `./tools/srv${blank}`), surface);
+        },
+      );
+
+      it.each(MIDDLE)(
+        'an executable whose name holds %s between its letters is refused: it reads as an ordinary space',
+        async (_label, blank) => {
+          const repo = repository();
+          executable(join(repo, 'tools', 'my srv'));
+          executable(join(repo, 'tools', `my${blank}srv`));
+          const surface = surfaceOf();
+          expectRefusedUnseen(await ask(surface, repo, `./tools/my${blank}srv`), surface);
+        },
+      );
+
+      it('ordinary spaces between visible characters are shown as they are (the control): `My  Tools/my srv`', async () => {
+        const repo = repository();
+        mkdirSync(join(repo, 'My  Tools'));
+        executable(join(repo, 'My  Tools', 'my srv'));
+        const surface = surfaceOf();
+        const outcome = await ask(surface, repo, './My  Tools/my srv');
+        expect(isCliError(outcome) && outcome.message).toContain('was not approved');
+        expect(rowValue(surface.lines(), 'executable')).toBe(
+          realpathSync(join(repo, 'My  Tools', 'my srv')),
+        );
+      });
+
+      it(`an executable path of exactly ${String(BOUND)} characters is shown whole, its file name included`, async () => {
+        const program = pathOfLength(repository(), BOUND, 'file');
+        const surface = surfaceOf();
+        const outcome = await ask(surface, home, program);
+        expect(isCliError(outcome) && outcome.message).toContain('was not approved');
+        expect(rowValue(surface.lines(), 'executable')).toBe(program);
+        expect(program).toHaveLength(BOUND);
+      });
+
+      it(`an executable path of ${String(BOUND + 1)} characters is refused, never shown cut`, async () => {
+        const program = pathOfLength(repository(), BOUND + 1, 'file');
+        const surface = surfaceOf();
+        expectRefusedUnseen(await ask(surface, home, program), surface);
+      });
+
+      it('an executable path with a part shaped like a credential is refused, not shown with that part masked', async () => {
+        const repo = repository();
+        mkdirSync(join(repo, CREDENTIAL_SHAPED));
+        executable(join(repo, CREDENTIAL_SHAPED, 'srv'));
+        const surface = surfaceOf();
+        expectRefusedUnseen(await ask(surface, repo, `./${CREDENTIAL_SHAPED}/srv`), surface);
+      });
+
+      it.each([...HIDDEN, ...TRAILING])(
+        'a directory whose name holds or ends in %s is refused',
+        async (_label, hidden) => {
+          const program = join(repository(), 'tools', 'srv');
+          const cwd = join(home, `project${hidden}`);
+          mkdirSync(cwd);
+          const surface = surfaceOf();
+          expectRefusedUnseen(await ask(surface, cwd, program), surface);
+        },
+      );
+
+      it(`a directory of ${String(BOUND + 1)} characters is refused`, async () => {
+        const program = join(repository(), 'tools', 'srv');
+        const surface = surfaceOf();
+        expectRefusedUnseen(
+          await ask(surface, pathOfLength(home, BOUND + 1, 'directory'), program),
+          surface,
+        );
+      });
+
+      it(`a directory of exactly ${String(BOUND)} characters is shown whole`, async () => {
+        const program = join(repository(), 'tools', 'srv');
+        const cwd = pathOfLength(home, BOUND, 'directory');
+        const surface = surfaceOf();
+        const outcome = await ask(surface, cwd, program);
+        expect(isCliError(outcome) && outcome.message).toContain('was not approved');
+        expect(rowValue(surface.lines(), 'directory')).toBe(cwd);
+      });
+
+      describe('the directory of an earlier approval', () => {
+        /** A grant for the same program in another directory, as the log would hold it from an earlier version. */
+        function approvedIn(directory: string, program: string): void {
+          appendGrant(mcpConsentPath(home), {
+            v: 1,
+            digest: `v1:${'0'.repeat(64)}`,
+            command: realpathSync(program),
+            args: [],
+            envNames: [],
+            cwd: directory,
+            grantedAt: '2026-11-25T00:00:00.000Z',
+          });
+        }
+
+        it('an ordinary one is named exactly (the control)', async () => {
+          const repo = repository();
+          approvedIn('/elsewhere/project', join(repo, 'tools', 'srv'));
+          const surface = surfaceOf();
+          const outcome = await ask(surface, repo, './tools/srv');
+          expect(isCliError(outcome) && outcome.message).toContain('was not approved');
+          expect(surface.lines().map((line) => line.trim())).toContain(
+            '(you approved this same program in /elsewhere/project)',
+          );
+        });
+
+        it.each(HIDDEN)('one holding %s is refused', async (_label, hidden) => {
+          const repo = repository();
+          approvedIn(`/elsewhere/project${hidden}x`, join(repo, 'tools', 'srv'));
+          const surface = surfaceOf();
+          const outcome = await ask(surface, repo, './tools/srv');
+          expect(isCliError(outcome) && outcome.message).toBe(CONSENT_PATH_UNSHOWN);
+          expect(surface.lines(), 'nothing was put on screen').toEqual([]);
+        });
+      });
+    });
+
+    describe('the list a script`s author picks a digest from (§6) names the file that runs, never its twin', () => {
+      /** Refuse non-interactively; what was written to stderr, and the digest in it. */
+      async function listed(
+        cwd: string,
+        command: string,
+      ): Promise<{ err: string; digest: string }> {
+        const { io: cliIo, err } = io({ stdoutIsTty: false });
+        let asked = 0;
+        const outcome = await assertStdioConsent([ref({ id: 'docs', command })], cwd, {
+          io: cliIo,
+          global: globalOptions({ cwd }),
+          homeDir: home,
+          prompt: () => {
+            asked += 1;
+            return Promise.resolve(true);
+          },
+        }).catch((caught: unknown) => caught);
+        expect(isCliError(outcome) && outcome.message).toContain('--allow-mcp-stdio');
+        expect(asked).toBe(0);
+        return { err: err(), digest: /v1:[0-9a-f]{64}/.exec(err())?.[0] ?? '' };
+      }
+
+      it('an ordinary program`s line is the path as it is and the digest, nothing else (the control)', async () => {
+        const repo = repository();
+        const { err, digest } = await listed(repo, './tools/srv');
+        expect(err).toBe(`  docs: ${realpathSync(join(repo, 'tools', 'srv'))}  ${digest}\n`);
+      });
+
+      it('a long path within the bound is listed whole, its file name included', async () => {
+        const program = pathOfLength(repository(), 300, 'file');
+        const { err, digest } = await listed(home, program);
+        expect(err).toBe(`  docs: ${program}  ${digest}\n`);
+      });
+
+      it.each([
+        ['U+200B, a zero-width space', 'srv\u200B', 'srv\\u200B'],
+        ['0x1b, an escape', 'srv\u001B[2J', 'srv\\u001B[2J'],
+        ['U+202E, a bidi override', 'srv\u202Evil', 'srv\\u202Evil'],
+        ['a trailing space', 'srv ', 'srv\\u0020'],
+        ['a no-break space between letters', 'my\u00A0srv', 'my\\u00A0srv'],
+        ['a backslash beside a hidden character', 'a\\u200B\u200B', 'a\\\\u200B\\u200B'],
+      ])(
+        'a program whose name holds %s is listed with it escaped and a note, and the listed digest approves it',
+        async (_label, name, shown) => {
+          const repo = repository();
+          executable(join(repo, 'tools', name));
+          const { err, digest } = await listed(repo, `./tools/${name}`);
+          expect(err).toBe(
+            `  docs: ${realpathSync(repo)}/tools/${shown}  ${digest}  (this path holds characters that do not show, written here as \\u escapes; only its digest can approve it)\n`,
+          );
+          await expect(
+            assertStdioConsent([ref({ id: 'docs', command: `./tools/${name}` })], repo, {
+              io: io({ stdoutIsTty: false }).io,
+              global: globalOptions({ cwd: repo }),
+              homeDir: home,
+              allowedDigests: [digest],
+            }),
+            'the digest the list printed is the one that approves the file that runs',
+          ).resolves.toBeDefined();
+        },
+      );
+
+      it('a path past the bound is listed whole, with a note that only its digest approves it', async () => {
+        const program = pathOfLength(repository(), BOUND + 80, 'file');
+        const { err, digest } = await listed(home, program);
+        expect(err).toBe(
+          `  docs: ${program}  ${digest}  (no prompt can show this path as it is, so only its digest can approve it)\n`,
+        );
+      });
+
+      it('a path with a part shaped like a credential is listed with that part masked, and the same note', async () => {
+        const repo = repository();
+        mkdirSync(join(repo, CREDENTIAL_SHAPED));
+        executable(join(repo, CREDENTIAL_SHAPED, 'srv'));
+        const { err, digest } = await listed(repo, `./${CREDENTIAL_SHAPED}/srv`);
+        expect(err).not.toContain(CREDENTIAL_SHAPED);
+        expect(err).toContain('[REDACTED]');
+        expect(err).toContain(
+          `  ${digest}  (no prompt can show this path as it is, so only its digest can approve it)\n`,
+        );
+      });
+    });
+  },
+);
 
 describe('resolution failures refuse before anything is asked (ADR-0084 §3)', () => {
   it('an unresolvable command is exit 2, and no prompt happens', async () => {

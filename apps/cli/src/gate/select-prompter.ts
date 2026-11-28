@@ -23,6 +23,6 @@ export function selectGatePrompter(io: CliIo, global: GlobalOptions): GatePrompt
     json: global.json,
     env: io.env,
   })
-    ? createBoundClackGatePrompter(io)
+    ? createBoundClackGatePrompter(io, !global.color)
     : undefined;
 }

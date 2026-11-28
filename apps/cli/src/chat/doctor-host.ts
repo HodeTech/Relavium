@@ -5,6 +5,7 @@ import type { McpServerRef } from '@relavium/shared';
 import { faultForTranscript } from '../config/config-error-text.js';
 import { loadResolvedConfig } from '../config/load.js';
 import type { ProviderResolver } from '../engine/providers.js';
+import type { NoticeSurface } from '../render/notice-surface.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import type { KeychainStore } from '../secrets/keychain.js';
@@ -26,6 +27,11 @@ import type { ProviderProbeDeps } from './doctor-deep.js';
 const DOCTOR_KEYCHAIN_PROBE = 'doctor:reachability-probe';
 
 export interface DoctorHostInputs {
+  /**
+   * Where the report is read (ADR-0145 §7.4, MVP-11 OD-20): the Home and an interactive chat say `/import`, a plain or `--json` chat is scripted
+   * output that names the shell command. REQUIRED, so a host that forgets it fails the typecheck instead of printing the wrong wording.
+   */
+  readonly noticeSurface: NoticeSurface;
   /** Trusted invocation home for private filesystem-artifact guards; never a model/config argument. */
   readonly operatorHomeDir?: string;
   readonly workOwner?: ProviderProbeDeps['workOwner'];
@@ -47,7 +53,7 @@ export interface DoctorHostInputs {
 export function assembleDoctorProbes(inputs: DoctorHostInputs): DoctorProbes {
   return {
     // The invocation's own operator home when it was handed one (a test, an embedding), never `os.homedir()` behind its back.
-    globalArtifacts: () => globalArtifactsNotice(inputs.operatorHomeDir),
+    globalArtifacts: () => globalArtifactsNotice(inputs.operatorHomeDir, inputs.noticeSurface),
     keychain: () => {
       // Reachability only: read a never-set account. `null` ⇒ reachable; a `KeychainUnavailableError` ⇒ down.
       const store = inputs.keychain ?? createOsKeychainStore();
@@ -84,5 +90,7 @@ export function assembleDoctorProbes(inputs: DoctorHostInputs): DoctorProbes {
     }),
     deepMcp: () =>
       Promise.resolve(mcpSessionChecks(inputs.agentMcpServers ?? [], inputs.mcpSkipped ?? [])),
+    // A reference, never a call: the popup reads presence and the pinned destinations through it, in the work it starts.
+    providers: inputs.resolver,
   };
 }

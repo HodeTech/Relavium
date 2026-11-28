@@ -1,4 +1,10 @@
 import { CliError, isCliError } from '../process/errors.js';
+import {
+  pricePhrase,
+  usdDecimal,
+  withoutTrailingZeros,
+  type PriceUnit,
+} from '../render/notation.js';
 
 /**
  * The field table of `relavium models pricing` ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
@@ -55,7 +61,7 @@ export type PriceColumn =
 export type PriceArgs = { readonly [K in PriceArgKey]?: number };
 
 /** 1 USD/Mtok = 1e8 micro-cents/Mtok (ADR-0065 §2 — the exact inverse of `@relavium/llm`'s in-code `usd()`). */
-export const MICROCENTS_PER_USD = 100_000_000;
+export { MICROCENTS_PER_USD } from '../render/notation.js';
 /** The decimal places a price can hold: one micro-cent is `10^-8` USD, so `MICROCENTS_PER_USD` is `10^PRICE_DECIMAL_PLACES`. */
 export const PRICE_DECIMAL_PLACES = 8;
 /**
@@ -74,6 +80,12 @@ export interface PricingField {
   readonly id: PricingFieldId;
   /** The flag as the shell's sentences name it. The descriptor lists it as a spelling (primary or deprecated). */
   readonly flag: string;
+  /**
+   * The flag a REMEDY tells a person to type: the descriptor's primary spelling. It differs from {@link flag} for the token pair, whose
+   * short spellings `--input` and `--output` are still accepted but deprecated, so a remedy that printed them would name a spelling the
+   * command's own help marks as old (ADR-0145 §7.4, MVP-11 OD-20). `pricing-fields.test.ts` proves it is the descriptor's first spelling.
+   */
+  readonly canonicalFlag: string;
   /** What the form's prompt and card call it. */
   readonly label: string;
   /** What the shell's sentences call the missing flag's value (`--input USD_PER_MTOK`). */
@@ -81,8 +93,8 @@ export interface PricingField {
   readonly unit: PricingUnit;
   /** The unit as a person reads it, in the form's prompt (`USD per million tokens`). */
   readonly unitWords: string;
-  /** The unit as the shell echoes a price and the card shows it: `$3/Mtok`, `$0.04/image`, `$0.001/s`. */
-  readonly suffix: string;
+  /** What a price is quoted per, as the shell echoes it and the card shows it (`$3 per M`, `$0.04 per image`, `$0.001 per second`): the one notation of `render/notation.ts`. */
+  readonly priceUnit: PriceUnit;
   /** The largest price accepted, in USD per its unit; a larger one is refused as a typo. */
   readonly ceiling: number;
   readonly arg: PriceArgKey;
@@ -98,11 +110,12 @@ export const PRICING_FIELDS: readonly PricingField[] = Object.freeze([
   {
     id: 'input',
     flag: '--input',
+    canonicalFlag: '--input-price',
     label: 'Input price',
     placeholder: 'USD_PER_MTOK',
     unit: 'mtok',
     unitWords: 'USD per million tokens',
-    suffix: '/Mtok',
+    priceUnit: 'M',
     ceiling: MAX_USD_PER_MTOK,
     arg: 'inputUsdPerMtok',
     column: 'inputCostPerMtokMicrocents',
@@ -112,11 +125,12 @@ export const PRICING_FIELDS: readonly PricingField[] = Object.freeze([
   {
     id: 'output',
     flag: '--output',
+    canonicalFlag: '--output-price',
     label: 'Output price',
     placeholder: 'USD_PER_MTOK',
     unit: 'mtok',
     unitWords: 'USD per million tokens',
-    suffix: '/Mtok',
+    priceUnit: 'M',
     ceiling: MAX_USD_PER_MTOK,
     arg: 'outputUsdPerMtok',
     column: 'outputCostPerMtokMicrocents',
@@ -126,11 +140,12 @@ export const PRICING_FIELDS: readonly PricingField[] = Object.freeze([
   {
     id: 'cached',
     flag: '--cached',
+    canonicalFlag: '--cached',
     label: 'Cached input price',
     placeholder: 'USD_PER_MTOK',
     unit: 'mtok',
     unitWords: 'USD per million tokens',
-    suffix: '/Mtok',
+    priceUnit: 'M',
     ceiling: MAX_USD_PER_MTOK,
     arg: 'cachedInputUsdPerMtok',
     column: 'cachedInputCostPerMtokMicrocents',
@@ -140,11 +155,12 @@ export const PRICING_FIELDS: readonly PricingField[] = Object.freeze([
   {
     id: 'image',
     flag: '--image',
+    canonicalFlag: '--image',
     label: 'Image price',
     placeholder: 'USD_PER_IMAGE',
     unit: 'billed-unit',
     unitWords: 'USD per image',
-    suffix: '/image',
+    priceUnit: 'image',
     ceiling: MAX_USD_PER_MEDIA_UNIT,
     arg: 'imageUsdPerCount',
     column: 'mediaImageCostMicrocents',
@@ -154,11 +170,12 @@ export const PRICING_FIELDS: readonly PricingField[] = Object.freeze([
   {
     id: 'audio',
     flag: '--audio',
+    canonicalFlag: '--audio',
     label: 'Audio price',
     placeholder: 'USD_PER_SECOND',
     unit: 'billed-unit',
     unitWords: 'USD per second',
-    suffix: '/s',
+    priceUnit: 'second',
     ceiling: MAX_USD_PER_MEDIA_UNIT,
     arg: 'audioUsdPerSecond',
     column: 'mediaAudioCostMicrocents',
@@ -168,11 +185,12 @@ export const PRICING_FIELDS: readonly PricingField[] = Object.freeze([
   {
     id: 'video',
     flag: '--video',
+    canonicalFlag: '--video',
     label: 'Video price',
     placeholder: 'USD_PER_SECOND',
     unit: 'billed-unit',
     unitWords: 'USD per second',
-    suffix: '/s',
+    priceUnit: 'second',
     ceiling: MAX_USD_PER_MEDIA_UNIT,
     arg: 'videoUsdPerSecond',
     column: 'mediaVideoCostMicrocents',
@@ -258,7 +276,7 @@ function precisionSentence(
   naming: PricingNaming,
 ): string {
   const name = nameOf(field, naming);
-  const step = `$${usdTextOfMicrocents(1)} per ${perUnit(field)}`;
+  const step = pricePhrase(usdTextOfMicrocents(1), field.priceUnit);
   return refusal === 'below-smallest'
     ? `${name} is below the smallest price that can be stored, ${step}. Enter 0 to record it as free.`
     : `${name} has more than ${String(PRICE_DECIMAL_PLACES)} decimal places, and a price is stored in whole steps of ${step}. Enter it to the nearest step.`;
@@ -311,7 +329,6 @@ export function priceToMicrocents(
   naming: PricingNaming = 'flag',
 ): number {
   const name = nameOf(field, naming);
-  const perMtok = field.unit === 'mtok';
   if (!Number.isFinite(usd) || usd < 0) {
     throw new CliError(
       'invalid_invocation',
@@ -321,9 +338,7 @@ export function priceToMicrocents(
   if (usd > field.ceiling) {
     throw new CliError(
       'invalid_invocation',
-      perMtok
-        ? `${name} ($${usd}/Mtok) is implausibly large — the maximum is $${field.ceiling}/Mtok`
-        : `${name} ($${usd}) is implausibly large — the maximum is $${field.ceiling} per unit`,
+      `${name} (${pricePhrase(String(usd), field.priceUnit)}) is implausibly large — the maximum is ${pricePhrase(String(field.ceiling), field.priceUnit)}`,
     );
   }
   const decimal = readDecimal(String(usd));
@@ -365,24 +380,16 @@ export function priceArgsFromText(
   return out;
 }
 
-/** An integer of micro-cents as an exact decimal USD amount (`300000000` → `3`, `3000000` → `0.03`), never in exponent form. */
+/**
+ * An integer of micro-cents as an exact decimal USD amount (`300000000` → `3`, `3000000` → `0.03`), never in exponent form. It is
+ * `render/notation.ts`'s {@link usdDecimal}, the one place that turns a stored integer into digits (integer arithmetic, no float).
+ */
 export function usdTextOfMicrocents(microcents: number): string {
-  const whole = Math.trunc(microcents / MICROCENTS_PER_USD);
-  const fraction = microcents - whole * MICROCENTS_PER_USD;
-  if (fraction === 0) return String(whole);
-  return `${whole}.${withoutTrailingZeros(String(fraction).padStart(8, '0'))}`;
+  return usdDecimal(microcents);
 }
 
-/**
- * `text` without its final run of `0` characters. A loop, not `/0+$/`: that pattern retries from every `0` of a long run that is NOT at the
- * end, which is quadratic in the run's length (SonarCloud S8786). The only text this module trims is the text of a stored integer, which is
- * short, so no caller can reach the cost today; the loop is the form that stays linear if one ever can. Exported for its test.
- */
-export function withoutTrailingZeros(text: string): string {
-  let end = text.length;
-  while (end > 0 && text.codePointAt(end - 1) === 0x30) end -= 1;
-  return text.slice(0, end);
-}
+/** `text` without its final run of `0` characters: the linear loop of `render/notation.ts`, kept exported here for the field table's test. */
+export { withoutTrailingZeros };
 
 // ── the pairing rule ────────────────────────────────────────────────────────────────────────────────────────────────────────
 

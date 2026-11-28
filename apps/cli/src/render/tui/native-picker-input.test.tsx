@@ -51,15 +51,15 @@ describe.each(['home', 'standalone'] as const)(
             startChat: () => Promise.reject(new Error('Unexpected chat submission')),
             homeStore: {
               read: () => ({
-                attention: { gates: [], failedRuns: [] },
+                failedRuns: [],
                 recentSessions: [],
                 recentRuns: [],
                 recentAgents: [],
-                unreadableRunIds: [],
+                unreadableRuns: [],
+                totals: { attention: 0, sessions: 0, runs: 0 },
                 isEmpty: true,
               }),
             },
-            doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
             onExit: () => {},
             onError: () => {},
           });

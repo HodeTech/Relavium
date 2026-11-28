@@ -140,6 +140,7 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     governed: governedToolIds(BUILTIN_TOOLS),
     prompt: vi.fn<ApprovalPrompt>(() => Promise.resolve({ outcome: 'approve', scope: 'once' })),
     cache: new ApprovalCache(),
+    commandPaths: undefined,
     ...over,
   });
 
@@ -525,6 +526,7 @@ describe('accept-edits — file edits are applied without a card, everything els
     governed: governedToolIds(BUILTIN_TOOLS),
     cache: new ApprovalCache(),
     prompt: vi.fn<ApprovalPrompt>(() => Promise.resolve({ outcome: 'reject', reason: 'asked' })),
+    commandPaths: undefined,
     ...over,
   });
 
@@ -595,6 +597,7 @@ describe('provisional always decisions', () => {
     governed: governedToolIds(BUILTIN_TOOLS),
     cache: new ApprovalCache(),
     prompt: vi.fn<ApprovalPrompt>(() => Promise.resolve({ outcome: 'approve', scope: 'once' })),
+    commandPaths: undefined,
     ...over,
   });
   it('never remembers the first file card when atomic prepare subsequently finds a saved result', async () => {

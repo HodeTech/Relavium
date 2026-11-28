@@ -198,6 +198,46 @@ describe('SessionStore (1.X) — persist + resume', () => {
     expect(store.listSessions()).toEqual([]);
   });
 
+  describe('a row that does not parse', () => {
+    /** Three sessions, the middle one damaged the way a hand edit or a partial write would: its `context_json` is not JSON. */
+    const seedWithOneDamagedRow = (): void => {
+      store.createSession(makeSession({ id: 'sess-a', updatedAt: '2026-06-17T08:00:00.000Z' }));
+      store.createSession(makeSession({ id: 'sess-b', updatedAt: '2026-06-17T09:00:00.000Z' }));
+      store.createSession(makeSession({ id: 'sess-c', updatedAt: '2026-06-17T10:00:00.000Z' }));
+      client.db.run(sql`UPDATE agent_sessions SET context_json = 'not json' WHERE id = 'sess-b'`);
+    };
+
+    it('throws out of listSessions by default: a list is never printed as the whole one with a row missing', () => {
+      seedWithOneDamagedRow();
+      expect(() => store.listSessions()).toThrow();
+    });
+
+    it('is skipped and reported by id when the reader passes onUnreadable; every other row is returned in order', () => {
+      seedWithOneDamagedRow();
+      const unreadable: string[] = [];
+      const listed = store.listSessions({ onUnreadable: (id) => unreadable.push(id) });
+      expect(listed.map((s) => s.id)).toEqual(['sess-c', 'sess-a']);
+      expect(unreadable).toEqual(['sess-b']);
+    });
+
+    it('is isolated inside a directory scope and a limit too, and a clean read never calls the callback', () => {
+      seedWithOneDamagedRow();
+      const unreadable: string[] = [];
+      const scoped = store.listSessions({
+        workingDir: CTX.workingDir,
+        limit: 2,
+        onUnreadable: (id) => unreadable.push(id),
+      });
+      // the limit counts the damaged row: the two newest rows are sess-c and sess-b, and sess-b is the one skipped
+      expect(scoped.map((s) => s.id)).toEqual(['sess-c']);
+      expect(unreadable).toEqual(['sess-b']);
+      client.db.run(sql`UPDATE agent_sessions SET context_json = ${JSON.stringify(CTX)}`);
+      const clean = vi.fn();
+      expect(store.listSessions({ onUnreadable: clean })).toHaveLength(3);
+      expect(clean).not.toHaveBeenCalled();
+    });
+  });
+
   it('listSessions({ limit }) bounds the read to the indexed top-N, newest-first (2.5.B Home)', () => {
     for (let i = 0; i < 5; i += 1) {
       store.createSession(

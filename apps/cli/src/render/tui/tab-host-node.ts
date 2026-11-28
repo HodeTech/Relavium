@@ -5,18 +5,27 @@ import type {
   NodeDetailRequest,
   NodePosition,
 } from '../../history/node-detail-source.js';
-import { absenceText, scrubbedBounded, type NodeRow } from '../../history/run-detail-model.js';
+import {
+  absenceText,
+  NODE_ROW_ROLE,
+  scrubbedBounded,
+  type NodeRow,
+} from '../../history/run-detail-model.js';
 import { EMPTY_OUTPUT, NOT_RECORDED, NO_OUTPUT, SKIPPED, UNAVAILABLE } from '../absence.js';
 import { sanitizeInline } from '../sanitize.js';
 import type { ChatKey } from './chat-input.js';
-import { formatDuration } from './format.js';
-import type { LegendItem } from './legend.js';
+import { formatDuration } from '../notation.js';
+import { blankHostGlyphs, glyph, statusCell } from './glyphs.js';
+import { exitKey, keyToken, type LegendItem, type LegendKey } from './legend.js';
+import { screenText } from './screen-text.js';
 import {
   clipLine,
   flushRow,
   windowBody,
   type SheetLine,
   type SheetLineKind,
+  moreAboveText,
+  moreBelowText,
 } from './sheet-frame.js';
 import { displayWidth } from './viewport.js';
 
@@ -46,9 +55,10 @@ export type NodeLoader = (request: NodeDetailRequest) => NodeDetailLoad;
 /** The keys the node page's legend names that are its own. The test presses every one of them. */
 export const NODE_KEYS = {
   scroll: { keys: '↑/↓', verb: 'scroll' },
-  firstFailed: { keys: '[n]', verb: 'first failed' },
-  back: { keys: 'Esc', verb: 'back' },
-} as const satisfies Readonly<Record<string, LegendItem>>;
+  firstFailed: { keys: 'n', verb: 'first failed' },
+  /** `Esc` on the node page returns to the run's detail on the line it left: one level (ADR-0145 §2, Step). */
+  back: exitKey.step(),
+} as const satisfies Readonly<Record<string, LegendKey>>;
 
 /** How far `PgUp` and `PgDn` move. */
 export const NODE_PAGE_STEP = 8;
@@ -63,7 +73,7 @@ export const NODE_RETRIED_OK =
   'This node was retried and then ended well: no attempt of it is left failed.';
 /** The node page has no `p`: its footer says that nothing here changes a run. The run detail's hint is the one that says `p` marks one. */
 export const NODE_CHANGES_NO_RUN = 'No run is changed here.';
-export const NODE_NOT_A_NODE = 'Enter opens a node: move to one of the node rows.';
+export const NODE_NOT_A_NODE = `${keyToken('Enter')} opens a node: move to one of the node rows.`;
 export const NODE_LOG_PARTIAL =
   'Only the first events of the run were read: the figures here may be partial.';
 
@@ -123,7 +133,8 @@ export function firstFailedAttempt(
 
 const WORD_WIDTH = 10;
 const INDENT = '  ';
-const POINTER = '› ';
+/** The selection marker and its space, in the form in force ({@link glyph}); an unselected row keeps the same two columns. */
+const pointer = (): string => `${glyph('selection')} `;
 
 /** `text` broken into rows of at most `width` display columns, at a code point, never in the middle of one. */
 function wrapText(text: string, width: number): readonly string[] {
@@ -145,9 +156,12 @@ function wrapText(text: string, width: number): readonly string[] {
   return rows;
 }
 
-/** Each line of `text` (split at its line breaks, tabs spread) as indented rows, wrapped. */
+/**
+ * Each line of `text` (split at its line breaks, tabs spread) as indented rows, wrapped. The text is untrusted (a node's output, an error's
+ * message), so it passes the screen's filter BEFORE it is laid out ({@link screenText}: a rewrite can change the width the layout measures).
+ */
 function textRows(text: string, indent: string): readonly NodeLine[] {
-  return text
+  return screenText(text)
     .split('\n')
     .flatMap((line) => wrapText(line.replaceAll('\t', '  '), NODE_WRAP_COLUMNS))
     .map((left): NodeLine => ({ kind: 'text', left: `${indent}${left}` }));
@@ -205,7 +219,8 @@ function errorLines(model: NodeDetailModel): readonly NodeLine[] {
   return [
     heading,
     ...code,
-    ...(error.message === undefined ? [] : textRows(error.message, INDENT)),
+    // The error's message is text from the history file, drawn inside a host section: a glyph of the host's own in it is blanked.
+    ...(error.message === undefined ? [] : textRows(blankHostGlyphs(error.message), INDENT)),
     ...where,
   ];
 }
@@ -245,7 +260,7 @@ function attemptLines(model: NodeDetailModel): readonly NodeLine[] {
         .join('  ');
       return {
         kind: 'row',
-        left: `${INDENT}${attempt.glyph} attempt ${String(attempt.attempt)}  ${attempt.status.padEnd(WORD_WIDTH)}`,
+        left: `${INDENT}${statusCell(NODE_ROW_ROLE[attempt.status])} attempt ${String(attempt.attempt)}  ${attempt.status.padEnd(WORD_WIDTH)}`,
         right,
       };
     }),
@@ -284,7 +299,10 @@ function readyLines(read: NodeDetailRead): readonly NodeLine[] {
     ? []
     : [{ kind: 'notice', left: NODE_LOG_PARTIAL }];
   return [
-    { kind: 'heading', left: `${model.glyph} ${model.status}  ${model.label}` },
+    {
+      kind: 'heading',
+      left: `${glyph(NODE_ROW_ROLE[model.status])} ${model.status}  ${model.label}`,
+    },
     { kind: 'text', left: `${positionText(read.position)}  ·  type ${typeText(read)}` },
     ...authoredLine,
     ...ranOn,
@@ -314,7 +332,7 @@ function noAttemptLines(
   const skippedWhy = row.skippedReason === undefined ? SKIPPED : `${SKIPPED}: ${row.skippedReason}`;
   const why = row.status === 'skipped' ? skippedWhy : absence;
   return [
-    { kind: 'heading', left: `${row.glyph} ${row.status}  ${row.label}` },
+    { kind: 'heading', left: `${glyph(NODE_ROW_ROLE[row.status])} ${row.status}  ${row.label}` },
     { kind: 'text', left: `${positionText(load.position)}  ·  type ${type}` },
     { kind: 'text', left: why },
     { kind: 'text', left: `Tokens ${row.tokens.text}  ·  cost ${row.cost.text}` },
@@ -427,24 +445,26 @@ export function foldNodeKey(
  * for the lines it hides), and the message row, which keeps its line whether or not it has anything to say.
  */
 export function nodeBody(state: NodeTabState, width: number, room: number): readonly SheetLine[] {
-  const total = state.lines.length;
+  // The lines are derived from the row and the load, so they are written again here, in the glyph form the frame is drawn in: the copy the
+  // state holds was written when the page opened, outside any frame, and a key only needs its length (which does not depend on the form).
+  const lines = linesOf(state.row, state.load);
+  const total = lines.length;
   const height = Math.max(3, room - 1);
   const { start, end } = windowBody(total, state.cursor, height);
   const shown: SheetLine[] = [];
   for (let index = start; index < end; index += 1) {
-    const line = state.lines[index];
+    const line = lines[index];
     if (line === undefined) continue;
     const selected = index === state.cursor;
-    const left = `${selected ? POINTER : INDENT}${sanitizeInline(line.left)}`;
+    const left = `${selected ? pointer() : INDENT}${sanitizeInline(line.left)}`;
     shown.push({
       kind: selected ? 'selected' : line.kind,
       text: flushRow(left, sanitizeInline(line.right ?? ''), width),
     });
   }
-  if (start > 0 && shown.length > 0)
-    shown[0] = { kind: 'marker', text: `▲ ${String(start + 1)} more` };
+  if (start > 0 && shown.length > 0) shown[0] = { kind: 'marker', text: moreAboveText(start + 1) };
   if (end < total && shown.length > 0)
-    shown[shown.length - 1] = { kind: 'marker', text: `▼ ${String(total - end + 1)} more` };
+    shown[shown.length - 1] = { kind: 'marker', text: moreBelowText(total - end + 1) };
   const footer: SheetLine =
     state.message === undefined
       ? { kind: 'hint', text: clipLine(NODE_CHANGES_NO_RUN, width) }
@@ -452,9 +472,9 @@ export function nodeBody(state: NodeTabState, width: number, room: number): read
   return [...shown, footer];
 }
 
-/** The legend's items on the node page: the tab host's tab item, the page's own keys, and the way back last. */
+/** The legend's items on the node page: the tab host's tab item and the page's own keys. The way back ({@link NODE_KEYS.back}) is its key that leaves. */
 export function nodeLegendItems(state: NodeTabState, tabItem: LegendItem): readonly LegendItem[] {
   return state.load.kind === 'ready'
-    ? [tabItem, NODE_KEYS.scroll, NODE_KEYS.firstFailed, NODE_KEYS.back]
-    : [tabItem, NODE_KEYS.scroll, NODE_KEYS.back];
+    ? [tabItem, NODE_KEYS.scroll, NODE_KEYS.firstFailed]
+    : [tabItem, NODE_KEYS.scroll];
 }

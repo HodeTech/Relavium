@@ -6,6 +6,7 @@ import type { BudgetPromptContext } from '../gate/budget.js';
 import { pendingParkDisplays, type PendingBudgetGate } from '../gate/pending.js';
 import { keysetCursorOf, type KeysetCursor } from '../history/keyset-cursor.js';
 import { readPerRunOrDegrade } from '../history/per-run-read.js';
+import { isProjectRootHere } from '../history/project-root.js';
 
 /**
  * The open gates of the runs parked in THIS project
@@ -104,6 +105,12 @@ export interface RunGates {
    * the Home continues it with no decision ({@link isMediaOnlyPark}). Absent reads as none (a stand-in for a read that was not made).
    */
   readonly pendingMediaJobNodeIds?: readonly string[];
+  /**
+   * When the run last changed, as the run's own row says (`runs.updated_at`, an ISO timestamp): for a paused run the moment it parked (the
+   * park writes the status and this time together, and nothing touches a run that waits), so the Home can say how long it has waited with
+   * no read of the log beyond the one that finds its gates. Absent when the run record the read started from carries none.
+   */
+  readonly parkedSince?: string;
   /** The run's event log could not be read: `gates` is a stand-in, not an answer. */
   readonly degraded: boolean;
 }
@@ -151,7 +158,7 @@ function timeoutActions(events: readonly RunEvent[]): ReadonlyMap<string, RunGat
 /** One parked run's gates, read from its own log in one isolated read (a damaged log degrades this run only). */
 export function gatesOfRun(
   reader: Pick<RunGatesReader, 'loadRunStateEvents'>,
-  run: { readonly id: string; readonly workflowId: string },
+  run: { readonly id: string; readonly workflowId: string; readonly updatedAt?: string },
 ): RunGates {
   const read = readPerRunOrDegrade<Omit<RunGates, 'degraded'>>(
     {
@@ -186,7 +193,11 @@ export function gatesOfRun(
       };
     },
   );
-  return { ...read.value, degraded: read.degraded };
+  return {
+    ...read.value,
+    ...(run.updatedAt === undefined ? {} : { parkedSince: run.updatedAt }),
+    degraded: read.degraded,
+  };
 }
 
 /** What one scan of the parked runs has gathered so far. */
@@ -197,8 +208,9 @@ interface GatesScan {
 }
 
 /**
- * Fold one page of run summaries into the scan: a run of another directory is skipped whatever the reader handed back, a run past
- * `maxRuns` marks the scan truncated and ends the page, and a run whose log is damaged is kept degraded and named.
+ * Fold one page of run summaries into the scan: a run of another directory (or of none: a stored root that is not absolute is unrecorded,
+ * `isProjectRootHere`) is skipped whatever the reader handed back, a run past `maxRuns` marks the scan truncated and ends the page, and a
+ * run whose log is damaged is kept degraded and named.
  */
 function foldPage(
   scan: GatesScan,
@@ -208,7 +220,7 @@ function foldPage(
   maxRuns: number,
 ): void {
   for (const run of page) {
-    if (run.projectRoot !== projectRoot) continue;
+    if (!isProjectRootHere(run.projectRoot, projectRoot)) continue;
     if (scan.runs.length >= maxRuns) {
       scan.truncated = true;
       return;
@@ -256,7 +268,8 @@ export function readProjectRunGates(
 
 /**
  * One run's gates, when the run is parked in `projectRoot`: `undefined` for a run that does not exist, is not paused or belongs to
- * another directory. The run view re-reads with this after an answer, so the card shows what the log now says.
+ * another directory (or to none: `isProjectRootHere`). The run view re-reads with this after an answer, so the card shows what the log
+ * now says.
  */
 export function readRunGates(
   reader: Pick<RunGatesReader, 'loadRunDetail' | 'loadRunStateEvents'>,
@@ -264,7 +277,11 @@ export function readRunGates(
   runId: string,
 ): RunGates | undefined {
   const run = reader.loadRunDetail(runId);
-  if (run === undefined || run.status !== 'paused' || run.projectRoot !== projectRoot)
+  if (
+    run === undefined ||
+    run.status !== 'paused' ||
+    !isProjectRootHere(run.projectRoot, projectRoot)
+  )
     return undefined;
   return gatesOfRun(reader, run);
 }

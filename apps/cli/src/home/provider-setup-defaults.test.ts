@@ -144,7 +144,7 @@ describe('provider maintenance preserves model preference', () => {
     try {
       expect(await f.coordinator.run('explicit')).toMatchObject({ status: 'ready', changed: true });
       expect(f.writeDefaultModel).toHaveBeenCalledOnce();
-      expect(readFileSync(f.path, 'utf8')).toContain(KNOWN_PROVIDERS.openai.testModel);
+      expect(readFileSync(f.path, 'utf8')).toContain(KNOWN_PROVIDERS.openai.starterModel);
     } finally {
       f.close();
     }

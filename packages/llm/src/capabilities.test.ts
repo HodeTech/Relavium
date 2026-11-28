@@ -51,12 +51,15 @@ const TOOL_REQ: LlmRequest = {
 describe('per-MODEL capability gating (CR-51)', () => {
   // The provider-wide flags say what ANTHROPIC or OPENAI can do; `requestCapabilities` says what THIS MODEL
   // does, and the two disagree constantly within one provider. Before this, a request carrying tools for
-  // `gpt-3.5-turbo` — which the catalog records as rejecting tool definitions — passed the pre-skip as
-  // "supported", so the chain spent a real call to earn a 400 instead of skipping to a model that works.
+  // `gemini-3.5-live-translate-preview` — which the catalog records as rejecting tool definitions — passed the
+  // pre-skip as "supported", so the chain spent a real call to earn a 400 instead of skipping to a model that
+  // works. (This was `gpt-3.5-turbo` until the 2026-11-25 snapshot sync removed it; no OpenAI model records
+  // `toolCall: false` any more, and `modelAccepts` keys on the model id alone, so the Gemini row is the same
+  // shape: a provider that does tools, with one model of its own that does not.)
   //
   // These ids come from the shipped snapshot, so the tests fail loudly rather than vacuously if upstream ever
   // changes what they support (asserted below).
-  const TOOL_INCAPABLE = 'gpt-3.5-turbo'; // requestCapabilities: { toolCall: false, … }
+  const TOOL_INCAPABLE = 'gemini-3.5-live-translate-preview'; // requestCapabilities: { toolCall: false }
   const ATTACHMENT_INCAPABLE = 'deepseek-v4-pro'; // requestCapabilities: { attachment: false }
 
   const mediaReq = (model: string): LlmRequest => ({
@@ -187,30 +190,34 @@ describe('per-MODEL capability gating (CR-51)', () => {
   });
 
   it('the refusal names the MODEL as a field, and does not blame the provider', () => {
-    // `provider 'openai' does not support 'tools'` would be false twice for `gpt-3.5-turbo`: OpenAI does
-    // support tools, and the remedy is to change the model. The id is a field as well as being in the
+    // `provider 'gemini' does not support 'tools'` would be false twice for `gemini-3.5-live-translate-preview`:
+    // Gemini does support tools, and the remedy is to change the model. The id is a field as well as being in the
     // message, per error-handling.md's structured-context rule.
     try {
-      assertSupported('openai', ALL, { ...TOOL_REQ, model: TOOL_INCAPABLE });
+      assertSupported('gemini', ALL, { ...TOOL_REQ, model: TOOL_INCAPABLE });
       expect.unreachable('the incapable model must be refused');
     } catch (err) {
       expect(err).toBeInstanceOf(UnsupportedCapabilityError);
       if (err instanceof UnsupportedCapabilityError) {
         expect(err.modelId).toBe(TOOL_INCAPABLE);
         expect(err.capability).toBe('tools');
-        expect(err.message).not.toMatch(/^provider 'openai' does not support/);
+        expect(err.message).not.toMatch(/^provider 'gemini' does not support/);
       }
     }
   });
 
   it('labels an ATTACHMENT refusal as media, even when the request also carries tools', () => {
-    // `o3-mini` accepts tools and rejects attachments. Choosing the label from `req.tools` named the one
+    // `deepseek-v4-pro` accepts tools and rejects attachments (it was `o3-mini` until the 2026-11-25 snapshot
+    // sync removed it; no OpenAI model rejects attachments any more). Choosing the label from `req.tools` named the one
     // capability that was fine — and `capability` is a typed discriminant callers narrow on.
     // Captured, then asserted OUTSIDE any guard — `expect.unreachable` throws, and an `if (err instanceof
     // X)` inside the catch swallows it, so the test passed even when nothing was refused.
     let thrown: unknown;
     try {
-      assertMediaCapabilities('openai', ALL, { ...mediaReq('o3-mini'), tools: TOOL_REQ.tools });
+      assertMediaCapabilities('deepseek', ALL, {
+        ...mediaReq(ATTACHMENT_INCAPABLE),
+        tools: TOOL_REQ.tools,
+      });
     } catch (err) {
       thrown = err;
     }
@@ -328,7 +335,7 @@ describe('a CUSTOM endpoint is not governed by the shipped catalog (`CR-51` revi
   // tool-capable model under a well-known id inherited that id's OpenAI verdicts — refused at load and
   // skipped in the chain — which breaks the custom-`base_url` feature outright.
   const toolReq: LlmRequest = {
-    model: 'gpt-3.5-turbo', // a shipped id the snapshot describes as tool-INCAPABLE
+    model: 'gemini-3.5-live-translate-preview', // a shipped id the snapshot describes as tool-INCAPABLE
     messages: [{ role: 'user', content: [{ type: 'text', text: 'go' }] }],
     tools: [{ name: 'read_file', parameters: { type: 'object' } }],
   };

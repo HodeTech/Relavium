@@ -31,6 +31,7 @@ import type { GlobalOptions } from '../process/options.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { makePlainPrinter } from './chat.js';
 import { stringifyJsonLine } from '../render/sanitize.js';
+import { keyToken } from '../render/tui/legend.js';
 import {
   createEffectJournalPort,
   createEffectJournalStore,
@@ -90,6 +91,9 @@ export interface AgentRunCommandDeps {
   readonly now?: () => number;
   readonly uuid?: () => string;
 }
+
+/** What the command says on stderr before it reads a prompt from a terminal, which has no other sign of what it waits for. */
+export const STDIN_PROMPT_NOTE = `reading the prompt from stdin — finish with ${keyToken('Ctrl+D')} (${keyToken('Ctrl+Z')}, ${keyToken('Enter')} on Windows); for an interactive session run \`relavium\``;
 
 export async function agentRunCommand(
   args: AgentRunCommandArgs,
@@ -410,9 +414,7 @@ async function resolveOneShotInput(
   }
   // The one-shot prompt is the piped stdin; an empty stdin is a clean invocation fault (nothing to run).
   if (deps.io.stdinIsTty) {
-    deps.io.writeErr(
-      'reading the prompt from stdin — finish with Ctrl-D (Ctrl-Z, Enter on Windows); for an interactive session run `relavium`\n',
-    );
+    deps.io.writeErr(`${STDIN_PROMPT_NOTE}\n`);
   }
   const message = (
     await readAllStdin(deps.io.stdin, {
@@ -478,6 +480,8 @@ async function runOneShotTurn(
       session: built.session,
       tools: built.tools,
       workspaceDir: built.context.workingDir,
+      // No card is drawn in a one-shot, so there is no path to shorten.
+      commandPaths: undefined,
       ...(built.fsPolicy === undefined ? {} : { fsPolicy: built.fsPolicy }),
       // The one canonical no-TTY fail-closed policy (Step 14) — a one-shot has no user to approve, so every
       // governed dispatch is denied (never a hang / auto-approve). Shared with the non-interactive chat driver.

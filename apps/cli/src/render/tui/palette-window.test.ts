@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import {
   PALETTE_CHROME_ROWS,
   PALETTE_MIN_ROWS,
+  paletteGapCount,
   paletteLines,
   paletteRowBudget,
   type PaletteLine,
@@ -17,6 +18,17 @@ const entries = (lines: readonly PaletteLine[]): number[] =>
   lines.flatMap((line) => (line.kind === 'entry' ? [line.index] : []));
 const markers = (lines: readonly PaletteLine[]): string[] =>
   lines.flatMap((line) => (line.kind === 'marker' ? [line.text] : []));
+/** The entries with a blank row drawn BEFORE them (in the order the lines come): where the gaps are. */
+const gapsBefore = (lines: readonly PaletteLine[]): number[] =>
+  lines.flatMap((line, at) => {
+    const next = lines[at + 1];
+    return line.kind === 'gap' && next?.kind === 'entry' ? [next.index] : [];
+  });
+
+/** The Home's own groups: Work (4) · Set up (7) · Check (2) · End (2), 15 entries, three gaps between four groups. */
+const HOME_GROUP_STARTS: readonly boolean[] = Array.from({ length: 15 }, (_, index) =>
+  [0, 4, 11, 13].includes(index),
+);
 
 describe('a palette whose entries all fit is the list it always was', () => {
   it.each([
@@ -116,5 +128,129 @@ describe('the rows the landing keeps for its palette', () => {
     expect(paletteRowBudget(7, 14)).toBe(PALETTE_MIN_ROWS);
     for (let rows = 24; rows < 200; rows += 1)
       expect(paletteRowBudget(rows, 100), `${String(rows)} rows`).toBeLessThan(rows);
+  });
+});
+
+describe('the blank rows between the groups are the first thing to give way, all or none (ADR-0145 §7.1, MVP-11 Step 2 review C9c)', () => {
+  const lines = (maxRows: number | undefined, selected = 0) =>
+    paletteLines(15, selected, maxRows, HOME_GROUP_STARTS);
+
+  it('counts one gap before each group but the first', () => {
+    expect(paletteGapCount(HOME_GROUP_STARTS)).toBe(3);
+    expect(paletteGapCount([true, false, false])).toBe(0);
+    expect(paletteGapCount([])).toBe(0);
+    // A start on entry 0 is the list's own first row: it has nothing above it to separate from.
+    expect(paletteGapCount([true, true, true])).toBe(2);
+  });
+
+  it('draws every gap when every entry and every gap fits, and with no bound', () => {
+    for (const maxRows of [undefined, 3 + 15 + 3, 40]) {
+      const drawn = lines(maxRows);
+      expect(entries(drawn), String(maxRows)).toEqual(
+        Array.from({ length: 15 }, (_, index) => index),
+      );
+      expect(gapsBefore(drawn), String(maxRows)).toEqual([4, 11, 13]);
+      expect(markers(drawn)).toEqual([]);
+      expect(drawn).toHaveLength(15 + 3);
+    }
+  });
+
+  it('draws NO gap, not some of them, when the spare rows do not hold all three: two spare, one spare and none', () => {
+    // Two of three used to be drawn at 80×28 and 80×29: a list with one group set apart and the others run together.
+    for (const spare of [2, 1, 0]) {
+      const drawn = lines(3 + 15 + spare);
+      expect(entries(drawn), `${String(spare)} spare`).toEqual(
+        Array.from({ length: 15 }, (_, index) => index),
+      );
+      expect(gapsBefore(drawn), `${String(spare)} spare`).toEqual([]);
+      expect(markers(drawn)).toEqual([]);
+      expect(drawn.length + PALETTE_CHROME_ROWS).toBe(3 + 15);
+    }
+  });
+
+  it('draws all three the moment three rows are spare', () => {
+    const drawn = lines(3 + 15 + 3);
+    expect(gapsBefore(drawn)).toEqual([4, 11, 13]);
+    expect(drawn.length + PALETTE_CHROME_ROWS).toBe(3 + 15 + 3);
+  });
+
+  it('draws no gap once the entries themselves must be windowed, and a gap never costs an entry its row', () => {
+    for (let maxRows = PALETTE_CHROME_ROWS + 1; maxRows < 3 + 15; maxRows += 1)
+      for (let selected = 0; selected < 15; selected += 1) {
+        const drawn = lines(maxRows, selected);
+        expect(gapsBefore(drawn), `${String(maxRows)} rows`).toEqual([]);
+        expect(drawn.some((line) => line.kind === 'gap')).toBe(false);
+        expect(entries(drawn)).toContain(selected);
+        expect(drawn.length + PALETTE_CHROME_ROWS).toBeLessThanOrEqual(maxRows);
+      }
+  });
+
+  it('never windows the last entry (/exit) away with the gaps: highlighted, it is drawn at every height that fits it', () => {
+    for (let maxRows = PALETTE_MIN_ROWS; maxRows <= 3 + 15 + 3; maxRows += 1)
+      expect(entries(lines(maxRows, 14)), `${String(maxRows)} rows`).toContain(14);
+  });
+
+  it('is the list it always was when there are no groups', () => {
+    expect(paletteLines(14, 0, 17, [])).toEqual(paletteLines(14, 0, 17));
+    expect(paletteLines(14, 0, 17).some((line) => line.kind === 'gap')).toBe(false);
+  });
+});
+
+describe('a list that runs up (a chat): the lines come back bottom-up, and the markers point the way the hidden entries lie', () => {
+  it('reverses the entries: the last entry is the first line and the first entry the last', () => {
+    expect(entries(paletteLines(5, 0, undefined, [], 'up'))).toEqual([4, 3, 2, 1, 0]);
+    expect(entries(paletteLines(5, 0, undefined, [], 'down'))).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it('puts the gap between the same two groups, seen from the other side', () => {
+    const groups = [true, false, true, false, true];
+    const down = paletteLines(5, 0, undefined, groups, 'down');
+    const up = paletteLines(5, 0, undefined, groups, 'up');
+    expect(up).toEqual([...down].reverse());
+    expect(down.filter((line) => line.kind === 'gap')).toHaveLength(2);
+  });
+
+  it('marks the entries beyond the top with ▲ and the entries toward the prompt with ▼', () => {
+    // 15 rows, entry 0 highlighted: the hidden entries are the last three, which lie ABOVE the window on the screen.
+    const top = paletteLines(14, 0, 15, [], 'up');
+    expect(markers(top)).toEqual(['▲ 3 more']);
+    expect(top[0]).toMatchObject({ kind: 'marker', position: 'above' });
+    expect(entries(top)).toEqual([10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]);
+    // Entry 13 highlighted: the hidden entries are the first three, toward the prompt: BELOW the window.
+    const bottom = paletteLines(14, 13, 15, [], 'up');
+    expect(markers(bottom)).toEqual(['▼ 3 more']);
+    expect(bottom.at(-1)).toMatchObject({ kind: 'marker', position: 'below' });
+    expect(entries(bottom)).toEqual([13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3]);
+    // Both ends hidden: one marker each, the same counts as when the list runs down.
+    const middle = paletteLines(14, 7, 10, [], 'up');
+    expect(markers(middle)).toEqual(['▲ 4 more', '▼ 5 more']);
+    expect(entries(middle)).toEqual([9, 8, 7, 6, 5]);
+  });
+
+  it('never hides the highlighted entry and never draws more than the rows it was given, whichever way it runs', () => {
+    for (const layout of ['down', 'up'] as const)
+      for (let maxRows = PALETTE_CHROME_ROWS + 1; maxRows < 14 + PALETTE_CHROME_ROWS; maxRows += 1)
+        for (let selected = 0; selected < 14; selected += 1) {
+          const drawn = paletteLines(14, selected, maxRows, [], layout);
+          expect(
+            entries(drawn),
+            `${layout} ${String(maxRows)} rows, entry ${String(selected)}`,
+          ).toContain(selected);
+          expect(drawn.length + PALETTE_CHROME_ROWS).toBeLessThanOrEqual(maxRows);
+        }
+  });
+});
+
+describe('the rows the landing keeps for a palette with group gaps', () => {
+  it('asks for its entries, its gaps and its chrome: the Home’s 15 entries and 3 gaps are 21 rows', () => {
+    expect(paletteRowBudget(60, 15, 3)).toBe(15 + 3 + PALETTE_CHROME_ROWS);
+    expect(paletteRowBudget(60, 15, 3)).toBe(21);
+    expect(paletteRowBudget(60, 15)).toBe(18);
+  });
+
+  it('is capped by half the terminal as before, gaps or not: the strip and the notice are not asked for more', () => {
+    expect(paletteRowBudget(24, 15, 3)).toBe(12);
+    expect(paletteRowBudget(30, 15, 3)).toBe(15);
+    expect(paletteRowBudget(8, 15, 3)).toBe(PALETTE_MIN_ROWS);
   });
 });

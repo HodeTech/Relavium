@@ -1,40 +1,74 @@
 import {
-  MAX_RUN_SUMMARY_IDS,
+  isCorruptRunEventError,
+  isUnreadableRunEventLogError,
+  MAX_RUN_SUMMARY_PAGE,
+  RunHistoryReadError,
+  SessionDiscoveryBoundaryError,
   type RunHistoryReader,
   type RunRecord,
+  type RunSummaryRecord,
   type SessionStore,
 } from '@relavium/db';
-import type { AgentSessionRecord, UsageCoverage } from '@relavium/shared';
+import type { AgentSessionRecord, RunStatus, UsageCoverage } from '@relavium/shared';
 
-import { pendingHumanGates, type PendingGate } from '../gate/pending.js';
+import { pendingParkDisplays } from '../gate/pending.js';
 import { readPerRunOrDegrade } from '../history/per-run-read.js';
-import { scrubbedBounded } from '../history/run-detail-model.js';
+import { recordedProjectRoot } from '../history/project-root.js';
 import { readRunUsageCoverage, UNVERIFIED_USAGE } from '../history/usage-coverage.js';
 
 /**
  * The data aggregator behind the bare-invocation **Home** (2.5.B, [ADR-0054](../../../../docs/decisions/0054-cli-bare-invocation-interactive-home.md)).
- * It composes the durable `history.db` into one read-only {@link HomeSnapshot} the Home strip renders: an
- * **"Attention required"** section (pending human gates, then failed runs) above a neutral **"Continue"** list
- * (recent sessions / runs / agents). Pure aggregation over the injected read seams — it owns no db handle, clock,
- * or mutable state, so the sectioning + ordering is unit-tested without a UI.
+ * It composes the durable `history.db` into one read-only {@link HomeSnapshot}: the failed runs and the unreadable runs of
+ * **"Attention required"** (the parked runs are the controller's own read, `readParkedRuns`), the **sessions**, **runs** and agents, and
+ * the **true totals** of each section. Pure aggregation over the injected read seams — it owns no db handle and no mutable state, and its
+ * one clock is injected — so the sectioning, the ordering and the counting are unit-tested without a UI.
  *
- * **Bounded + indexed (the §2.I perf discharge).** Every list is an indexed top-N (`listSessions`/`listRuns`
- * `{ limit }`, served off the `idx_agent_sessions_updated` / `idx_runs_created` partial indexes), never a full
- * materialization; run rows are labeled by workflow slug through ONE batched, primary-key `loadWorkflowSlugs`
- * lookup; and "recent agents" is derived from the already-read sessions (the maintainer-chosen source — there is
- * no DB agent read seam), so the whole snapshot is a handful of bounded queries.
+ * - **This directory only** (MVP-11 unit 7; the maintainer: what belongs to the directory the Home was opened in is shown, the unrelated
+ *   is not). A session is this directory's when its `working_dir` is {@link HomeStoreDeps.workingDir} (what `/resume` calls "this
+ *   directory"); a run is when its `project_root` is {@link HomeStoreDeps.projectRoot} (the canonical root `relavium run` records). A run
+ *   that recorded no project, or a relative one, is not "here": unknown is not this directory. Every other directory stays reachable in
+ *   `/resume` (Tab) and `/history`.
+ * - **Each run is counted ONCE.** A paused run is Attention (the parked row the controller shows, or an unreadable row here). A failed run
+ *   created inside {@link ATTENTION_FAILED_WINDOW_MS} is Attention (a failed row, or an unreadable row). Every other run of this directory
+ *   is a Runs row, until its log turns out unreadable while this snapshot reads it: it is then an Attention item and no longer a run.
+ *   An unreadable run is one unreadable row, never also a parked, failed or Runs row.
+ * - **True totals** ({@link HomeTotals}): read-only `count(*)` seams over the same filters the lists use, never the loaded rows, so a
+ *   section that shows four rows of 32 says `28 more`. The Runs total is every run of this directory less the paused runs and the failed
+ *   runs of the window (its filter is exactly their complement), so no count reads a run's row for each run of the directory's history.
+ * - **Bounded + indexed.** Every list is an indexed top-N of this directory (`listRunSummaries` / `listSessions` off
+ *   `idx_runs_project_created` / `idx_agent_sessions_working_dir_updated`; the paused runs off `idx_runs_status`, so they cost the paused
+ *   runs and not the directory's history; plans pinned in `harness/perf-budget.e2e.test.ts`); run rows are labeled through ONE batched
+ *   primary-key `loadWorkflowSlugs`; the per-run log reads are one per loaded paused run and one per run a list shows (or finds
+ *   unreadable); "recent agents" is derived from the already-read sessions.
+ * - **Text stays raw here.** A slug, a title and an id are returned as stored and scrubbed by the view where it draws them; a reason why a
+ *   run cannot be read is a closed word ({@link UnreadableRunReason}), never an error's message (which may carry a path or stored text).
  */
 
-/** The longest a {@link HomeRunRow.project} label is, in characters. */
-export const PROJECT_LABEL_MAX_CHARS = 64;
-
-/** Default top-N per Home list — the read-only strip shows a glanceable handful, not the full history. */
+/** Default top-N per Home list: the newest eight of each (the parked rows the controller keeps are eight too, `PARKED_RUNS_MAX`). */
 export const DEFAULT_HOME_LIMIT = 8;
 
-/** A recent chat session row (the agent-first primary entity of the Home). */
+/**
+ * The most rows one Home list loads. A list of runs reads a page of twice its limit (room for the rows found unreadable on the way), and
+ * a summary page holds at most {@link MAX_RUN_SUMMARY_PAGE} rows.
+ */
+export const HOME_LIMIT_MAX = MAX_RUN_SUMMARY_PAGE / 2;
+
+/**
+ * How long a failed run stays under "Attention required": seven days from when it was CREATED (the maintainer's ruling, 2026-11-26).
+ * After that it is history: it is listed as the run it is in the Runs section (and in `/history`), not dropped. The bound is on
+ * `created_at` because that is what `idx_runs_project_created` / `idx_runs_status` order by. The consequence: a run created more than seven
+ * days ago that fails NOW is not Attention, it is a Runs row with the status `failed` from the moment it fails. A run that waits at a human
+ * gate can last days, so this happens (round 2 measured it: a run created eight days ago that failed a minute ago is a Runs row, Attention
+ * zero). The rule is the ruling, kept as ruled; a window on the time of the failure would need `completed_at` ordered by an index.
+ */
+export const ATTENTION_FAILED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * A recent chat session row (the agent-first primary entity of the Home). It carries no directory: every session the Home lists is this
+ * directory's (`HomeStoreDeps.workingDir`), and a session row draws none.
+ */
 export interface HomeSessionRow {
   readonly sessionId: string;
-  readonly workingDir: string;
   readonly title: string | undefined;
   readonly agentSlug: string;
   readonly modelId: string | undefined;
@@ -61,29 +95,6 @@ export interface HomeRunRow {
   readonly totalCostMicrocents: number;
   readonly usageCoverage?: UsageCoverage;
   readonly unpricedCalls?: number;
-  /**
-   * Present only on a run that was recorded for ANOTHER project than the one this Home was opened in ({@link HomeStoreDeps.projectRoot}):
-   * that project's root, `~`-shortened when it lies under the home directory and bounded ({@link PROJECT_LABEL_MAX_CHARS}), never an
-   * absolute home path. Absent for this Home's own project, for a run that recorded none, and when the Home was not told its project, so an
-   * absent marker never claims "same project". The strip draws `other project` for it (`runLabel`).
-   */
-  readonly project?: string;
-}
-
-/** A pending human gate awaiting resolution — the most urgent "attention" item. */
-export interface HomeGateRow {
-  readonly runId: string;
-  readonly workflowSlug: string | undefined;
-  readonly gateId: string;
-  readonly gateType: PendingGate['gateType'];
-  readonly nodeId: string;
-  readonly message: string;
-  /**
-   * The gate's deadline, or `undefined` if it never expires. **May be in the PAST in Phase 1:** the
-   * gate-timeout timer is in-process, and a gate whose deadline elapsed while no engine was running stays
-   * `pending` (the crash-reconciliation re-arm is deferred), so the renderer owns the overdue styling.
-   */
-  readonly expiresAt: string | undefined;
 }
 
 /** A recently-used agent, derived from the recent sessions. */
@@ -93,50 +104,110 @@ export interface HomeAgentRow {
   readonly lastUsedAt: string;
 }
 
+/**
+ * Why a run's log cannot be read: a CLOSED vocabulary, from what the per-run read can tell apart ({@link unreadableReasonOf}). Never an
+ * error's message: a message can carry a path, an event type a hand-edited row holds, or other stored text.
+ *
+ * - `corrupt-row`: a stored row is damaged (`CorruptRunEventError`); upgrading does not help, and the run is not changed by reading it.
+ * - `newer-version`: a row was written by a newer version of Relavium (`UnreadableRunEventLogError`); updating makes it readable.
+ * - `could-not-read`: the read degraded for a reason neither of those names, or the error's type could not be read without throwing.
+ */
+export type UnreadableRunReason = 'corrupt-row' | 'newer-version' | 'could-not-read';
+
+/**
+ * A run of this directory whose event log could not be read while building this snapshot (#W15-15): its gate detail or its usage is
+ * MISSING, not absent. Its identity is what the run's own listing row said (its status and creation time, and its workflow's slug when the
+ * slug lookup named it); each is optional in the type, and absent when it is not known.
+ */
+export interface HomeUnreadableRun {
+  readonly runId: string;
+  readonly workflowSlug?: string;
+  readonly status?: RunStatus;
+  readonly createdAt?: string;
+  readonly reason: UnreadableRunReason;
+}
+
+/**
+ * This directory's TRUE totals, each run counted once (see the module notes), independent of how many rows a list loaded:
+ *
+ * - `attention` = every paused run + every failed run created inside {@link ATTENTION_FAILED_WINDOW_MS} + the runs of the Runs section
+ *   whose log this snapshot found unreadable. Its rows are the controller's parked rows, {@link HomeSnapshot.unreadableRuns} and
+ *   {@link HomeSnapshot.failedRuns}.
+ * - `runs` = every other run of this directory (not paused, not failed inside the window) less those found unreadable.
+ * - `sessions` = this directory's live sessions.
+ *
+ * The invariant every section keeps: the rows it shows + its `N more` = its total. `attention + runs` and `sessions` do not depend on the
+ * loaded limit at all; the split between `attention` and `runs` moves only by the unreadable runs a snapshot found, which it shows as
+ * Attention rows. The counts and the lists are separate statements on one connection: while another process writes between them, one
+ * snapshot can be off by the runs that moved, and the next read (the change token moved) corrects it; `runs` is never below zero, and a
+ * view clamps `N more` at zero.
+ */
+export interface HomeTotals {
+  readonly attention: number;
+  readonly sessions: number;
+  readonly runs: number;
+}
+
 export interface HomeSnapshot {
-  /**
-   * "Attention required" — pending human gates FIRST (ordered by their run's recency), then failed runs
-   * (most-recent first). Gate order tracks the paused RUN's creation time (`created_at DESC`) — a reliable
-   * proxy for start time on a local run (both are set in one transaction), not the gate's own raise time (a fine
-   * proxy for a small, glanceable list; true gate-recency would need `pendingHumanGates` to carry the raise time).
-   */
-  readonly attention: {
-    readonly gates: readonly HomeGateRow[];
-    readonly failedRuns: readonly HomeRunRow[];
-  };
-  /** "Continue" — the neutral recency lists (failed/gated runs are lifted into `attention`, not repeated here). */
+  /** "Attention required": the failed runs of this directory created inside the window and readable, newest first. */
+  readonly failedRuns: readonly HomeRunRow[];
+  /** This directory's sessions, most recently updated first. */
   readonly recentSessions: readonly HomeSessionRow[];
+  /** This directory's Runs section, newest first: no paused run, no failed run inside the window, no unreadable run. */
   readonly recentRuns: readonly HomeRunRow[];
   readonly recentAgents: readonly HomeAgentRow[];
   /**
-   * Runs whose event log could not be read while building this snapshot (#W15-15). Their gate detail is
-   * MISSING, not absent: without this the Home showed a damaged run as an ordinary run with nothing pending,
-   * and the listing is where a user would come to find out which run is broken. Empty on the healthy path.
+   * The runs whose event log could not be read while building this snapshot (#W15-15), newest first, each once: a paused run among the
+   * newest {@link DEFAULT_HOME_LIMIT} (the parked rows the controller reads), a failed run of the window, or a run of the Runs section the
+   * snapshot read. Empty on the healthy path.
    */
-  readonly unreadableRunIds: readonly string[];
-  /** True when there is NOTHING to show (a fresh install) — the UI renders a first-run welcome, not empty strips. */
+  readonly unreadableRuns: readonly HomeUnreadableRun[];
+  /**
+   * How many of the sessions this snapshot tried to list were skipped because their row does not parse (a damaged `context_json` or
+   * `agent_snapshot`): the sessions' counterpart of {@link HomeSnapshot.unreadableRuns}, as a number, because no row of theirs can be
+   * drawn (a row that cannot be read names nothing). Absent on the healthy path. {@link HomeTotals.sessions} does not count them.
+   */
+  readonly unreadableSessions?: number;
+  /** This directory's true totals ({@link HomeTotals}). */
+  readonly totals: HomeTotals;
+  /** True when this directory has NOTHING to show (every total is zero) — the Home has no work page, and its landing says so (no `↓`). */
   readonly isEmpty: boolean;
 }
 
 /** The read seams the Home aggregates over — narrowed so a test can stub exactly these reads. */
 export interface HomeStoreDeps {
-  readonly sessions: Pick<SessionStore, 'listSessions' | 'loadSessionCostBreakdown'>;
+  readonly sessions: Pick<
+    SessionStore,
+    'listSessions' | 'countSessions' | 'loadSessionCostBreakdown'
+  >;
   readonly runs: Pick<
     RunHistoryReader,
-    'listRuns' | 'loadRunStateEvents' | 'loadWorkflowSlugs' | 'visitRunEventsForReplay'
-  > &
-    Partial<Pick<RunHistoryReader, 'loadRunSummariesByIds'>>;
+    | 'listRunSummaries'
+    | 'countRunSummaries'
+    | 'loadRunStateEvents'
+    | 'loadWorkflowSlugs'
+    | 'visitRunEventsForReplay'
+  >;
   /**
-   * The project root this Home was opened in (the one `relavium run` records as a run's project): a run recorded elsewhere is marked
-   * ({@link HomeRunRow.project}). Absent, or with a `runs` reader that has no `loadRunSummariesByIds`, no row is marked and nothing
-   * extra is read.
+   * The directory this Home was opened in as a RUN records it: its canonical spelling (`projectRootOf`; `driveHome` passes its policy's
+   * workspace, the root the run host, the parked rows and the History tab use too): a run is this directory's when its `project_root` is
+   * this text. REQUIRED: there is no unscoped Home; a value that is not an absolute path is refused before any read
+   * (`RunHistoryReadError`, `invalid_filter`).
    */
-  readonly projectRoot?: string | undefined;
-  /** The home directory, so a project root under it is shown as `~/…` and never as an absolute home path. */
-  readonly homeDir?: string | undefined;
+  readonly projectRoot: string;
   /**
-   * Top-N per list (default {@link DEFAULT_HOME_LIMIT}). A positive integer; a non-positive value is clamped to
-   * `1` (unlike the DB-layer `≤0 ⇒ unbounded` convention, `0` is not a meaningful Home request).
+   * The same directory as a SESSION records it: the canonical workspace a chat started here keeps as its `working_dir`, the very value
+   * the `/resume` picker and the `/agents` tab call "this directory" (`driveHome` passes `fsPolicyWorkspace(fsPolicy)`, the same value
+   * as {@link projectRoot}; it can differ from the cwd's spelling, e.g. a symlinked temp directory). REQUIRED; a value that is not an
+   * absolute path is refused before any read (`SessionDiscoveryBoundaryError`).
+   */
+  readonly workingDir: string;
+  /** The clock (epoch ms) the failed-run window is measured against, read once per snapshot. */
+  readonly now: () => number;
+  /**
+   * Top-N per list (default {@link DEFAULT_HOME_LIMIT}). A positive integer; a non-positive value is clamped to `1` (unlike the DB-layer
+   * `≤0 ⇒ unbounded` convention, `0` is not a meaningful Home request), one above {@link HOME_LIMIT_MAX} to that, and a non-integer
+   * falls back to the default.
    */
   readonly limit?: number;
 }
@@ -151,127 +222,217 @@ export function createHomeStore(deps: HomeStoreDeps): HomeStore {
   return { read: () => buildHomeSnapshot(deps) };
 }
 
+/** `deps.limit` as a safe list size: the default for a non-integer, `1` for `≤0`, {@link HOME_LIMIT_MAX} at most. */
+function homeLimit(requested: number | undefined): number {
+  const value = requested ?? DEFAULT_HOME_LIMIT;
+  if (!Number.isInteger(value)) return DEFAULT_HOME_LIMIT;
+  return Math.min(Math.max(value, 1), HOME_LIMIT_MAX);
+}
+
 /**
- * Aggregate one {@link HomeSnapshot} from the read seams. A failed or human-gated run is lifted into the
- * "attention" section and EXCLUDED from the neutral "Continue" runs, so it is never shown twice.
+ * The closed word for why a per-run read degraded: a log row a newer version wrote, a damaged row, or (anything else) it could not be
+ * read. Reads only the error's TYPE (by its code, bundling-safe), never its message. TOTAL: reading the type of a thrown value runs its
+ * code (a `code` getter, a Proxy's traps), and a value whose type cannot be read without throwing is `could-not-read`, never a throw out
+ * of the snapshot (the per-run read already judged it a per-run condition when it degraded).
+ */
+export function unreadableReasonOf(error: unknown): UnreadableRunReason {
+  try {
+    if (isUnreadableRunEventLogError(error)) return 'newer-version';
+    if (isCorruptRunEventError(error)) return 'corrupt-row';
+  } catch {
+    // The type itself could not be read: the closed word for "neither of those".
+  }
+  return 'could-not-read';
+}
+
+/**
+ * One per-run read, isolated by `readPerRunOrDegrade` (which alone decides what is a per-run condition: any other fault still
+ * propagates), with the reason it degraded when it did. The error itself is kept only long enough to name its type.
+ */
+function readOrReason<T>(
+  fallback: T,
+  read: () => T,
+): { readonly value: T; readonly reason?: UnreadableRunReason } {
+  let caught: unknown;
+  const result = readPerRunOrDegrade(fallback, () => {
+    try {
+      return read();
+    } catch (error) {
+      caught = error;
+      throw error;
+    }
+  });
+  return result.degraded
+    ? { value: result.value, reason: unreadableReasonOf(caught) }
+    : { value: result.value };
+}
+
+/** A run the snapshot read and found unreadable, with the listing row that names it. */
+interface FoundUnreadable {
+  readonly run: RunSummaryRecord;
+  readonly reason: UnreadableRunReason;
+}
+
+type RunUsage = Pick<HomeRunRow, 'totalCostMicrocents' | 'usageCoverage' | 'unpricedCalls'>;
+
+/** The runs of one list that a section shows, and the ones it found unreadable on the way. */
+interface ListRead {
+  readonly rows: readonly { readonly run: RunSummaryRecord; readonly usage: RunUsage }[];
+  readonly unreadable: readonly FoundUnreadable[];
+}
+
+/**
+ * The first `limit` READABLE runs of `records` (newest first), each with its usage read from its own log; a run whose log cannot be read
+ * is set aside as unreadable and the next one is read instead. A run already placed by an earlier list (`seen`) is skipped, so a run that
+ * changed status between two statements is still placed once. Reads stop once `limit` rows are kept.
+ */
+function readRows(
+  deps: HomeStoreDeps,
+  records: readonly RunSummaryRecord[],
+  limit: number,
+  seen: Set<string>,
+): ListRead {
+  const rows: { run: RunSummaryRecord; usage: RunUsage }[] = [];
+  const unreadable: FoundUnreadable[] = [];
+  for (const run of records) {
+    if (rows.length >= limit) break;
+    if (seen.has(run.id)) continue;
+    seen.add(run.id);
+    const read = readOrReason<RunUsage>(
+      {
+        totalCostMicrocents: run.totalCostMicrocents,
+        usageCoverage: UNVERIFIED_USAGE,
+        unpricedCalls: 0,
+      },
+      () => {
+        const usage = readRunUsageCoverage(deps.runs, run.id);
+        return {
+          totalCostMicrocents: usage.totalCostMicrocents,
+          usageCoverage: usage.usageCoverage,
+          unpricedCalls: usage.unpricedCalls,
+        };
+      },
+    );
+    if (read.reason === undefined) rows.push({ run, usage: read.value });
+    else unreadable.push({ run, reason: read.reason });
+  }
+  return { rows, unreadable };
+}
+
+/**
+ * The newest `limit` paused runs of this directory whose log cannot be read. The same runs, in the same order, as the parked rows the
+ * controller reads (`readProjectRunGates` pages the project's paused runs newest first), and the same fold of the log
+ * (`pendingParkDisplays` over `loadRunStateEvents`), so a run the controller drops as degraded is the one named here.
+ */
+function unreadablePaused(
+  deps: HomeStoreDeps,
+  limit: number,
+  seen: Set<string>,
+): readonly FoundUnreadable[] {
+  const found: FoundUnreadable[] = [];
+  for (const run of deps.runs.listRunSummaries({
+    projectRoot: deps.projectRoot,
+    status: 'paused',
+    limit,
+  })) {
+    seen.add(run.id);
+    const read = readOrReason(undefined, () => {
+      pendingParkDisplays(deps.runs.loadRunStateEvents(run.id));
+      return undefined;
+    });
+    if (read.reason !== undefined) found.push({ run, reason: read.reason });
+  }
+  return found;
+}
+
+/** Newest first by `(createdAt, id)`, the order every list of runs is read in. */
+function newestFirst(a: FoundUnreadable, b: FoundUnreadable): number {
+  const at = Date.parse(b.run.createdAt) - Date.parse(a.run.createdAt);
+  if (at !== 0 && !Number.isNaN(at)) return at;
+  if (a.run.id === b.run.id) return 0;
+  return a.run.id < b.run.id ? 1 : -1;
+}
+
+/**
+ * Aggregate one {@link HomeSnapshot} of this directory from the read seams. See the module notes for what is read, where each run is
+ * placed, and how each total is counted.
  */
 export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
-  // Coerce `deps.limit` to a safe positive integer for the bounded read: a non-integer (NaN, a fraction,
-  // Infinity) is invalid and falls back to the default; a `≤0` clamps to the smallest glanceable strip (1) — the
-  // DB `≤0 ⇒ unbounded` convention must not leak to a Home caller, and `0` is not a meaningful Home request.
-  const requested = deps.limit ?? DEFAULT_HOME_LIMIT;
-  const limit = Number.isInteger(requested) ? Math.max(requested, 1) : DEFAULT_HOME_LIMIT;
-
-  const recentSessionRecords = deps.sessions.listSessions({ limit });
-  const failedRunRecords = deps.runs.listRuns({ status: 'failed', limit });
-  // A budget-paused run carries no human gate (pendingHumanGates excludes budget gates), so it stays in "Continue".
-  // The DISPLAYED gates come from the most-recent `limit` paused runs via a BOUNDED db read (not an in-memory
-  // filter over all active history); a paused run accumulates indefinitely (a gate never resolved, a crash before
-  // the terminal) and each gate check costs a `loadRunStateEvents`, so the shown fan-out is capped. Derive each ONCE.
-  const displayedPausedRuns = deps.runs.listRuns({ status: 'paused', limit });
-  // Per-run isolation: one unreadable row in ONE run used to throw straight out of this loop, so the Home
-  // never mounted and every healthy run vanished with the damaged one. It now degrades to "no gate detail"
-  // for that run and keeps building. See `readPerRunOrDegrade`.
-  const unreadableRunIds: string[] = [];
-  const readGates = (runId: string): readonly PendingGate[] => {
-    const read = readPerRunOrDegrade<readonly PendingGate[]>([], () =>
-      pendingHumanGates(deps.runs.loadRunStateEvents(runId)),
+  const projectRoot = deps.projectRoot;
+  // There is no unscoped Home: a directory that is not an absolute path is refused before any read, with the reader's own typed error
+  // (the reads refuse an empty one too; this says it once, first, for every list and count alike). A relative spelling (`.`) is what a
+  // run recorded before roots were canonical: matched as text it would make every directory's `.` runs this Home's (`recordedProjectRoot`).
+  if (recordedProjectRoot(projectRoot) === undefined) {
+    throw new RunHistoryReadError(
+      'invalid_filter',
+      'the Home reads the directory it was opened in',
     );
-    // #W15-15: collected, not discarded. A damaged run otherwise rendered as an ordinary run with nothing to
-    // do — the Home being exactly where a user would look to find out which run is broken.
-    if (read.degraded) unreadableRunIds.push(runId);
-    return read.value;
-  };
-  const gatesByRun = displayedPausedRuns.map((run) => ({
-    run,
-    pending: readGates(run.id),
-  }));
-
-  // "Attention" lifts a FAILED run (by STATUS — any of them, so a failure beyond the cap can never leak into
-  // "Continue") or a paused run carrying ≥1 human gate. The DISPLAYED gated ids drive the over-fetch math.
-  const displayedGatedRunIds = new Set(
-    gatesByRun.filter((g) => g.pending.length > 0).map((g) => g.run.id),
-  );
-  // Over-fetch the recent window by the rows we KNOW we will strip (the displayed failed + the displayed gated),
-  // so after the attention rows are removed "Continue" still fills to `limit` whenever that many neutral runs
-  // exist below the cutoff — a burst of failures must not starve Continue.
-  const overFetch = failedRunRecords.length + displayedGatedRunIds.size;
-  const recentRunRecords = deps.runs.listRuns({ limit: limit + overFetch });
-
-  // Close the gated-leak: a paused+human-gated run BEYOND the display cap could still fall inside the Continue
-  // window and leak in. So the EXCLUSION set is widened to every paused run that appears in `recentRunRecords`
-  // (a BOUNDED window) — checking the gates of the not-yet-checked ones. A budget-paused run carries no human
-  // gate, so it correctly STAYS in Continue. (A neutral run-burst deeper than the over-fetch margin can still
-  // under-fill Continue; that is the accepted glanceable edge — it never leaks an attention run.)
-  const checkedRunIds = new Set(displayedPausedRuns.map((r) => r.id));
-  const humanGatedRunIds = new Set(displayedGatedRunIds);
-  for (const run of recentRunRecords) {
-    if (run.status !== 'paused' || checkedRunIds.has(run.id)) continue; // not a paused candidate, or already checked
-    const pending = readGates(run.id);
-    if (pending.length > 0) humanGatedRunIds.add(run.id);
   }
+  const workingDir = deps.workingDir;
+  // The sessions' directory by the same rule: an absolute path, or no read.
+  if (recordedProjectRoot(workingDir) === undefined) throw new SessionDiscoveryBoundaryError();
+  const limit = homeLimit(deps.limit);
+  // The window's lower bound, from ONE reading of the clock, so the lists and the counts draw the same line. A time bound is whole
+  // milliseconds: a fractional clock is floored; a clock that is not a finite number is refused before any read, with the reader's own
+  // error for a bound it cannot use (it would refuse the bound anyway, but only after the paused runs had been read).
+  const clock = deps.now();
+  if (!Number.isFinite(clock)) {
+    throw new RunHistoryReadError(
+      'invalid_filter',
+      'a time bound must be a safe integer of epoch milliseconds',
+    );
+  }
+  const since = Math.floor(clock) - ATTENTION_FAILED_WINDOW_MS;
+  // A page of twice the limit: the rows a section shows, and room for the unreadable runs found on the way. `homeLimit` holds the limit at
+  // {@link HOME_LIMIT_MAX} (half a summary page), so twice it is never more than a page the reader accepts.
+  const page = limit * 2;
+  const seen = new Set<string>();
 
-  // ONE batched, primary-key slug lookup for every run we will render (recent ∪ failed ∪ displayed paused), deduped.
+  const pausedUnreadable = unreadablePaused(deps, limit, seen);
+  const failed = readRows(
+    deps,
+    deps.runs.listRunSummaries({ projectRoot, status: 'failed', since, limit: page }),
+    limit,
+    seen,
+  );
+  const recent = readRows(
+    deps,
+    deps.runs.listRunSummaries({
+      projectRoot,
+      exceptStatus: 'paused',
+      failedOnlyBefore: since,
+      limit: page,
+    }),
+    limit,
+    seen,
+  );
+  const unreadable = [...pausedUnreadable, ...failed.unreadable, ...recent.unreadable].sort(
+    newestFirst,
+  );
+
+  // ONE batched, primary-key slug lookup for every run the snapshot names.
   const slugById = deps.runs.loadWorkflowSlugs([
     ...new Set(
-      [...recentRunRecords, ...failedRunRecords, ...displayedPausedRuns].map((r) => r.workflowId),
+      [...failed.rows.map((row) => row.run), ...recent.rows.map((row) => row.run)]
+        .concat(unreadable.map((found) => found.run))
+        .map((run) => run.workflowId),
     ),
   ]);
-  const slugOf = (run: RunRecord): string | undefined => slugById.get(run.workflowId);
+  const runRow = ({ run, usage }: ListRead['rows'][number]): HomeRunRow => ({
+    ...toRunRow(run, slugById.get(run.workflowId)),
+    ...usage,
+  });
 
-  const gates: HomeGateRow[] = gatesByRun.flatMap(({ run, pending }) =>
-    pending.map((gate) => ({
-      runId: run.id,
-      workflowSlug: slugOf(run),
-      gateId: gate.gateId,
-      gateType: gate.gateType,
-      nodeId: gate.nodeId,
-      message: gate.message,
-      expiresAt: gate.expiresAt,
-    })),
-  );
-
-  const projectByRun = readOtherProjects(deps, [...failedRunRecords, ...recentRunRecords]);
-  const usageByRun = new Map<string, ReturnType<typeof readRunUsageCoverage>>();
-  const runRow = (run: RunRecord): HomeRunRow => {
-    let usage = usageByRun.get(run.id);
-    if (usage === undefined) {
-      const read = readPerRunOrDegrade(
-        {
-          totalCostMicrocents: run.totalCostMicrocents,
-          usageCoverage: UNVERIFIED_USAGE,
-          unpricedCalls: 0,
-          nodes: new Map(),
-        },
-        () => readRunUsageCoverage(deps.runs, run.id),
-      );
-      usage = read.value;
-      if (read.degraded) unreadableRunIds.push(run.id);
-      usageByRun.set(run.id, usage);
-    }
-    const project = projectByRun.get(run.id);
-    return {
-      ...toRunRow(run, slugOf(run)),
-      totalCostMicrocents: usage.totalCostMicrocents,
-      usageCoverage: usage.usageCoverage,
-      unpricedCalls: usage.unpricedCalls,
-      ...(project === undefined ? {} : { project }),
-    };
-  };
-  const failedRuns = failedRunRecords.map(runRow);
-  const recentRuns = recentRunRecords
-    // Discover strict coverage failures before filtering attention rows, including future event types.
-    .map(runRow)
-    // Never repeat an attention row. A run whose log could not be read is an attention row too (#W15-15) —
-    // without this it rendered in BOTH strips, once as "event log unreadable" and once as an ordinary run.
-    .filter(
-      (run) =>
-        run.status !== 'failed' &&
-        !humanGatedRunIds.has(run.runId) &&
-        !unreadableRunIds.includes(run.runId),
-    )
-    .slice(0, limit); // trim the over-fetch back to the top-N survivors
-
+  // One session row that does not parse must not throw the whole Home read out (the runs have their unreadable lane for the same reason): it
+  // is skipped and counted.
+  let unreadableSessions = 0;
+  const recentSessionRecords = deps.sessions.listSessions({
+    limit,
+    workingDir,
+    onUnreadable: () => {
+      unreadableSessions += 1;
+    },
+  });
   const recentSessions = recentSessionRecords.map((session) => {
     const costs = deps.sessions.loadSessionCostBreakdown(session.id);
     return {
@@ -281,86 +442,56 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
       unpricedCalls: costs.rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
     };
   });
-  const recentAgents = deriveRecentAgents(recentSessionRecords);
 
-  // `recentAgents` is intentionally omitted: it derives from `recentSessionRecords`, so a non-empty agent list
-  // implies non-empty `recentSessions`, which already makes `isEmpty` false. (If agents ever get a separate DB
-  // read seam, add the check here.)
-  const isEmpty =
-    recentSessions.length === 0 &&
-    recentRuns.length === 0 &&
-    gates.length === 0 &&
-    failedRuns.length === 0 &&
-    // A Home whose only content is a damaged run must not render the fresh-install welcome (#W15-15) — that
-    // would be the "no data" answer this finding is about, in its most misleading form.
-    unreadableRunIds.length === 0;
+  // The totals: the same filters as the lists, counted. The runs of the Runs section found unreadable move to Attention.
+  const moved = recent.unreadable.length;
+  // Three counts, each a range of an index and none of them a residual filter over the project's history (MVP-11 unit 7 round 2: the
+  // Runs-section filter counted 50,000 table rows for a 50,000-run project on every refresh): the paused runs and the failed runs of the
+  // window off `idx_runs_status`, then EVERY run of the project off `idx_runs_project_created` without reading a run's row. The Runs
+  // section is the rest: its filter (not paused; not failed inside the window) is exactly the complement of the other two within the
+  // project, which are disjoint. All is counted LAST, so a run that changes status between the statements is never subtracted without
+  // being counted; a run soft-deleted between them could still make the difference negative, and a total is never below zero.
+  const paused = deps.runs.countRunSummaries({ projectRoot, status: 'paused' });
+  const failedInWindow = deps.runs.countRunSummaries({ projectRoot, status: 'failed', since });
+  const everyRun = deps.runs.countRunSummaries({ projectRoot });
+  const totals: HomeTotals = {
+    attention: paused + failedInWindow + moved,
+    // The sessions a row of which could not be read are not in the list, so they are not in its total either (rows shown + `N more` = total).
+    sessions: Math.max(0, deps.sessions.countSessions({ workingDir }) - unreadableSessions),
+    runs: Math.max(0, everyRun - paused - failedInWindow - moved),
+  };
 
+  const failedRuns = failed.rows.map(runRow);
+  const recentRuns = recent.rows.map(runRow);
   return {
-    attention: { gates, failedRuns },
+    failedRuns,
     recentSessions,
     recentRuns,
-    recentAgents,
-    // Deduped: the second pass re-checks paused runs the first pass may already have found unreadable.
-    unreadableRunIds: [...new Set(unreadableRunIds)],
-    isEmpty,
+    recentAgents: deriveRecentAgents(recentSessionRecords),
+    unreadableRuns: unreadable.map(({ run, reason }) => toUnreadableRun(run, slugById, reason)),
+    ...(unreadableSessions === 0 ? {} : { unreadableSessions }),
+    totals,
+    // Nothing counted AND nothing listed: a Home whose only content is a damaged run is not a fresh install (#W15-15), and a row read in a
+    // race with a count never leaves a Home that holds it reading as empty.
+    isEmpty:
+      totals.attention + totals.sessions + totals.runs === 0 &&
+      recentSessions.length + failedRuns.length + recentRuns.length + unreadable.length === 0,
   };
 }
 
-/**
- * The projects of the runs among `records` that were recorded for another project than this Home's, as a map from run id to the label
- * the row carries. One batched primary-key read per {@link MAX_RUN_SUMMARY_IDS} ids (the reader refuses a larger set); nothing is read
- * when the Home was not told its project or the reader cannot answer. A run that recorded no project is not in the map: unknown is not
- * "another project".
- */
-function readOtherProjects(
-  deps: HomeStoreDeps,
-  records: readonly RunRecord[],
-): ReadonlyMap<string, string> {
-  const other = new Map<string, string>();
-  const here = deps.projectRoot;
-  const load = deps.runs.loadRunSummariesByIds;
-  if (here === undefined || load === undefined) return other;
-  const ids = [...new Set(records.map((run) => run.id))];
-  for (let from = 0; from < ids.length; from += MAX_RUN_SUMMARY_IDS) {
-    const summaries = load(ids.slice(from, from + MAX_RUN_SUMMARY_IDS));
-    for (const [runId, summary] of summaries) {
-      if (summary.projectRoot !== undefined && summary.projectRoot !== here)
-        other.set(runId, projectLabel(summary.projectRoot, deps.homeDir));
-    }
-  }
-  return other;
-}
-
-/** `value` without its trailing path separators, by a scan from the end (a trailing-run regular expression backtracks over every run of separators). */
-function trimTrailingSeparators(value: string): string {
-  let end = value.length;
-  while (end > 0 && (value[end - 1] === '/' || value[end - 1] === '\\')) end -= 1;
-  return value.slice(0, end);
-}
-
-/**
- * A project root as a row may carry it: `~/…` when it lies under `homeDir`, otherwise only its last two segments behind `…/` (a root
- * outside the home is not abbreviated to a name that could be mistaken for a home path, and is never shown whole), scrubbed and bounded.
- */
-function projectLabel(root: string, homeDir: string | undefined): string {
-  const home = homeDir === undefined ? undefined : trimTrailingSeparators(homeDir);
-  const rest = home === undefined || home === '' ? undefined : underHome(root, home);
-  if (rest !== undefined) return scrubbedBounded(`~${rest}`, PROJECT_LABEL_MAX_CHARS);
-  const tail = root
-    .split(/[\\/]+/u)
-    .filter(Boolean)
-    .slice(-2)
-    .join('/');
-  return scrubbedBounded(`…/${tail}`, PROJECT_LABEL_MAX_CHARS);
-}
-
-/** What follows `home` in `root` (`''` for the home itself), or `undefined` when `root` is not under it. */
-function underHome(root: string, home: string): string | undefined {
-  if (root === home) return '';
-  const next = root.charAt(home.length);
-  return root.startsWith(home) && (next === '/' || next === '\\')
-    ? root.slice(home.length)
-    : undefined;
+function toUnreadableRun(
+  run: RunSummaryRecord,
+  slugById: ReadonlyMap<string, string>,
+  reason: UnreadableRunReason,
+): HomeUnreadableRun {
+  const workflowSlug = slugById.get(run.workflowId);
+  return {
+    runId: run.id,
+    ...(workflowSlug === undefined ? {} : { workflowSlug }),
+    status: run.status,
+    createdAt: run.createdAt,
+    reason,
+  };
 }
 
 function toRunRow(run: RunRecord, workflowSlug: string | undefined): HomeRunRow {
@@ -378,7 +509,6 @@ function toRunRow(run: RunRecord, workflowSlug: string | undefined): HomeRunRow 
 function toSessionRow(session: AgentSessionRecord): HomeSessionRow {
   return {
     sessionId: session.id,
-    workingDir: session.context.workingDir,
     title: session.title,
     agentSlug: session.agentSlug,
     modelId: session.modelId,

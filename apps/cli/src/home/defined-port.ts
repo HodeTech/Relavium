@@ -8,20 +8,21 @@ import {
   buildDefinedModel,
   type DefinedOtherPin,
   type DefinedPin,
+  type DefinedPort,
 } from '../history/defined-model.js';
 import { isCliError } from '../process/errors.js';
 import type { GlobalOptions } from '../process/options.js';
+import { optionalPaths, type DisplayPathRoots } from '../render/notation.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import {
   type ExportAttempt,
   type ExportPort,
   type ExportPrepared,
 } from '../render/tui/export-card.js';
-import type { DefinedPort } from '../render/tui/tab-host-workflows.js';
 import type { LaunchCatalog } from './run-launch.js';
 
 /**
- * What the Home's Defined tab and its export card read and write, over the project the Home is in
+ * What the Home's `/workflows` popup and its export card read and write, over the project the Home is in
  * ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §2, MVP-8 step 4).
  * Both are thin: the tab's rows are `buildDefinedModel` over the catalog and the pins, and the export is `relavium export`'s own
  * {@link prepareExport} and {@link commitExport}, so the card writes exactly the bytes and to exactly the place the command would.
@@ -34,22 +35,37 @@ export interface DefinedPortDeps {
   /** The project's workflow pins, newest first (`listPins({ kind: 'workflow', projectRoot })`). May throw. */
   readonly pins: () => readonly DefinedPin[];
   /**
-   * EVERY pin the store holds, of either kind and any project (`listPins()`): the store caps the pins in total, so the tab lists the
-   * workflow pins of other projects as rows it can remove, and names the stored total when a pin is refused at the cap. Absent ⇒ the tab
-   * knows only this project's pins. May throw.
+   * EVERY pin the store holds, of either kind and any project (`listPins()`): the store caps the pins in total, so the popup lists the
+   * workflow pins of other projects as rows it can remove (a pin at the cap is freed from there). Absent ⇒ the popup knows only this
+   * project's pins. May throw.
    */
   readonly allPins?: (() => readonly (DefinedPin & { readonly projectRoot: string })[]) | undefined;
-  /** The status of each workflow's latest run in this project, by slug (`loadLatestRunPerWorkflowInProject`). May throw. Absent ⇒ none is shown. */
-  readonly lastRuns?: (() => ReadonlyMap<string, RunStatus>) | undefined;
+  /**
+   * The latest run of each workflow in this project, by slug (`loadLatestRunPerWorkflowInProject`): its status, and when it was last written (an
+   * ISO time, the age the catalogue draws beside the status). ONE read gives both. May throw. Absent ⇒ no status and no age are shown.
+   */
+  readonly latestRuns?:
+    | (() => ReadonlyMap<string, { readonly status: RunStatus; readonly at: string }>)
+    | undefined;
+  /** What another project's root is shortened against. Absent, the root is listed as stored. */
+  readonly paths?: DisplayPathRoots | undefined;
 }
 
-/** The Defined tab's read: the catalog and the pins, read now, as rows that name their entries by index. */
+/** The `/workflows` popup's read: the catalog and the pins, read now, as rows that name their entries by index. */
 export function createDefinedPort(deps: DefinedPortDeps): DefinedPort {
   return {
     read: () => {
       const entries = deps.catalog.list();
       const pins = deps.pins();
-      const lastRuns = deps.lastRuns?.();
+      const latest = deps.latestRuns?.();
+      const lastRuns =
+        latest === undefined
+          ? undefined
+          : new Map<string, RunStatus>([...latest].map(([slug, run]) => [slug, run.status]));
+      const lastRunTimes =
+        latest === undefined
+          ? undefined
+          : new Map<string, string>([...latest].map(([slug, run]) => [slug, run.at]));
       const all = deps.allPins?.();
       // A workflow pin of this project is already listed; any other workflow pin belongs to another project (or to one that is gone).
       const mine = new Set(pins.map((pin) => pin.rowid));
@@ -59,21 +75,15 @@ export function createDefinedPort(deps: DefinedPortDeps): DefinedPort {
         entries,
         pins,
         otherPins,
+        ...optionalPaths(deps.paths),
         ...(lastRuns === undefined ? {} : { lastRuns }),
+        ...(lastRunTimes === undefined ? {} : { lastRunTimes }),
       });
       // The entries are held by the read, so a row's index names the entry that was listed and not whatever sits there later.
       return {
         model,
         slugOf: (entryIndex) => entries[entryIndex]?.slug,
         pathOf: (entryIndex) => entries[entryIndex]?.path,
-        ...(all === undefined
-          ? {}
-          : {
-              stored: {
-                total: all.length,
-                elsewhere: all.length - pins.length,
-              },
-            }),
       };
     },
   };
@@ -173,7 +183,7 @@ export function createExportPort(deps: ExportPortDeps): ExportPort {
       if (occupied(plan.target))
         return {
           ok: false,
-          reason: `${destination} already exists, and this card never overwrites. Use relavium export ${sanitizeUntrustedInline(plan.slug)} --force to replace it.`,
+          reason: `${destination} already exists, and this export never overwrites. Use relavium export ${sanitizeUntrustedInline(plan.slug)} --force to replace it.`,
         };
       return {
         ok: true,

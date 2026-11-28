@@ -13,9 +13,11 @@
  * answers nothing, and every other key is consumed.
  */
 
-import { formatElapsed } from './format.js';
+import { formatElapsed } from '../notation.js';
 import type { ChatKey } from './chat-input.js';
 import { isInterruptKey } from './interrupt-keymap.js';
+import { exitKey, legend, legendItems, waitMark, type LegendExit } from './legend.js';
+import { sheetRule } from './sheet-frame.js';
 
 /** What the open card says: the rounds dispatched, the rounds a "continue" grants, and the turn's working time so far. */
 export interface CheckpointCardState {
@@ -58,7 +60,22 @@ export interface CheckpointCardView {
   readonly keys: readonly [string, string];
 }
 
-const RULE_LABEL = ' Checkpoint ';
+/** What the checkpoint sheet's rule says it is (ADR-0147 §1): fixed host text. */
+const RULE_LABEL = 'Checkpoint';
+
+/**
+ * The heavy rule that opens the card (ADR-0147 §1), with the wait clock on its right (`clock`, the host's display value; empty: none). As wide
+ * as the thin rule it replaced, so the card's rows do not move.
+ */
+export function checkpointRule(columns: number, clock = ''): string {
+  return sheetRule(RULE_LABEL, clock, Math.max(1, columns - 1)).text;
+}
+
+/**
+ * `Esc` and `Ctrl+C` stop the turn at the checkpoint, the very act `[Ctrl+N] Stop here` is (ADR-0145 §4's progress family names it once):
+ * the key that leaves says it in the same words, so the card does not name one act two ways.
+ */
+export const CHECKPOINT_STOP: LegendExit = exitKey.decide('stops here', ['Esc', 'Ctrl+C']);
 
 /** Cut `text` to `width` display columns, ASCII only (the card's text is, by construction): never longer than the row. */
 function head(text: string, width: number): string {
@@ -73,9 +90,11 @@ function head(text: string, width: number): string {
 export function projectCheckpointCard(
   state: CheckpointCardState,
   columns: number,
+  /** The answer lockout holds `Ctrl+Y` now (the store's `answerLock`): it reads `(wait)` until the lock opens (ADR-0145 §3). */
+  locked = false,
 ): CheckpointCardView {
   const width = Math.max(1, columns - 2);
-  const rule = `─${RULE_LABEL}${'─'.repeat(Math.max(1, columns - 2 - RULE_LABEL.length))}`;
+  const rule = checkpointRule(columns);
   const rounds = `${String(state.rounds)} tool round${state.rounds === 1 ? '' : 's'}`;
   return {
     rule: head(rule, columns),
@@ -84,8 +103,14 @@ export function projectCheckpointCard(
       width,
     ),
     keys: [
-      head(`[Ctrl+Y] Continue   [Ctrl+N] Stop here`, width),
-      head('Esc or Ctrl+C stops the turn', width),
+      head(
+        legendItems([
+          { keys: 'Ctrl+Y', verb: 'Continue', role: 'ok', ...waitMark(locked) },
+          { keys: 'Ctrl+N', verb: 'Stop here', role: 'danger' },
+        ]).text,
+        width,
+      ),
+      head(legend([], CHECKPOINT_STOP), width),
     ],
   };
 }

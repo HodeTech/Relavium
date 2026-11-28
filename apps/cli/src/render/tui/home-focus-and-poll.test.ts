@@ -22,11 +22,12 @@ import { createHomeController, STRIP_REFRESH_MS, type HomeController } from './h
 
 const RUN = 'run-0001';
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: false,
 };
 const SESSION: HomeSnapshot = {
@@ -34,7 +35,6 @@ const SESSION: HomeSnapshot = {
   recentSessions: [
     {
       sessionId: 's1',
-      workingDir: '/work',
       title: undefined,
       agentSlug: 'chat',
       modelId: undefined,
@@ -43,6 +43,7 @@ const SESSION: HomeSnapshot = {
       totalCostMicrocents: 0,
     },
   ],
+  totals: { attention: 0, sessions: 1, runs: 0 },
 };
 const IDLE: RunHostSnapshot = { launching: false, active: undefined, last: undefined };
 const executing = (runId: string): RunHostSnapshot => ({
@@ -133,7 +134,6 @@ describe('the Enter after a refresh dropped the focused row', () => {
         }),
     );
     const controller = createHomeController({
-      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
       startChat: () => new Promise(() => {}),
       homeStore: { read: () => shown },
       hostedRuns: { snapshot: () => host, cancel: () => true, close: () => Promise.resolve() },
@@ -221,7 +221,7 @@ describe('the Enter after a refresh dropped the focused row', () => {
     r.anotherTerminalShows(EMPTY);
     await r.time.advance(STRIP_REFRESH_MS);
     expect(r.controller.getSnapshot().stripFocus).toBeUndefined();
-    expect(r.controller.openScreen('help')).toBe(true);
+    expect(r.controller.openScreen('tab-host', { tab: 'history' })).toBe(true);
     r.controller.closeScreen();
     r.controller.handleKey('', ENTER);
     expect(r.controller.getSnapshot().screen).toMatchObject({ kind: 'run-view' });
@@ -278,7 +278,6 @@ describe('the Active tab`s poll while a native question holds the keyboard', () 
         }),
     );
     const controller = createHomeController({
-      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
       startChat: () => new Promise(() => {}),
       homeStore: { read: () => EMPTY },
       active: { token: (): ChangeToken => ({ ...token }), read, isClosed: () => false },

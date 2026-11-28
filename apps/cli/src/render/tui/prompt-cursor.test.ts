@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { sanitizeInline } from './chat-projection.js';
+import { sanitizeInline } from '../sanitize.js';
 import { promptRows } from './prompt-cursor.js';
 
 describe('promptRows (multi-line prompt cursor placement, 2.5.D step 2)', () => {

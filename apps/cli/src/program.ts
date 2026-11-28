@@ -32,7 +32,7 @@ ${GLOBAL_OPTION_DESCRIPTORS.filter((option) => option.owner === 'extractor')
   })
   .join('\n')}
 
-Color precedence: --color/--no-color > NO_COLOR (any value ⇒ off) > FORCE_COLOR (0/false ⇒ off) > on.`;
+Color precedence: --color/--no-color > NO_COLOR (non-empty ⇒ off) > FORCE_COLOR (0/false ⇒ off) > on.`;
 
 /**
  * Build the `commander` program: the full subcommand surface plus a bare-invocation help

@@ -3,7 +3,6 @@ import type { KeychainStore } from '../secrets/keychain.js';
 import {
   createPermissionsPort,
   NOT_AVAILABLE as PERMISSIONS_NOT_AVAILABLE,
-  type PermissionsPort,
   type SessionCommandApprovals,
 } from '../permissions/chat-permissions.js';
 import {
@@ -16,11 +15,14 @@ import { boundAgentView, type BoundAgentView } from '../chat/bound-agent-view.js
 import { ownSessionOutput, ownSessionSubscriber } from '../chat/session-presentation.js';
 import { SessionChatTerminal } from '../chat/session-chat-terminal.js';
 import type { SessionInkMount } from '../chat/session-ink-mount.js';
-import { runModeSettings } from '../chat/mode-settings.js';
+import { readStartupDefault } from '../chat/startup-default.js';
+import type { StartupDefaultOutcome } from '../popups/settings-port.js';
 import { publishModePreference } from '../chat/mode-preference-publication.js';
+import { createNativeFlushPort, NativeHostUnavailableError } from '../chat/native-flush-port.js';
 import { activateStartingModeHint } from '../chat/starting-mode-hint.js';
 import {
   createNativePromptChannel,
+  type NativePromptFlow,
   type NativePromptUi,
 } from '../render/tui/native-prompt-channel.js';
 import type { CliInvocation } from '../process/invocation.js';
@@ -33,6 +35,7 @@ import {
 } from '../process/native-process-owner.js';
 import { randomUUID } from 'node:crypto';
 import { resumeHint } from '../chat/resume-hint.js';
+import { resumeIntro } from '../chat/resume-intro.js';
 import { realpathSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { withSessionReadline } from '../chat/session-readline.js';
@@ -55,15 +58,40 @@ import {
   type Memory,
   type ReasoningEffort,
 } from '@relavium/shared';
-import { exportSessionToProject, SESSION_EXPORT_REVIEW_NOTICE } from '../chat/export.js';
+import {
+  exportedTarget,
+  exportSessionToProject,
+  prepareSessionExport,
+  SESSION_EXPORT_REVIEW_NOTICE,
+  SESSION_EXPORT_REVIEW_SENTENCE,
+  type ExportToProjectOptions,
+} from '../chat/export.js';
 import { sourceLabel } from '../process/source-label.js';
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
 import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { createOwnedSessionConsentGate } from '../chat/session-consent.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../chat/doctor.js';
+import type { DoctorPort } from '../popups/doctor-port.js';
+import type { Announce } from '../popups/notifications.js';
+import type { ReportMembers, ReportsPort, WorkflowsReading } from '../popups/report-port.js';
+import {
+  effortAnnouncement,
+  type ModelsSettingsPort,
+  type SettingsMembers,
+  type SettingsPort,
+} from '../popups/settings-port.js';
+import { releaseHeldEstimates } from '../chat/cost-release.js';
+import {
+  announcesEffect,
+  modeChangedNotice,
+  MODE_NOT_RECORDED_NOTICE,
+  widensAuthority,
+} from '../chat/mode-effects.js';
+import { CHAT_KEYS } from '../render/tui/chat-keys.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
 import {
   catalogNotice,
+  NO_PROJECT_NOTICE,
   clearedNotice,
   compactionNotice,
   COMPACTION_UNKNOWN_WINDOW_NOTICE,
@@ -74,8 +102,10 @@ import {
 import { discoverCatalog, type CatalogEntry, type CatalogKind } from '../workflows/catalog.js';
 import {
   formatReplHelp,
+  homeOnlyPointer,
   replCommandList,
   REPL_COMMANDS_BY_NAME,
+  type CommandListSurface,
   type ReplCommand,
   type ReplCommandContext,
 } from './repl-commands.js';
@@ -134,9 +164,15 @@ import { mcpSkippedLines, surfaceMcpSkipped } from '../engine/mcp-servers.js';
 import {
   createProviderResolver,
   missingKeyMessage,
+  providerDisplayName,
   providerHasKey,
   type ProviderResolver,
 } from '../engine/providers.js';
+import {
+  createChatDefaultModelWriter,
+  saveDefaultModel,
+  type DefaultModelSaveOptions,
+} from '../chat/default-model-save.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
 import { CliError, toUserFacing } from '../process/errors.js';
 import { acknowledgeWrite, type CliIo } from '../process/io.js';
@@ -145,6 +181,12 @@ import type { GlobalOptions } from '../process/options.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
 import { createAltScreenController, type AltScreenController } from '../render/alt-screen.js';
+import { displayRoots } from '../render/display-roots.js';
+import { displayPath, formatUsdExact, type DisplayPathRoots } from '../render/notation.js';
+import { flowText } from '../render/tui/flow-text.js';
+import type { NoticeSurface } from '../render/notice-surface.js';
+import { chatSurfaceOf, noticeSurfaceOf, type Surface } from '../render/surface.js';
+import { KEY_SHAPED_COMMAND_NOTICE, looksLikeProviderKey } from '../render/provider-key-shape.js';
 import { nodeCreateTempDocument, createNodeSpawnEditor } from '../render/editor.js';
 import {
   createHatches,
@@ -177,11 +219,11 @@ import {
   contextOverflowRemedy,
   formatToolCall,
   projectDenialExplanation,
-  sanitizeInline,
-  stripTerminalControls,
 } from '../render/tui/chat-projection.js';
-import { agentNotice } from '../render/tui/agent-sheet.js';
+import { sanitizeInline, stripTerminalControls } from '../render/sanitize.js';
+import { agentNotice } from '../chat/agent-notice.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
+import { withGlyphForm } from '../render/tui/glyphs.js';
 import { askUserOption, createAskUserPort } from '../chat/ask-user-port.js';
 import { createMentionReader, type MentionReader } from '../render/tui/mention.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
@@ -233,12 +275,23 @@ export interface ReseatTarget {
 export type ChatStopReason = 'exit' | 'clear' | 'reseat';
 
 /**
- * The catalog port the ink `/models` reseat picker (ADR-0059) reads — the SHARED load/refresh trio
- * ({@link ModelCatalogPort}) plus the session's currently-bound model (the picker's `✓` "you are here" marker).
- * Built per session so `boundModel` reflects a reseat's switched model. Interactive (TTY) sessions only.
+ * The catalog port the chat's `/models` popup (ADR-0148 §3, §6; the reseat of ADR-0059) reads — the SHARED load/refresh trio
+ * ({@link ModelCatalogPort}) plus the session's currently-bound model. Built per session so `boundModel` reflects a reseat's switched
+ * model. Interactive (TTY) sessions only.
  */
 export interface ChatModelsPort extends ModelCatalogPort {
   readonly boundModel: string;
+  /**
+   * Save a model (and its tier) as the default of NEW chats, the popup's `New chats` (ADR-0063 §1, ADR-0066 §6): the same
+   * `prepareGlobalPreferences` + visible-card publication as the Home's `HomeModelsPort.writeDefault` (`createChatDefaultModelWriter`).
+   * Attached by the driver that owns the chat's native prompt (`driveOneSession`); absent ⇒ the chat has no card to disclose a rewrite on,
+   * and the popup offers no `New chats`.
+   */
+  readonly writeDefault?: (
+    modelId: string,
+    provider: ProviderId,
+    reasoningEffort?: ReasoningEffort,
+  ) => Promise<{ readonly durability: 'confirmed' | 'unconfirmed' }>;
 }
 
 /** Assemble a {@link ChatModelsPort} over the session's shared db + provider resolver (the catalog the Home picker
@@ -262,6 +315,71 @@ function buildChatModelsPort(
       ...(workOwner === undefined ? {} : { workOwner }),
     }),
     boundModel,
+  };
+}
+
+/**
+ * The `/models` member of a chat's settings port (ADR-0148 §3, §6): the session's half, built from what the session holds (its bound model
+ * and provider, its tier, its tier setter) and its catalog port (`picker`: the catalog, its refreshes and the default's writer when the
+ * driver attached one). The switch of `This chat` is the host's (`bindModelSwitch`), never this. `undefined` without a catalog port (a
+ * plain, `--json` or one-shot chat, and the chat the Home hosts, whose member is the Home controller's).
+ */
+function chatModelsSettings(
+  picker: ChatModelsPort | undefined,
+  built: Pick<BuiltChatSession, 'agent'>,
+  store: Pick<ChatStoreController, 'getSnapshot'>,
+  setEffort: (effort: ReasoningEffort) => void,
+  save: Omit<DefaultModelSaveOptions, 'write'>,
+  readDefaultProvider: () => string | undefined,
+  readDefaultEffort: () => ReasoningEffort | undefined,
+): ModelsSettingsPort | undefined {
+  if (picker === undefined) return undefined;
+  const write = picker.writeDefault;
+  return {
+    scope: 'chat',
+    load: picker.load,
+    refreshIfStale: picker.refreshIfStale,
+    refresh: picker.refresh,
+    current: () => built.agent.model,
+    currentProvider: () => built.agent.provider,
+    currentEffort: () => store.getSnapshot().reasoningEffort,
+    defaultModel: save.readEffective,
+    defaultProvider: readDefaultProvider,
+    defaultEffort: readDefaultEffort,
+    providerName: providerDisplayName,
+    setEffort,
+    ...(write === undefined
+      ? {}
+      : { saveDefault: (choice) => saveDefaultModel({ ...save, write }, choice) }),
+  };
+}
+
+/**
+ * The wiring a stand-alone chat's line handler is built over, its catalog port given the writer of the default of new chats
+ * (`createChatDefaultModelWriter`) over THIS chat's native prompt: attached here because the native channel is the driver's. A chat with
+ * no native channel (non-interactive, or no starting-mode runtime) keeps its port as it is, with no writer.
+ */
+function withDefaultModelWriter<W extends Pick<ReplWiring, 'modelCatalog' | 'startingModes'>>(
+  wiring: W,
+  native: { readonly flow: NativePromptFlow; readonly ui: NativePromptUi } | undefined,
+  mounted: (signal: AbortSignal) => Promise<NoticeFlush>,
+  assertAdmitting: () => void,
+): W {
+  const picker = wiring.modelCatalog;
+  const runtime = wiring.startingModes;
+  if (picker === undefined || runtime === undefined || native === undefined) return wiring;
+  return {
+    ...wiring,
+    modelCatalog: {
+      ...picker,
+      writeDefault: createChatDefaultModelWriter({
+        runtime,
+        flow: native.flow,
+        ui: native.ui,
+        mounted,
+        assertAdmitting,
+      }),
+    },
   };
 }
 
@@ -302,25 +420,16 @@ export interface ChatDriveContext {
    */
   readonly stopReason: () => ChatStopReason;
   /**
-   * Switch the bound model mid-session (ADR-0059) — the ink model-picker overlay calls this on accept. It signals a
-   * host-side reseat (a new instance bound to `target`), so like `/clear` it sets the stop state; the driver then
-   * ends and {@link runReplLoop} rebuilds. Absent on a non-interactive driver (plain/`--json`), where a live reseat
+   * Switch the bound model mid-session (ADR-0059) — the `/models` popup's `This chat` reaches it through the host's switch
+   * (`bindModelSwitch`). It signals a host-side reseat (a new instance bound to `target`), so like `/clear` it sets the stop state; the
+   * driver then ends and {@link runReplLoop} rebuilds. Absent on a non-interactive driver (plain/`--json`), where a live reseat
    * is unavailable — one machine stream is one session lifecycle (ADR-0049), exactly as `/clear` is gated off there.
    */
   readonly onReseat?: (target: ReseatTarget) => void;
-  /**
-   * The `/models` reseat picker catalog port (ADR-0059) — the ink `ChatApp` opens the model-picker overlay off a
-   * typed `/models`, reads the merged catalog through this, and calls {@link onReseat} on accept. Present on an
-   * interactive (TTY, non-`--json`) session only; a plain/`--json` driver has no overlay, so a typed `/models`
-   * there falls through to the core surface guard's actionable "interactive terminal" hint. Absent ⇒ no picker.
-   */
-  readonly modelPicker?: ChatModelsPort;
-  /** The `/permissions` sheet's port ([ADR-0137](../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §2):
-   *  present on an interactive (TTY, non-`--json`) driver only; absent ⇒ `/permissions` says remembered commands are not available. */
-  readonly permissions?: PermissionsPort;
   /** The view of the agent this session is bound to ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
-   *  §3): a typed (or palette-selected) bare `/agent` opens the docked sheet over it. Present on an interactive (TTY, non-`--json`) driver
-   *  only; absent ⇒ `/agent` dispatches and prints the same fields as a notice. */
+   *  §3), made afresh on every call: the same function `reports.agent` hands the `/agent` popup, kept for a driver (and its tests) that reads it
+   *  directly (only tests read it: the production hosts take the view through `reports.agent`). Present on an interactive (TTY, non-`--json`)
+   *  driver only. */
   readonly boundAgent?: () => BoundAgentView;
   /** The live session stream (the driver renders it: ink reduces it into the store; plain prints it). */
   readonly handle: SessionHandle;
@@ -404,6 +513,29 @@ export interface ChatDriveContext {
   readonly clipboard?: ClipboardWriter | undefined;
   /** Explicit masked review copy; independent of mouse selection preferences. */
   readonly reviewClipboard?: ClipboardWriter | undefined;
+  /**
+   * The `/doctor` popup's port (ADR-0148 §8): present on an interactive (TTY, non-`--json`) driver only, where the ink chat opens the popup for
+   * a typed or palette-selected `/doctor`; a plain or `--json` driver has none, and `/doctor` prints exactly the text report it printed before.
+   */
+  readonly doctor?: DoctorPort | undefined;
+  /**
+   * The report popups' port (ADR-0148 §10, MVP-11 step 4b): `/agent`, `/cost` (and `/cost --release`), `/workflows` and `/help`. Present on an
+   * interactive (TTY, non-`--json`) driver only, where the ink chat opens the popup for a typed or palette-selected line; a plain, `--json` or
+   * one-shot driver has none, and each command prints exactly the text it printed before. {@link ChatDriveContext.boundAgent} is the same view
+   * `reports.agent` reads (a driver and its tests read it directly).
+   */
+  readonly reports?: ReportsPort | undefined;
+  /**
+   * The settings popups' port (ADR-0148 §3, §6; MVP-11 step 5): `/mode`, `/effort`, `/models` and `/permissions`. Present on an interactive
+   * (TTY, non-`--json`) driver only, where the ink chat opens the popup for a typed or palette-selected bare command; a plain, `--json` or
+   * one-shot driver has none, and each command prints exactly the text it printed before.
+   */
+  readonly settings?: SettingsPort | undefined;
+  /**
+   * Bind the session's announcements to the driver's notification channel (`ChatLineHandler.setAnnouncer`): an interactive driver binds its
+   * chat's channel while the chat is mounted and unbinds it when it unmounts. Absent on a plain or `--json` driver, which keeps its text.
+   */
+  readonly setAnnouncer?: ((announce: Announce | undefined) => void) | undefined;
 }
 /**
  * How a {@link ChatDriver}'s input loop ended (ADR-0062 §7 · ADR-0059): `'exit'` ends the REPL (exit 4); `'clear'`
@@ -511,13 +643,35 @@ export interface ChatResumeCommandDeps {
 
 /** The subset the shared {@link runReplLoop} needs — satisfied by both {@link ChatCommandDeps} and {@link ChatResumeCommandDeps}. */
 interface ChatReplDeps {
+  /**
+   * The identity the `/doctor` popup keeps its state under for this process (ADR-0148 §8): a completed deep result and a deep run in flight
+   * outlive a `/clear` or a reseat, which mount a new chat. Absent ⇒ each session has its own.
+   */
+  readonly doctorScope?: object;
+  /**
+   * Which chat this handler serves, for the command list it prints (`/help`, the unknown-slash hint): a stand-alone chat, or the chat the Home
+   * hosts, whose palette and `/help` list `/resume` and say where `/exit` goes (ADR-0145 §7). Absent ⇒ a stand-alone chat's, which is what the
+   * plain, `--json` and one-shot drivers print, byte for byte as before.
+   */
+  readonly surface?: CommandListSurface;
   /** The OS keychain seam for the remembered-command digest key (ADR-0118 §2); default the real one. A test injects a fake. */
   readonly keychain?: KeychainStore;
-  readonly openModeSettings?: (
-    currentMode: () => ChatMode,
-    onCurrentMode: (mode: ChatMode) => void,
-    notice: (text: string) => void,
-  ) => Promise<void>;
+  /**
+   * Save `mode` as the global startup default on this chat's native prompt, framed as the `/mode` popup's confirmation (`mode-confirm.ts`): what
+   * the popup's `[s]` hands off to (ADR-0148 §3, §6; MVP-11 unit 8, OD-25). `inChat` is the mode in force in this chat, which the confirmation
+   * says stays. It returns what the flow came to (its Done step, one notification, a step back): none of the flow's words goes into the
+   * transcript. Wired by an interactive chat that has its starting-mode runtime (the stand-alone chat and the chat the Home hosts); where it is
+   * absent the chat has no `/mode` popup, and a bare `/mode` lists the modes.
+   */
+  readonly saveStartupDefault?: (
+    mode: ChatMode,
+    inChat: ChatMode,
+  ) => Promise<StartupDefaultOutcome>;
+  /**
+   * The saved startup default (the global `default_mode`), read when the `/mode` popup opens so its list marks `startup`; `undefined` where it
+   * could not be read. Wired with {@link saveStartupDefault}, by the same hosts.
+   */
+  readonly readStartupDefault?: () => ChatMode | undefined;
   readonly afterTerminalRelease?: () => Promise<void>;
   readonly chatLifetime?: SessionChatLifetime;
   readonly effectAttention?: ReturnType<typeof createChatEffectAttention>;
@@ -713,7 +867,7 @@ function createChatEffectAttention(
 /** The budget-cap warning line (formatted once, routed through {@link emitLiveNotice} at all four wiring sites, and
  *  through the in-Home chat's own view store — see `drive-home.tsx`). ONE text, so the two surfaces cannot drift. */
 export function budgetWarningText(warning: ChatBudgetWarning): string {
-  return `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached`;
+  return `budget warning: ~${warning.thresholdPct}% of the ${formatUsdExact(warning.limitMicrocents)} cap reached`;
 }
 
 export function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps): Promise<ExitCode> {
@@ -856,6 +1010,7 @@ async function chatCommandBody(
           // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
           // why the knob they set did nothing.
           onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(deps.io, note)),
+          noticeSurface: chatNoticeSurface(deps.io, deps.global),
           onEffectAttention: effectAttention.note,
           onListenerError: (note: string) => emitLiveNotice(deps.io, note),
           onUnpriced: (note) => emitLiveNotice(deps.io, note),
@@ -939,6 +1094,7 @@ async function chatCommandBody(
       const doctorProbes =
         deps.doctorProbes ??
         assembleDoctorProbes({
+          noticeSurface: chatNoticeSurface(deps.io, deps.global),
           readConfig: () => {
             startingModes.read(built.context.workingDir);
           },
@@ -1019,7 +1175,7 @@ async function chatCommandBody(
           persister,
           doctorProbes,
           startSession: () => built.session.start(),
-          modelPicker: buildChatModelsPort(
+          modelCatalog: buildChatModelsPort(
             opened,
             providers,
             built.agent.model,
@@ -1157,6 +1313,7 @@ async function chatResumeCommandBody(
               flow,
               store: opened.store,
               cwd,
+              paths: displayRoots(cwd, homeDir),
               now,
               assertAdmitting: ownership.surface.work.assertAdmitting,
               runRead: (read) => ownership.surface.work.enter(read),
@@ -1249,6 +1406,8 @@ async function chatResumeCommandBody(
       );
       ({ config, projectConfigDir } = loadedConfig);
       fsPolicy = admitChatFsPolicy(grants, originalCwd, config.chat.extraRoots);
+      // What the banner shortens the session's directory against: the directory the resume was LAUNCHED from, before the session re-anchors it.
+      const launchRoots = displayRoots(deps.global.cwd, homeDir);
       deps = { ...deps, global: Object.freeze({ ...deps.global, cwd: originalCwd }) };
       let historyBound = transcriptBoundFor(chatAltActive(deps, config.altScreen));
       const restore = () =>
@@ -1366,6 +1525,7 @@ async function chatResumeCommandBody(
           // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
           // why the knob they set did nothing.
           onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(deps.io, note)),
+          noticeSurface: chatNoticeSurface(deps.io, deps.global),
           onEffectAttention: effectAttention.note,
           onListenerError: (note: string) => emitLiveNotice(deps.io, note),
           onUnpriced: (note) => emitLiveNotice(deps.io, note),
@@ -1395,7 +1555,14 @@ async function chatResumeCommandBody(
       // shared with other surfaces) — sanitize it before it reaches the TTY, exactly as `chat-list` does (the
       // agent id is kebab-constrained, so safe raw). Without this the resume banner is the one chat output path
       // that could carry a terminal escape from a crafted stored id.
-      intro = `Resuming session ${sanitizeInline(resumed.sessionId)} — ${resumed.agent.id}, ${turns} prior ${turns === 1 ? 'turn' : 'turns'}. Type a message, or /exit to quit.`;
+      // The banner also says where the session lives: it is anchored to its own directory, which is not always the one it was resumed from.
+      intro = resumeIntro({
+        sessionId: resumed.sessionId,
+        agentId: resumed.agent.id,
+        turns,
+        directory: originalCwd,
+        launchRoots,
+      });
       // Pre-flight the hard turn cap: a session resumed under a config whose `[chat].max_turns` is now at/below
       // its prior turn count would have EVERY new turn blocked loudly as `turn_limit` (the engine cap counts the
       // carried turns) with no way forward but /exit. Warn up front (stderr, non-blocking) so the user isn't
@@ -1424,6 +1591,7 @@ async function chatResumeCommandBody(
     const doctorProbes =
       deps.doctorProbes ??
       assembleDoctorProbes({
+        noticeSurface: chatNoticeSurface(deps.io, deps.global),
         readConfig: () => {
           startingModes.read(built.context.workingDir);
         },
@@ -1506,7 +1674,7 @@ async function chatResumeCommandBody(
         startSession: () => undefined,
         ...(missingKey === undefined ? {} : { sendGuard: missingKeyGuard(providers, missingKey) }),
         onActivated: (isActive, flushNotice) => {
-          if (missingKey !== undefined) store.notice(resumeMissingKeyNotice(missingKey));
+          if (missingKey !== undefined) store.notice(resumeMissingKeyNotice(providers, missingKey));
           return reconcileResumedSessionEffects({
             io: deps.io,
             ...(built.workOwner === undefined ? {} : { owner: built.workOwner }),
@@ -1522,7 +1690,7 @@ async function chatResumeCommandBody(
           });
         },
         intro,
-        modelPicker: buildChatModelsPort(
+        modelCatalog: buildChatModelsPort(
           opened,
           providers,
           built.agent.model,
@@ -1557,8 +1725,14 @@ async function chatResumeCommandBody(
 }
 
 /** The in-view notice a resumed session whose provider has no key opens with, and repeats at each refused send. */
-function resumeMissingKeyNotice(provider: ProviderId): string {
-  return `${missingKeyMessage(provider)} Or switch to a model whose provider has a key with /models.`;
+function resumeMissingKeyNotice(providers: ProviderResolver, provider: ProviderId): string {
+  // This notice is always read inside a live chat. The Home's resolver speaks for the Home's landing (`/providers`), which a chat the Home
+  // hosts answers with a pointer only, so there the remedy is the way back to the Home.
+  const surface =
+    providers.credentialSurface === undefined
+      ? undefined
+      : chatSurfaceOf(providers.credentialSurface);
+  return `${missingKeyMessage(provider, surface)} Or switch to a model whose provider has a key with /models.`;
 }
 
 /**
@@ -1570,7 +1744,8 @@ function missingKeyGuard(
   providers: ProviderResolver,
   provider: ProviderId,
 ): () => string | undefined {
-  return () => (providerHasKey(providers, provider) ? undefined : resumeMissingKeyNotice(provider));
+  return () =>
+    providerHasKey(providers, provider) ? undefined : resumeMissingKeyNotice(providers, provider);
 }
 
 /** What the shared REPL loop needs: a built (fresh or resumed) session, its store/persister, and how to open it. */
@@ -1598,9 +1773,10 @@ interface ReplWiring {
   readonly intro?: string;
   /** `[chat].max_messages` — the default bound a bare `/trim` uses (ADR-0062); absent ⇒ `/trim` needs an inline `n`. */
   readonly chatMaxMessages?: number;
-  /** The `/models` reseat picker port (ADR-0059) — built per session (its `boundModel` is the current model).
-   *  Forwarded to the ctx only on an interactive driver (`driveOneSession` gates it). */
-  readonly modelPicker?: ChatModelsPort;
+  /** The catalog port of the `/models` popup (ADR-0148 §3; the reseat of ADR-0059) — built per session (its `boundModel` is the current
+   *  model). The line handler builds the session's `/models` member over it, for an interactive chat only (`driveOneSession` adds the
+   *  default's writer there). */
+  readonly modelCatalog?: ChatModelsPort;
   /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — forwarded to the ink driver's ctx so it resolves the
    *  full-screen render mode; the plain / `--json` drivers ignore it. Absent ⇒ the phase default. */
   readonly altScreen?: boolean | undefined;
@@ -1626,8 +1802,15 @@ interface ReplWiring {
 export interface ChatModeControl {
   /** Mid-turn abort (EA7) — abort the in-flight turn, keeping the session alive. */
   readonly onAbort: () => void;
-  /** Switch the chat mode: update the footer + re-apply the turn policy on the same session (no reseat). */
-  readonly onModeChange: (mode: ChatMode) => void;
+  /**
+   * Switch the chat mode: update the footer + re-apply the turn policy on the same session (no reseat). The ONE mode setter after the
+   * session's start (`Shift+Tab` in both hosts, a typed `/mode <name>`, the `/mode` popup): while a turn runs it refuses; in an
+   * interactive session every change appends a content-free record row first (ADR-0148 §6), a WIDENING change is applied only if that row
+   * landed (a narrowing always applies; the amended D-4), and a change into
+   * `accept-edits` or `auto` is announced with its effect. Returns whether the requested mode (a non-interactive session clamps it to
+   * `ask`) is in force now: `false` for a refusal, which has already said why.
+   */
+  readonly onModeChange: (mode: ChatMode) => boolean;
   /**
    * Set the session's reasoning-effort tier ([ADR-0066](../../../../docs/decisions/0066-normalized-reasoning-effort-control.md) §5)
    * — the `/effort` command + the `/models` effort sub-step wire to this. It pushes the SESSION override (a per-turn
@@ -1664,16 +1847,80 @@ export function chatIsInteractive(
   );
 }
 
+/**
+ * The wording of the notices a chat session composes (unpriced model, withheld tier): the interactive chat's remedies name its own commands,
+ * and a plain or `--json` chat is scripted output that reads the shell wording (it has no `/models` to open).
+ */
+export function chatNoticeSurface(
+  io: Pick<CliIo, 'stdoutIsTty' | 'env'>,
+  global: Pick<GlobalOptions, 'json'>,
+): NoticeSurface {
+  return noticeSurfaceOf(chatSurface(chatIsInteractive(io, global)));
+}
+
+/**
+ * The surface a chat handler serves, from whether a person can answer it: a chat on a terminal reads as the stand-alone chat (the chat the Home
+ * hosts has the same notice class, which is all this is used for), a plain or `--json` one is scripted output on the shell.
+ */
+function chatSurface(interactive: boolean): Surface {
+  return interactive ? 'standalone-chat' : 'shell';
+}
+
+/**
+ * How a mode change refused while a turn runs is said (SE7-1): on the host's channel, where it shows at once, or, for a control with no channel,
+ * in the transcript, so the key is never silent. The words say a turn is running (`Esc stops the running turn`), which stops being true when the
+ * turn ends, so the control that raised them withdraws them then (its topic, with no text), once however many times the key was pressed: they
+ * must not stay on the hint row for the rest of their few seconds, claiming a turn that is over.
+ */
+function refuseModeChangeWhileRunning(
+  store: Pick<ChatStoreController, 'getSnapshot' | 'notice' | 'subscribe'>,
+  announce: Announce | undefined,
+): () => void {
+  let stopWatching: (() => void) | undefined;
+  return () => {
+    if (announce === undefined) {
+      store.notice(MODE_CHANGE_RUNNING_NOTICE);
+      return;
+    }
+    announce(MODE_CHANGE_RUNNING_NOTICE, 'mode');
+    if (stopWatching !== undefined) return;
+    stopWatching = store.subscribe(() => {
+      if (store.getSnapshot().state.status === 'running') return;
+      stopWatching?.();
+      stopWatching = undefined;
+      announce('', 'mode');
+    });
+  };
+}
+
 export function createChatModeControl(
   built: Pick<
     BuiltChatSession,
     'session' | 'tools' | 'context' | 'agent' | 'fsPolicy' | 'startingMode'
   >,
   store: ChatStoreController,
-  opts?: {
+  opts: {
     readonly interactive?: boolean;
     /** The remembered command grants of this project root (ADR-0118 §2); absent ⇒ nothing is remembered. */
     readonly commandGrants?: CommandGrantsPort;
+    /**
+     * What a command's card shortens its directory against (the project and the home, ADR-0145 §8); `undefined` ⇒ the card draws it as it is.
+     * A required key, so that a host that forgets it does not silently draw the absolute path.
+     */
+    readonly commandPaths: DisplayPathRoots | undefined;
+    /**
+     * Append the content-free record of an effective mode change (`from` → `to`, never equal) to the session, and say whether it landed
+     * (ADR-0148 §6). A WIDENING change is applied ONLY when this returns `true`; a narrowing applies either way (its record is best
+     * effort, the amended D-4). Asked on an interactive session only, never for the initial mode
+     * (the session's start is not a change; the config that chose it is its record) and never for the non-interactive clamp. The chat's
+     * line handler supplies it from the session's persister; absent ⇒ changes apply unrecorded (a unit test of the policy alone).
+     */
+    readonly recordModeChange?: (from: ChatMode, to: ChatMode) => boolean;
+    /**
+     * The host's own transient notification (ADR-0148 §2 and §6): what a change into `accept-edits` or `auto` says, and why a change that
+     * could not be recorded did not happen. Never the transcript. Absent ⇒ nothing is announced.
+     */
+    readonly announce?: Announce;
   },
 ): ChatModeControl {
   // The interactive prompt is the store's `requestApproval`, answered by the ink UI / Home controller. On a
@@ -1694,6 +1941,7 @@ export function createChatModeControl(
     session: built.session,
     tools: built.tools,
     workspaceDir: built.context.workingDir,
+    commandPaths: opts.commandPaths,
     ...(built.fsPolicy === undefined ? {} : { fsPolicy: built.fsPolicy }),
     prompt,
     // Remembered grants only mean something where a person can answer: a headless surface degrades `auto` to `ask` and refuses.
@@ -1712,6 +1960,7 @@ export function createChatModeControl(
       : {}),
     ...(interactive ? { onToolLiveEvent: store.applyToolLiveEvent } : {}),
   });
+  const refuseWhileRunning = refuseModeChangeWhileRunning(store, opts.announce);
   const initialMode = interactive ? (built.startingMode?.mode ?? store.getSnapshot().mode) : 'ask';
   store.setMode(initialMode);
   applyChatMode(modeEnv, initialMode, interactive ? built.startingMode : undefined);
@@ -1734,7 +1983,14 @@ export function createChatModeControl(
     // the default model, and the tier stays behind. It is inert now, and being inert SILENTLY is the expensive
     // half: a user who deliberately turned reasoning off on `gemini-2.5-pro` — which cannot disable thinking at
     // all — would otherwise see `effort: off` in the footer while Google thought, and billed, on every turn.
-    store.notice(effortRejectedNote(built.agent.model, seeded, tiers));
+    store.notice(
+      effortRejectedNote(
+        built.agent.model,
+        seeded,
+        tiers,
+        noticeSurfaceOf(chatSurface(interactive)),
+      ),
+    );
   }
   return {
     commandApprovals: modeEnv.cache,
@@ -1746,12 +2002,36 @@ export function createChatModeControl(
       // that is running: the footer would show `ask` while that turn's later writes were still approved without a
       // card. Both surfaces (this chat and the Home) reach the mode only through here, so the refusal lives here.
       if (store.getSnapshot().state.status === 'running') {
-        store.notice(MODE_CHANGE_RUNNING_NOTICE);
-        return;
+        // OD-1 (ADR-0148 §6): a mode change leaves the status line and one transient notification, never a row of the transcript. A control
+        // built with no channel says it in the transcript instead, so the key is never silent.
+        refuseWhileRunning();
+        return false;
       }
       const effective = interactive ? mode : 'ask';
+      const from = store.getSnapshot().mode;
+      const changes = interactive && from !== effective;
+      // ADR-0148 §6 (the lead's amended D-4): RECORD FIRST. A WIDENING change is applied only if its row landed; one whose record cannot
+      // be written is refused, in one line on the host's channel, and the session is not latched (its egress stays): a lost record of
+      // authority is refused rather than dropped. A NARROWING change always applies and its record is best effort: refusing it would keep
+      // the session in the wider mode, the wrong direction, so a lost row is neither announced nor latched.
+      if (changes && opts.recordModeChange !== undefined) {
+        const recorded = opts.recordModeChange(from, effective);
+        if (!recorded && widensAuthority(from, effective)) {
+          opts.announce?.(MODE_NOT_RECORDED_NOTICE, 'mode');
+          return false;
+        }
+      }
       store.setMode(effective);
       applyChatMode(modeEnv, effective);
+      // Whatever started it (the popup, `Shift+Tab`, a typed `/mode auto`), a change into a mode that approves without a card says what it
+      // does; the status line already shows the mode's name.
+      if (changes) {
+        // A change into a mode with no word of its own (a narrowing: the status line is its confirmation) withdraws the word of the mode it
+        // left, which would otherwise stay on the row for its few seconds claiming authority the chat no longer has.
+        if (announcesEffect(effective)) opts.announce?.(modeChangedNotice(effective), 'mode');
+        else opts.announce?.('', 'mode');
+      }
+      return true;
     },
     // ADR-0066 §5: push the SESSION override (no reseat) + update the footer. The tier is gated per-model at send,
     // so the footer reflects it only on a reasoning-capable model. The override lives on THIS session instance only
@@ -1786,13 +2066,29 @@ export interface ChatLineHandler extends ChatModeControl {
   readonly onReseat: (target: ReseatTarget) => void;
   /** The captured reseat target once {@link onReseat} fired (else `undefined`) — {@link driveOneSession} reads it. */
   readonly reseatTarget: () => ReseatTarget | undefined;
-  /** The `/permissions` sheet's port ([ADR-0137](../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)):
-   *  present on an interactive session only, where there is someone to ask and a store to read. */
-  readonly permissions: PermissionsPort | undefined;
-  /** The agent this session is bound to, as the `/agent` sheet and notice show it ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+  /** The agent this session is bound to, as the `/agent` popup and notice show it ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
    *  §3): read from the definition the session holds, never from a file, with the reasoning tier the session is using now; built afresh
    *  on every call. */
   readonly boundAgent: () => BoundAgentView;
+  /**
+   * What the report popups read from this session (ADR-0148 §10): the bound agent, the session's cost (read and released), the project's
+   * catalog and the keys of a chat. Present on an interactive session only; the host adds the surface, the owner and the glyph form.
+   */
+  readonly reports: ReportMembers | undefined;
+  /**
+   * What the settings popups read and apply from this session (ADR-0148 §3, §6; MVP-11 step 5): the members of `/mode`, `/effort`, `/models`
+   * (where the catalog is wired) and `/permissions` (its one port over this session's remembered commands and approvals), and the announcement
+   * this handler routes to the host's channel ({@link setAnnouncer}). Present on an interactive session only; the host adds the surface and the
+   * owner.
+   */
+  readonly settings: SettingsMembers | undefined;
+  /**
+   * Bind (or, with `undefined`, unbind) the host's own transient notification (ADR-0148 §2 and §6: `NotificationChannel.notify` with no
+   * popup as its source, so it outlives a popup that closes): where this session's mode control and its typed settings report a change
+   * and a refusal instead of the transcript. Until a host binds it, those announcements are dropped (the status line still shows the
+   * mode). A plain, `--json` or one-shot chat never binds it and keeps its text output.
+   */
+  readonly setAnnouncer: (announce: Announce | undefined) => void;
 }
 
 /**
@@ -1887,6 +2183,29 @@ function workflowListFailureReason(shown: unknown): string {
 }
 
 /**
+ * The `/mode` member of a chat's settings port ([ADR-0148](../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §3, §6), or none where the chat has no startup-default writer (`save`): then a bare `/mode` is dispatched and lists the modes, as it did.
+ * The popup reads the mode in force from the chat's store, applies to this chat through the session's one mode setter, and hands new chats
+ * to `save`, whose result the popup says on the host's channel.
+ */
+function chatModeSettings(
+  control: Pick<ChatModeControl, 'onModeChange'>,
+  store: Pick<ChatStoreController, 'getSnapshot'>,
+  save: ChatReplDeps['saveStartupDefault'],
+  startup: ChatReplDeps['readStartupDefault'],
+): SettingsMembers['mode'] {
+  if (save === undefined) return undefined;
+  return {
+    scope: 'chat',
+    current: () => store.getSnapshot().mode,
+    apply: control.onModeChange,
+    startup: startup ?? (() => undefined),
+    // The confirmation says the chat stays in the mode it is in NOW (read at the hand-off, after the list has closed).
+    saveStartupDefault: (mode) => save(mode, store.getSnapshot().mode),
+  };
+}
+
+/**
  * Build the slash-aware line handler shared by the chat REPL loop (`runReplLoop`) and the 2.5.B Home's in-tree
  * chat driver: `/exit` stops; `/cancel` ends the (resumable) session AND stops; `/export` scaffolds a workflow
  * between turns; an unknown slash warns; anything else is appended + persisted + sent as a turn. The cancel/stop
@@ -1903,6 +2222,7 @@ export function createChatLineHandler(
     | 'chatMaxMessages'
     | 'sendGuard'
     | 'startingModes'
+    | 'modelCatalog'
   >,
   deps: ChatReplDeps,
 ): ChatLineHandler {
@@ -1948,14 +2268,30 @@ export function createChatLineHandler(
   // answers `requestApproval`, so the mode control uses a reject-immediately prompt (no deadlock). Also drives
   // `emitOutput` (a NOTICE in-view vs. a stderr diagnostic).
   const interactive = chatIsInteractive(deps.io, deps.global);
+  /** The wording of every notice this handler composes: the interactive chat's remedies name its own commands, a scripted chat's name the shell's. */
+  const noticeSurface: NoticeSurface = noticeSurfaceOf(chatSurface(interactive));
 
   // The reseat-less mode system (ADR-0057) — created HERE so both the `/mode` command (below) and the driver's
   // keys (Shift+Tab / Esc) drive the SAME control. It applies the resolved starting mode immediately, so the
   // full-capability host is never live without the approval regime (unconfigured/headless `ask` denies governed).
   const commandGrants = openCommandGrants(interactive, built, deps, store);
+  // The host's own notification channel (ADR-0148 §2), bound by the host through `setAnnouncer`; nothing is announced until it is, and
+  // nothing after this invocation stopped publishing output.
+  let announcer: Announce | undefined;
+  const announce: Announce = (text, topic) => {
+    if (noticesStopped()) return;
+    announcer?.(text, topic);
+  };
   const modeControl = createChatModeControl(built, store, {
     interactive,
     ...(commandGrants === undefined ? {} : { commandGrants }),
+    // The roots the command card names its directory against (ADR-0145 §8): the same for the stand-alone chat and the one the Home hosts,
+    // which both build their handler here.
+    commandPaths: displayRoots(deps.global.cwd, built.operatorHomeDir),
+    // ADR-0148 §6: an effective mode change is recorded in THIS session through its persister, which owns the sequence; the stand-alone
+    // chat and the chat the Home hosts both build their handler here, so both keys and every typed or popup change reach this one record.
+    recordModeChange: (from, to) => persister.appendRecord({ kind: 'mode_change', from, to }),
+    announce,
   });
   const noticesStopped = (): boolean =>
     workOwner !== undefined &&
@@ -1992,12 +2328,53 @@ export function createChatLineHandler(
   // copy, so it is the provider and model the chat runs on now), scrubbed by the `/agents` detail's own builder, and the reasoning tier the
   // session is using NOW, which is the footer's (`store.getSnapshot().reasoningEffort`): `/effort` changes it on the session and never on
   // the definition. Made afresh on every call, so a view never says a tier the footer no longer shows. The tools this chat's host does not
-  // wire and the label of the file the agent was read from ride with the session (`wiredTools`, `agentSourceLabel`), so the sheet marks a
+  // wire and the label of the file the agent was read from ride with the session (`wiredTools`, `agentSourceLabel`), so the popup marks a
   // declared tool that the model is never offered and names the file the person chose.
   const boundAgent = (): BoundAgentView =>
     boundAgentView(built.agent, store.getSnapshot().reasoningEffort, {
       wiredTools: built.wiredTools,
       sourceLabel: built.agentSourceLabel,
+    });
+
+  /** The project's catalog, scanned now: `no-project`, or the workflows and the agents (an invalid entry kept). Throws what `discoverCatalog` throws. */
+  const scanCatalogs = ():
+    | { readonly kind: 'no-project' }
+    | {
+        readonly kind: 'catalog';
+        readonly workflows: CatalogEntry[];
+        readonly agents: CatalogEntry[];
+      } => {
+    const { projectConfigDir, homeDir } = readLiveConfig();
+    if (projectConfigDir === undefined) return { kind: 'no-project' };
+    const scan = (kind: CatalogKind): CatalogEntry[] =>
+      discoverCatalog({ projectConfigDir, cwd: deps.global.cwd, kind, homeDir });
+    return { kind: 'catalog', workflows: scan('workflows'), agents: scan('agents') };
+  };
+  /** Why a catalog scan failed, in the fault's own sanitized words as a transcript may carry them (never an absolute path). */
+  const listFailureReason = (err: unknown): string => workflowListFailureReason(faultToShow(err));
+  /** What `/export` writes from, read now: THIS session, into the project the live config finds (the typed line and its popup alike). */
+  const projectExport = (): ExportToProjectOptions => {
+    const { projectConfigDir, homeDir } = readLiveConfig();
+    return {
+      store: opened.store,
+      sessionId: built.sessionId,
+      cwd: deps.global.cwd,
+      projectConfigDir,
+      homeDir,
+    };
+  };
+  /**
+   * Clear the held estimates of THIS session by the user's decision: the durable record, then the live governor, in that order and through
+   * the one function the `/cost` popup's confirmed step calls too (ADR-0074 §1).
+   */
+  const releaseHeldCommitments = (): ReturnType<typeof releaseHeldEstimates> =>
+    releaseHeldEstimates({
+      store: opened.store,
+      sessionId: built.sessionId,
+      governor: built.governor,
+      now: Date.now,
+      // ADR-0148 §6: the release's `cost_release` row, atomic with the release, at the slot this session's persister reserves.
+      record: persister,
     });
 
   // The lifecycle capabilities the curated REPL commands (repl-commands.ts) run over — the slash names and the
@@ -2021,14 +2398,7 @@ export function createChatLineHandler(
       try {
         // MVP-A3: into the project's `.relavium/workflows/` under the title's slug, never over another workflow;
         // re-export rewrites this session's own file, recognized from its `metadata.relaviumExport`.
-        const { projectConfigDir, homeDir } = readLiveConfig();
-        const result = exportSessionToProject({
-          store: opened.store,
-          sessionId: built.sessionId,
-          cwd: deps.global.cwd,
-          projectConfigDir,
-          homeDir,
-        });
+        const result = exportSessionToProject(projectExport());
         emitOutput(SESSION_EXPORT_REVIEW_NOTICE.trimEnd());
         if (noticesStopped()) return;
         if (deps.global.json) {
@@ -2038,11 +2408,16 @@ export function createChatLineHandler(
           // driveJson serializer (subscribed) writes it to stdout, keeping the stream pure + complete.
           built.emitSessionEvent({ type: 'session:exported', workflowPath: result.path });
         } else {
-          // The cwd-relative path and the command that runs it — the export offers the next step. Through the
-          // notice channel, like the review note above: in the full-screen view a raw stderr line is overdrawn by
+          // The cwd-relative path. Inside the TUI it names no command to run the file (MVP-11 OD-20): the Home's own
+          // way to run it (`/run`) is one a chat does not offer. A plain chat is scripted output on stderr, where the
+          // shell command IS the way to run it (ADR-0122 §6), so it keeps the hint it always had. Through the notice
+          // channel, like the review note above: in the full-screen view a raw stderr line is overdrawn by
           // the next frame and discarded with the alternate buffer.
+          const exported = `exported session to ${sourceLabel(deps.global.cwd, result.path)}`;
           emitOutput(
-            `exported session to ${sourceLabel(deps.global.cwd, result.path)} — run it with \`relavium run ${result.workflowId}\``,
+            interactive
+              ? exported
+              : `${exported} — run it with \`relavium run ${result.workflowId}\``,
           );
         }
       } catch (err) {
@@ -2054,7 +2429,7 @@ export function createChatLineHandler(
     },
     // The curated command list — a clean in-view notice in the ink TTY, a stderr list on the plain / `--json` paths.
     help: () => {
-      emitOutput(formatReplHelp().trimEnd());
+      emitOutput(formatReplHelp(deps.surface).trimEnd());
     },
     // `/workflows` (2.5.C S4): the project's disk catalog. A project-less cwd is reported, not an error; the same
     // loader + scanner as `relavium list`.
@@ -2062,22 +2437,19 @@ export function createChatLineHandler(
       // Never crash the REPL (the discipline every slash command obeys): a config/catalog read fault (e.g. an
       // unreadable .relavium/ subdir → a CliError from discoverCatalog) becomes output, not a session-ending throw.
       try {
-        const { projectConfigDir, homeDir } = readLiveConfig();
-        if (projectConfigDir === undefined) {
-          // Path-free (parity with the catch arm): the absolute cwd need not ride the REPL transcript / a screenshare.
-          emitOutput('No .relavium/ project found from the current directory.');
-          return;
-        }
-        const scan = (kind: CatalogKind): CatalogEntry[] =>
-          discoverCatalog({ projectConfigDir, cwd: deps.global.cwd, kind, homeDir });
-        emitOutput(catalogNotice(scan('workflows'), scan('agents')));
+        const scanned = scanCatalogs();
+        // Path-free (parity with the catch arm): the absolute cwd need not ride the REPL transcript / a screenshare.
+        emitOutput(
+          scanned.kind === 'no-project'
+            ? NO_PROJECT_NOTICE
+            : catalogNotice(scanned.workflows, scanned.agents),
+        );
       } catch (err) {
         workOwner?.failure(err);
         // A catalog fault says why in its own words (the cap: "too many workflow files …"), as the Home's picker and `relavium list` do, so a
         // person can act on it; the text is sanitized, and a fault with no words of its own falls back to its code. A cause that carries an
         // absolute path stays on the error's `cause`, never in the message.
-        const shown = faultToShow(err);
-        emitOutput(`could not list workflows: ${workflowListFailureReason(shown)}`);
+        emitOutput(`could not list workflows: ${listFailureReason(err)}`);
       }
     },
     // `/cost` (2.5.C S4 + the 2.6.C per-model breakdown, ADR-0070): the session's spend, per model.
@@ -2086,27 +2458,37 @@ export function createChatLineHandler(
     // covers the whole session, while memory knows only the models used in THIS process — so an in-memory breakdown
     // would visibly fail to sum to the total on the first `/cost` after a resume, breaking the one guarantee the
     // panel makes. The total comes from the same row the rows reconcile against.
-    // `/agent` (ADR-0140 §3): the interactive hosts open the docked sheet before dispatch, so this is what a plain, `--json` or one-shot
-    // chat, which has no sheet, shows: the same fields, as a notice, from the same definition the session holds (nothing is read or written).
+    // `/agent` (ADR-0140 §3): the interactive hosts open the report popup before dispatch (ADR-0148 §10), so this is what a plain, `--json` or
+    // one-shot chat, which has no popup, shows: the same fields, as a notice, from the same definition the session holds (nothing is read or written).
     showAgent: () => {
       emitOutput(agentNotice(boundAgent()));
     },
     // `/permissions` (ADR-0118 §2): the project's remembered commands and this session's approvals, and withdrawing one.
-    // `/permissions` reaches here only where no sheet opens (a plain, `--json` or one-shot chat): the interactive hosts open the sheet
-    // before dispatch (ADR-0137 §2), so this is the sentence a surface with no one to ask gives.
+    // `/permissions` reaches here only where no popup opens (a plain, `--json` or one-shot chat): the interactive hosts open the popup
+    // before dispatch (ADR-0137 §2, ADR-0148 §10), so this is the sentence a surface with no one to ask gives.
     managePermissions: () => {
       emitOutput(PERMISSIONS_NOT_AVAILABLE);
     },
     showCost: (release = false) => {
+      // `--release` FIRST, so the panel below renders the post-release state rather than the amount the user
+      // just cleared (#W15-3). Both halves, in this order: the durable columns (which is what a resumed
+      // session seeds its cap from — clearing only the live governor let a released commitment come straight
+      // back on the next `chat-resume`), then the in-memory governor.
+      let released: number | undefined;
+      if (release) {
+        try {
+          released = releaseHeldCommitments().durable;
+        } catch (err) {
+          workOwner?.failure(err);
+          // A failed RELEASE is not a failed read: its transaction rolled back (the holds, the governor and the record row are all as
+          // they were), so it says that, by CODE and never a raw message (a DB error can carry a path), and shows no panel.
+          emitOutput(
+            `could not release the held estimates: ${err instanceof CliError ? err.code : 'unexpected error'} — nothing was released`,
+          );
+          return;
+        }
+      }
       try {
-        // `--release` FIRST, so the panel below renders the post-release state rather than the amount the user
-        // just cleared (#W15-3). Both halves, in this order: the durable columns (which is what a resumed
-        // session seeds its cap from — clearing only the live governor let a released commitment come straight
-        // back on the next `chat-resume`), then the in-memory governor.
-        const released = release
-          ? opened.store.releaseSessionConservativeCommitments(built.sessionId, Date.now())
-          : undefined;
-        if (release) built.governor?.releaseConservativeCommitments();
         // ONE snapshot: the rows and the total they are printed under must come from the same read, or a concurrent
         // process's cost write can land between them and the panel prints rows summing to MORE than its own total.
         const { totalCostMicrocents, rows, coverage, models } =
@@ -2137,7 +2519,9 @@ export function createChatLineHandler(
       // the fast tier is instant, so it needs no progress line. Parity with the Home's transient 'checking…'.
       if (deep) emitOutput('doctor: validating providers + MCP…');
       try {
-        emitOutput(formatDoctorReport(await runDoctorChecks(deep, doctorProbes)));
+        emitOutput(
+          formatDoctorReport(await runDoctorChecks(deep, doctorProbes), !deps.global.color),
+        );
       } catch (cause) {
         workOwner?.failure(cause);
         // runDoctorChecks should not throw (every probe catches its own faults), so this is a defensive net.
@@ -2148,19 +2532,12 @@ export function createChatLineHandler(
     // `/mode [name]` (ADR-0057): switch the chat mode, or (bare `/mode`) show the current mode + the options.
     // The dispatch already validated `modeArg` against the mode names, so a non-empty arg parses; still
     // fail-soft. Applying re-pushes the turn policy on the SAME session (no reseat), effective next turn.
-    setMode: async (modeArg) => {
+    // An interactive chat's bare `/mode` is the settings popup (ADR-0148 §3, §6), which its host opens before the line is dispatched.
+    setMode: (modeArg) => {
       const requested = modeArg.trim();
       if (requested.length === 0) {
-        if (interactive && deps.openModeSettings !== undefined) {
-          await deps.openModeSettings(
-            () => store.getSnapshot().mode,
-            modeControl.onModeChange,
-            emitOutput,
-          );
-          return;
-        }
-        // Bare `/mode`: show the current mode + EXPLAIN each one (a discovery affordance — the palette submits
-        // this bare form), listing every mode with its one-line description and marking the active one.
+        // Bare `/mode` that reached the dispatch (a plain, `--json` or one-shot chat, or a host with no `/mode` popup): show the current
+        // mode + EXPLAIN each one (a discovery affordance), listing every mode with its one-line description and marking the active one.
         const current = store.getSnapshot().mode;
         const rows = CHAT_MODES.map(
           (m) =>
@@ -2174,8 +2551,18 @@ export function createChatLineHandler(
         emitOutput(`/mode: unknown mode '${requested.replace(/[^\x20-\x7e]/g, '?').slice(0, 16)}'`);
         return;
       }
-      modeControl.onModeChange(mode);
-      emitOutput(`mode: ${MODE_LABEL[store.getSnapshot().mode]}`);
+      const from = store.getSnapshot().mode;
+      const applied = modeControl.onModeChange(mode);
+      // A plain, `--json` or one-shot chat says the mode in force as text, byte for byte as before (the clamp keeps it `ask`).
+      if (!interactive) {
+        emitOutput(`mode: ${MODE_LABEL[store.getSnapshot().mode]}`);
+        return;
+      }
+      // ADR-0148 §6: a typed setting applies directly and writes nothing into the transcript; it is confirmed by the status line and the
+      // host's notification. The mode control has announced a change into `accept-edits` or `auto` and said why a refused change did not
+      // happen; a narrowing, or a mode already in force, is confirmed here.
+      if (applied && (from === mode || !announcesEffect(mode)))
+        announce(modeChangedNotice(mode), 'mode');
     },
     // `/effort [tier]` (ADR-0066 §5): set the session's reasoning-effort override, or (bare `/effort`) show the
     // current tier + explain each option. Applying pushes the SESSION override on the SAME instance — a per-turn
@@ -2194,7 +2581,9 @@ export function createChatLineHandler(
         // the palette submits this bare form), marking the active one.
         const current = store.getSnapshot().reasoningEffort;
         if (offered.length === 0) {
-          emitOutput(`reasoning effort: ${effortUnavailableNote(built.agent.model)}`);
+          emitOutput(
+            `reasoning effort: ${effortUnavailableNote(built.agent.model, noticeSurface)}`,
+          );
           return;
         }
         // Label + mark through the SAME projection the picker uses, so a budget model reads "on" and a bound tier
@@ -2230,13 +2619,20 @@ export function createChatLineHandler(
       if (!offered.includes(tier)) {
         // A REAL tier that THIS model rejects. Refuse it here rather than binding it and letting the gate drop it
         // at send: a tier that is set, displayed, and never sent is the silent-billing bug this work removes.
-        emitOutput(effortRejectedNote(built.agent.model, tier, offered));
+        emitOutput(effortRejectedNote(built.agent.model, tier, offered, noticeSurface));
         return;
       }
+      const already = store.getSnapshot().reasoningEffort === tier;
       modeControl.onSetEffort(tier);
-      emitOutput(
-        `reasoning effort: ${effortRowLabel(built.agent.model, tier).label} — applies to your next message.`,
-      );
+      const label = effortRowLabel(built.agent.model, tier).label;
+      // A plain, `--json` or one-shot chat says the tier as text, byte for byte as before.
+      if (!interactive) {
+        emitOutput(`reasoning effort: ${label} — applies to your next message.`);
+        return;
+      }
+      // ADR-0148 §6: a typed setting applies directly and writes nothing into the transcript; the status line shows the tier and the host's
+      // notification says what changed, in the words of the `/effort` popup's `Enter`.
+      announce(effortAnnouncement(label, already));
     },
     // `/thinking` (2.5.H): toggle the collapsible reasoning panel — a pure store-view flip (no session/engine
     // effect), mirroring the Ctrl+T keybind. Report the resulting state so the toggle is confirmed (the panel only
@@ -2317,14 +2713,13 @@ export function createChatLineHandler(
       clearRequested = true;
       stop = true;
     },
-    // `/models` on the chat surface (ADR-0059) opens the ink reseat-picker overlay — but that is intercepted at the
-    // RENDER layer (ChatApp), BEFORE this core handler, so `openModels` runs ONLY on a non-interactive driver
-    // (plain/`--json`), where there is no overlay. There, surface an actionable hint instead of a silent no-op: a
-    // live reseat needs an interactive terminal (one machine stream stays one session lifecycle, ADR-0049); the
-    // Home's `/models` is the alternative for setting the next-session default.
+    // A bare `/models` in an interactive chat opens the settings popup (ADR-0148 §3, §6), routed by the chat's host BEFORE this core
+    // handler, so `openModels` runs ONLY on a non-interactive driver (plain/`--json`), where there is no popup. There, surface an
+    // actionable hint instead of a silent no-op: a live reseat needs an interactive terminal (one machine stream stays one session
+    // lifecycle, ADR-0049); the global `[preferences].default_model` (what the Home's `/models` writes) sets the default of new chats.
     openModels: () =>
       emitOutput(
-        '/models needs an interactive terminal to switch the model live. From a pipe, set `[chat].default_model` ' +
+        '/models needs an interactive terminal to switch the model live. From a pipe, set `[preferences].default_model` ' +
           'in your config, or run `relavium` (the Home) to change the default.',
       ),
     // The hatches (ADR-0068 §e). Unlike `/models` these need no render-layer interception: they open no overlay, so
@@ -2338,6 +2733,13 @@ export function createChatLineHandler(
   // cognitive-complexity ceiling). Returns after emitting any error/echo through the notice channel — an
   // interactive error belongs in-view (ink), not on stderr behind the live view.
   const handleSlashCommand = async (line: string): Promise<void> => {
+    // A key after a stray `/` (`/sk-ant-...`), or as an argument (`/exit sk-ant-...`), is answered with a fixed sentence BEFORE anything is
+    // echoed, so this one check stands in front of every echo of the line: the unknown-command line below (up to 64 characters of it), the
+    // validators' echo of a token (32), `/trim`'s of its argument (16) and any command's own (round 2, A3, K3).
+    if (looksLikeProviderKey(line)) {
+      emitOutput(KEY_SHAPED_COMMAND_NOTICE);
+      return;
+    }
     // Split the post-slash string into a command name + arg tokens, so `/doctor --deep` dispatches `doctor`
     // with `['--deep']`. A zero-arg command takes no tokens (so `/exit now` is rejected), preserving the prior
     // exact-match strictness while admitting declared flags.
@@ -2345,20 +2747,19 @@ export function createChatLineHandler(
     const command =
       name !== undefined && name.length > 0 ? REPL_COMMANDS_BY_NAME.get(name) : undefined;
     if (command === undefined) {
+      // A word only the Home has (`/providers`, `/init`, `/import`, `/pricing`, `/run`, `/agents`, and `/resume`, which a stand-alone chat
+      // has no list for): one line that names the Home, and nothing opens (ADR-0145 §7.4). It is not an unknown command. This handler
+      // is a stand-alone chat's (and a plain or `--json` driver's): the chat the Home hosts answers those words in its controller first,
+      // with its own sentence, so this is the `standalone-chat` surface, which also says how to reach the Home.
+      const pointer = name === undefined ? undefined : homeOnlyPointer(name, 'standalone-chat');
+      if (pointer !== undefined) {
+        emitOutput(pointer);
+        return;
+      }
       // Echo a SANITIZED form — strip non-printable bytes + truncate — so a crafted slash can't smuggle a
       // terminal control sequence (or a flood).
       const safe = line.replace(/[^\x20-\x7e]/g, '?').slice(0, 64);
-      emitOutput(`unknown command '${safe}'. Available: ${replCommandList()}.`);
-      return;
-    }
-    // Surface-scope guard (2.5.G S7): a command not `availableIn` this (chat) surface — e.g. the HOME-ONLY `/models`
-    // — is rejected with an actionable pointer, never dispatched. The palette already filters by surface
-    // (CHAT_PALETTE_COMMANDS); this covers a command TYPED directly, keeping the home-only next-session `/models`
-    // config action distinct from the Phase-2.6 mid-chat `/models` live reseat (ADR-0059).
-    if (!command.availableIn.includes('chat')) {
-      emitOutput(
-        `/${command.name} is available from the Home (run \`relavium\` with no arguments), not inside a chat.`,
-      );
+      emitOutput(`unknown command '${safe}'. Available: ${replCommandList(deps.surface)}.`);
       return;
     }
     const rejection = validateSlashTokens(command, tokens);
@@ -2413,16 +2814,109 @@ export function createChatLineHandler(
       stop = true;
     },
     reseatTarget: () => reseatRequested,
+    setAnnouncer: (next) => {
+      announcer = next;
+    },
     onAbort: modeControl.onAbort,
     onModeChange: modeControl.onModeChange,
     onSetEffort: modeControl.onSetEffort,
     commandApprovals: modeControl.commandApprovals,
     boundAgent,
-    permissions: interactive
-      ? createPermissionsPort(
-          { grants: commandGrants, session: modeControl.commandApprovals },
-          'chat',
-        )
+    // The report popups' members (ADR-0148 §10): interactive only, where there is a popup host to open them on.
+    reports: interactive
+      ? {
+          agent: boundAgent,
+          cost: {
+            // One snapshot of the rows and the total they are printed under (a concurrent process's cost write cannot land between them), and
+            // what the live governor holds: read only in work the popup starts (`cost-session.ts`), never while a frame is drawn.
+            read: () => {
+              const { totalCostMicrocents, rows, coverage, models } =
+                opened.store.loadSessionCostBreakdown(built.sessionId);
+              return {
+                totalCostMicrocents,
+                rows,
+                coverage,
+                models,
+                governor: built.governor?.conservativeState(),
+              };
+            },
+            release: releaseHeldCommitments,
+          },
+          workflows: {
+            read: (): WorkflowsReading => {
+              try {
+                return scanCatalogs();
+              } catch (err) {
+                workOwner?.failure(err);
+                return { kind: 'fault', reason: listFailureReason(err) };
+              }
+            },
+          },
+          help: { keys: Object.values(CHAT_KEYS) },
+          // `/export` asks first (ADR-0148 §10, OD-10): where the scaffold would go, worked out and not written, then this session's own
+          // `/export` write at the answer, the file named project-relative and a fault in the product's words. Nothing reaches the transcript.
+          export: {
+            prepare: () => {
+              const { target, overwrites } = prepareSessionExport(projectExport());
+              return { target, overwrites };
+            },
+            commit: () => {
+              const options = projectExport();
+              return { target: exportedTarget(options, exportSessionToProject(options)) };
+            },
+            failure: (cause) => toUserFacing(faultToShow(cause)).message,
+            review: SESSION_EXPORT_REVIEW_SENTENCE,
+          },
+        }
+      : undefined,
+    // The settings popups' members (ADR-0148 §3, §6): interactive only, where there is a popup host to open them on. Each applies through the
+    // same function its typed form does (`/effort high` and the popup's `Enter` both reach `onSetEffort`), and says so through `announce`.
+    settings: interactive
+      ? {
+          announce,
+          effort: {
+            model: () => built.agent.model,
+            tiers: () => effortTiersFor(built.agent.model),
+            current: () => store.getSnapshot().reasoningEffort,
+            apply: modeControl.onSetEffort,
+          },
+          // `/models` (ADR-0148 §3, §6): this session's half (its model, provider and tier, its tier setter, the catalog and the default's
+          // writer of its `modelCatalog`); the switch is the host's (`bindModelSwitch`). Only where the catalog is wired (a stand-alone chat:
+          // the chat the Home hosts gets its member from the Home's controller).
+          models: chatModelsSettings(
+            wiring.modelCatalog,
+            built,
+            store,
+            modeControl.onSetEffort,
+            {
+              readEffective: () => readLiveConfig().config.chat.defaultModel,
+              closing: noticesStopped,
+              failure: (cause) => workOwner?.failure(cause),
+            },
+            () => readLiveConfig().config.chat.defaultProvider,
+            () => readLiveConfig().config.chat.reasoningEffort,
+          ),
+          // `/mode` (one list, two actions: MVP-11 unit 8, OD-25): `Enter` applies this chat through the session's one mode setter, which records
+          // the change, refuses an unrecorded widening and announces itself; `[s]` saves the startup default through the writer's flow on this chat's
+          // native prompt, framed as the confirmation popup, its result its Done step or one notification (never the transcript). The saved default
+          // is read when the popup opens. Only where that writer is wired.
+          mode: chatModeSettings(
+            modeControl,
+            store,
+            deps.saveStartupDefault,
+            deps.readStartupDefault,
+          ),
+          // `/permissions` (ADR-0137 §2, as a popup: ADR-0148 §10): the project's remembered commands and this session's approvals over the
+          // store and the cache this chat holds, read when the popup opens and again after a withdrawal; the note above them reads the mode now.
+          // The session's ONE permissions port: nothing else of the handler builds one (the retired sheet's field is gone).
+          permissions: {
+            port: createPermissionsPort(
+              { grants: commandGrants, session: modeControl.commandApprovals },
+              'chat',
+            ),
+            mode: () => store.getSnapshot().mode,
+          },
+        }
       : undefined,
   };
 }
@@ -2517,6 +3011,7 @@ async function buildFreshChatWiring(
         ? {}
         : { onCompactionStart: deps.onCompactionStart }),
       onEffortWithheld: deps.onEffortWithheld,
+      noticeSurface: chatNoticeSurface(deps.io, deps.global),
       onEffectAttention: deps.onEffectAttention,
       onListenerError: deps.onListenerError,
       onUnpriced: deps.onUnpriced,
@@ -2587,6 +3082,7 @@ async function buildFreshChatWiring(
     throw err;
   }
   const doctorProbes = assembleDoctorProbes({
+    noticeSurface: chatNoticeSurface(deps.io, deps.global),
     readConfig: () => {
       deps.startingModes.read(built.context.workingDir);
     },
@@ -2607,7 +3103,7 @@ async function buildFreshChatWiring(
     doctorProbes,
     startSession: () => built.session.start(),
     intro,
-    modelPicker: buildChatModelsPort(
+    modelCatalog: buildChatModelsPort(
       deps.opened,
       deps.providers,
       built.agent.model,
@@ -2624,8 +3120,8 @@ async function buildFreshChatWiring(
  * Build the `/clear` re-drive rebuild closure (ADR-0062 §7) — SHARED by `chat` and `chat-resume` so the rebuild
  * CONTRACT (the {@link FreshChatWiringDeps} assembly + the {@link buildFreshChatWiring} call) lives in ONE place and
  * cannot drift between them. Given the current session's bound agent + the command's capability inputs, it returns a
- * `(oldSessionId) => Promise<ReplWiring>` that assembles a FRESH session over the SAME agent + SHARED db, its intro
- * the {@link clearedNotice} naming the prior (still-resumable) session.
+ * `() => Promise<ReplWiring>` that assembles a FRESH session over the SAME agent + SHARED db, its intro
+ * the {@link clearedNotice} saying the prior (still-resumable) session is saved.
  */
 function createClearRebuild(params: {
   readonly onEffectAttention: NonNullable<BuildChatSessionOptions['onEffectAttention']>;
@@ -2650,7 +3146,7 @@ function createClearRebuild(params: {
   readonly global: GlobalOptions;
   /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — forwarded so a `/clear` re-drive keeps the render mode. */
   readonly altScreen?: boolean | undefined;
-}): (oldSessionId: string) => Promise<ReplWiring> {
+}): () => Promise<ReplWiring> {
   const wiringDeps: FreshChatWiringDeps = {
     startingModes: params.startingModes,
     homeDir: params.homeDir,
@@ -2682,11 +3178,11 @@ function createClearRebuild(params: {
     onListenerError: (note: string) => emitLiveNotice(params.io, note),
     onUnpriced: (note) => emitLiveNotice(params.io, note),
   };
-  return (oldSessionId) =>
+  return () =>
     params.ownership === undefined
-      ? buildFreshChatWiring(wiringDeps, clearedNotice(oldSessionId))
+      ? buildFreshChatWiring(wiringDeps, clearedNotice('standalone-chat'))
       : params.ownership.hosts.construct((host) =>
-          buildFreshChatWiring(wiringDeps, clearedNotice(oldSessionId), host),
+          buildFreshChatWiring(wiringDeps, clearedNotice('standalone-chat'), host),
         );
 }
 
@@ -2878,6 +3374,7 @@ async function buildReseatWiring(
         ? {}
         : { onCompactionStart: deps.onCompactionStart }),
       onEffortWithheld: deps.onEffortWithheld,
+      noticeSurface: chatNoticeSurface(deps.io, deps.global),
       onEffectAttention: deps.onEffectAttention,
       onListenerError: deps.onListenerError,
       onUnpriced: deps.onUnpriced,
@@ -2909,6 +3406,7 @@ async function buildReseatWiring(
   // transcript rather than a raw `io.writeErr` the alt buffer would discard (Step-4b-3 Sonnet review).
   for (const line of mcpSkippedLines(resumed.mcpSkipped)) seeded.store.notice(line);
   const doctorProbes = assembleDoctorProbes({
+    noticeSurface: chatNoticeSurface(deps.io, deps.global),
     readConfig: () => {
       deps.startingModes.read(resumed.context.workingDir);
     },
@@ -2920,6 +3418,11 @@ async function buildReseatWiring(
     agentMcpServers: resumed.agent.mcp_servers ?? [],
     mcpSkipped: resumed.mcpSkipped,
   });
+  // The notice that opens the reseated session names the old model; it is built here, where `loaded.session.agentSnapshot` is narrowed.
+  const fromModel = loaded.session.agentSnapshot.model;
+  const modelSwitchIntro = withGlyphForm(!deps.global.color, () =>
+    modelSwitchNotice(fromModel, target.modelId),
+  );
   return {
     startingModes: deps.startingModes,
     built: resumed,
@@ -2944,9 +3447,9 @@ async function buildReseatWiring(
           else return deps.io.writeErrAcknowledged(`${text}\n`);
         },
       }),
-    intro: modelSwitchNotice(loaded.session.agentSnapshot.model, target.modelId),
+    intro: modelSwitchIntro,
     // The picker's `boundModel` is now the SWITCHED model — a further reseat marks it as the ✓ "you are here".
-    modelPicker: buildChatModelsPort(
+    modelCatalog: buildChatModelsPort(
       deps.opened,
       deps.providers,
       resumed.agent.model,
@@ -3087,7 +3590,8 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
   const interactive = chatIsInteractive(deps.io, deps.global);
   const runtime = wiring.startingModes;
   const native = interactive && runtime !== undefined ? createNativePromptChannel() : undefined;
-  let nativeFlush: NoticeFlush | undefined;
+  // The flush of the host mounted for the card active now (a host exists only while a card does): see `native-flush-port.ts`.
+  const nativeFlush = native === undefined ? undefined : createNativeFlushPort(native.ui);
   let modeSettingsActive = true;
   const assertModeAdmitting = (): void => {
     built.workOwner?.assertAdmitting();
@@ -3098,29 +3602,40 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     ...(native === undefined || runtime === undefined
       ? {}
       : {
-          openModeSettings: (
-            currentMode: () => ChatMode,
-            onCurrentMode: (mode: ChatMode) => void,
-            notice: (text: string) => void,
-          ) =>
-            runModeSettings({
-              runtime,
-              cwd: built.context.workingDir,
-              interactive,
-              flow: native.flow,
-              currentMode,
-              onCurrentMode,
-              notice,
-              assertAdmitting: assertModeAdmitting,
-              publish: (prepared, assertAdmitting) =>
-                publishModePreference({
-                  prepared,
-                  flow: native.flow,
-                  ui: native.ui,
-                  flushVisible: () => nativeFlush,
-                  assertAdmitting,
-                }),
-            }),
+          // The `/mode` popup's `[s]` (ADR-0148 §3, §6; MVP-11 unit 8): the startup-default writer's own flow on this chat's native prompt, framed
+          // as the confirmation popup (`Mode · Confirm · Done`), with the publication's visibly admitted frame; what it came to is returned for
+          // the popup to settle (its Done step, one notification, a step back), and a fault after it is the session's work owner's.
+          saveStartupDefault: async (mode: ChatMode, inChat: ChatMode) => {
+            // Loaded when first asked for, as the popups are (`lazy-load.test.ts`): the confirmation is the popup code's.
+            const { saveChatStartupDefault } = await import('../popups/mode-confirm.js');
+            return saveChatStartupDefault(
+              {
+                runtime,
+                cwd: built.context.workingDir,
+                interactive,
+                flow: native.flow,
+                target: flowText(
+                  displayPath(
+                    runtime.configPath,
+                    displayRoots(built.context.workingDir, built.operatorHomeDir),
+                  ),
+                ),
+                failure: (cause) => built.workOwner?.failure(cause),
+                assertAdmitting: assertModeAdmitting,
+                publish: (prepared, assertAdmitting) =>
+                  publishModePreference({
+                    prepared,
+                    flow: native.flow,
+                    ui: native.ui,
+                    flushVisible: () => nativeFlush?.current(),
+                    assertAdmitting,
+                  }),
+              },
+              mode,
+              inChat,
+            );
+          },
+          readStartupDefault: () => readStartupDefault(runtime, built.context.workingDir),
         }),
   };
   const {
@@ -3133,11 +3648,25 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     onAbort,
     onModeChange,
     onSetEffort,
-    permissions,
     boundAgent,
-  } = createChatLineHandler(wiring, modeDeps);
-  // TTY-interactive (a TTY and not `--json`) ⇒ the ink driver, the ONLY one that renders the view store + the
-  // model-picker overlay. A live reseat is interactive-only (like `/clear`): wiring `onReseat` only there means
+    reports,
+    settings,
+    setAnnouncer,
+  } = createChatLineHandler(
+    // The `/models` popup's "New chats" (ADR-0148 §3, §6): the default's writer, on this chat's native card as the startup default's is.
+    withDefaultModelWriter(
+      wiring,
+      native,
+      (signal) =>
+        nativeFlush === undefined
+          ? Promise.reject(new NativeHostUnavailableError())
+          : nativeFlush.mounted(signal),
+      assertModeAdmitting,
+    ),
+    modeDeps,
+  );
+  // TTY-interactive (a TTY and not `--json`) ⇒ the ink driver, the ONLY one that renders the view store and the
+  // popups. A live reseat is interactive-only (like `/clear`): wiring `onReseat` only there means
   // `stopReason()` can never yield `'reseat'` under `--json`/plain — one machine stream stays one session (ADR-0049).
 
   // The `@`-mention completion reader (2.5.D, ADR-0061): a READ-ONLY fs jail at the SAME fs-scope tier + workspace
@@ -3201,7 +3730,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
             modePrompt: {
               ui: native.ui,
               ready: (flush: NoticeFlush) => {
-                nativeFlush = flush;
+                nativeFlush?.ready(flush);
               },
             },
           }),
@@ -3238,16 +3767,56 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
       onAbort,
       onModeChange,
       onSetEffort,
-      // The reseat trigger (onReseat) + its picker are wired together, interactive-only: the ink overlay reads the
-      // catalog through `modelPicker` and calls `onReseat` on accept. A plain/`--json` driver gets neither.
+      // The reseat trigger, interactive-only: the `/models` popup's `This chat` reaches it through the host's switch
+      // (`bindModelSwitch`), which then ends this driver for the rebuild. A plain/`--json` driver gets none.
       ...(interactive ? { onReseat } : {}),
-      ...(interactive && wiring.modelPicker !== undefined
-        ? { modelPicker: wiring.modelPicker }
-        : {}),
-      // The `/permissions` sheet opens only where someone can ask (ADR-0137 §2); a plain or `--json` driver gets no port and says so.
-      ...(interactive && permissions !== undefined ? { permissions } : {}),
-      // The `/agent` sheet opens only in an interactive chat: a plain or `--json` driver has no sheet, and the command prints a notice there.
+      // The same view `reports.agent` reads, for a driver (and its tests) that reads it directly: an interactive chat only.
       ...(interactive ? { boundAgent } : {}),
+      // The report popups (`/agent`, `/cost`, `/workflows`, `/help`; ADR-0148 §10) open only in an interactive chat; a plain, `--json` or one-shot
+      // driver has no port and each command prints the text it printed before.
+      ...(interactive && reports !== undefined
+        ? {
+            reports: {
+              ...reports,
+              surface: 'standalone-chat' as const,
+              ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
+              // `[c] copy` rides the same clipboard closure as `/copy` and the doctor's `[c]`.
+              ...(hatchPortsForClipboard === undefined
+                ? {}
+                : { clipboard: hatchPortsForClipboard.clipboard }),
+              plainGlyphs: !deps.global.color,
+            },
+          }
+        : {}),
+      // The settings popups (`/mode`, `/effort`, `/models`, `/permissions`; ADR-0148 §3, §6) open only in an interactive chat, whose driver
+      // binds the session's announcements to its own channel; a plain, `--json` or one-shot driver has neither, and each command prints the
+      // text it printed before.
+      ...(interactive && settings !== undefined
+        ? {
+            settings: {
+              ...settings,
+              surface: 'standalone-chat' as const,
+              ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
+            },
+            setAnnouncer,
+          }
+        : {}),
+      // The `/doctor` popup opens only in an interactive chat (ADR-0148 §8); a plain or `--json` driver prints the text report as before.
+      ...(interactive
+        ? {
+            doctor: {
+              scope: deps.doctorScope ?? wiring,
+              surface: 'standalone-chat' as const,
+              resultKey: built.sessionId,
+              probes: wiring.doctorProbes,
+              ...(built.workOwner === undefined ? {} : { workOwner: built.workOwner }),
+              ...(hatchPortsForClipboard === undefined
+                ? {}
+                : { clipboard: hatchPortsForClipboard.clipboard }),
+              plainGlyphs: !deps.global.color,
+            },
+          }
+        : {}),
       ...(mentionReader === undefined ? {} : { mentionReader }),
       ...(runShellCommand === undefined ? {} : { runShellCommand }),
       // The ADR-0068 §e suspend port (Step 5d) — only an INK driver can attach to it (`suspendTerminal` lives inside
@@ -3277,6 +3846,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     throw cause;
   } finally {
     modeSettingsActive = false;
+    nativeFlush?.dispose();
     native?.ui.dispose();
     liveCompactionNotice = undefined;
     liveSessionNotice = undefined; // the session is ending — never route a notice to a torn-down store
@@ -3322,7 +3892,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
 function resolveSwapRebuild(
   outcome: ChatDriveOutcome,
   oldSessionId: string,
-  rebuild: ((oldSessionId: string) => Promise<ReplWiring>) | undefined,
+  rebuild: (() => Promise<ReplWiring>) | undefined,
   reseatRebuild:
     | ((
         oldSessionId: string,
@@ -3335,7 +3905,7 @@ function resolveSwapRebuild(
    *  its entire contract is a fresh start, and its `rebuild` path never sees this argument. */
   carriedTranscript: readonly TranscriptEntry[],
 ): (() => Promise<ReplWiring>) | undefined {
-  if (outcome.kind === 'clear' && rebuild !== undefined) return () => rebuild(oldSessionId);
+  if (outcome.kind === 'clear' && rebuild !== undefined) return rebuild;
   if (outcome.kind === 'reseat' && reseatRebuild !== undefined && outcome.target !== undefined) {
     const target = outcome.target;
     return () => reseatRebuild(oldSessionId, target, carriedTranscript);
@@ -3503,7 +4073,7 @@ export function transcriptBoundFor(altActive: boolean): TranscriptBound {
 export async function runReplLoop(
   wiring: ReplWiring,
   deps: ChatReplDeps,
-  rebuild?: (oldSessionId: string) => Promise<ReplWiring>,
+  rebuild?: () => Promise<ReplWiring>,
   reseatRebuild?: (
     oldSessionId: string,
     target: ReseatTarget,
@@ -3647,6 +4217,7 @@ export async function runReplLoop(
     ...deps,
     hatchPorts,
     copyOnSelect,
+    doctorScope: deps.doctorScope ?? {},
     ...(terminalOwner === undefined ? {} : { adoptTerminalMount: terminalOwner.adoptMount }),
   };
 
@@ -3871,7 +4442,7 @@ export async function drivePlain(ctx: ChatDriveContext): Promise<ChatDriveOutcom
             : ctx.subscribeInterrupt(onSigint);
         ctx.workOwner?.signal.addEventListener('abort', stopInput, { once: true });
         if (ctx.workOwner?.signal.aborted === true) stopInput();
-        io.writeOut(`${ctx.intro ?? 'relavium chat — type a message, or /exit to quit.'}\n`);
+        io.writeOut(`${ctx.intro ?? 'relavium chat — type a message, or /exit to end.'}\n`);
         ctx.workOwner?.assertAdmitting();
         ctx.startSession(); // subscription wired above ⇒ session:started is observed (fresh), or a no-op (resume)
         // A full output pipe must not hold cancellation/teardown hostage. The race observes late

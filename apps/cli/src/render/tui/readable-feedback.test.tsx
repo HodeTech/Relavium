@@ -48,9 +48,9 @@ describe('MVP-2 truthful feedback', () => {
     const call = store.getSnapshot().state.liveToolCalls[0];
     expect(call).toBeDefined();
     if (call === undefined) return;
-    expect(formatToolCall(call)).toBe('→ read_file ✗ failed');
-    expect(formatToolCall({ ...call, success: true })).toBe('→ read_file ✓');
-    expect(formatToolCall({ ...call, resolved: false })).toBe('→ read_file …');
+    expect(formatToolCall(call)).toBe('▸ read_file ✗ failed');
+    expect(formatToolCall({ ...call, success: true })).toBe('▸ read_file ✓ completed');
+    expect(formatToolCall({ ...call, resolved: false })).toBe('▸ read_file …');
   });
 
   it('turns a local clipboard failure into a content-free failed outcome', async () => {
@@ -175,7 +175,7 @@ describe('MVP-2 truthful feedback', () => {
       const frame = stripTerminalControls(capture.lastFrame() ?? '');
       expect(frame).toContain('**literal**');
       expect(frame.includes('│')).toBe(color);
-      expect(frame).toContain('Esc to stop');
+      expect(frame).toContain('Esc stops the turn');
       expect(frame.split('\n').length).toBeLessThanOrEqual(24);
       store.apply({
         ...stamp,
@@ -237,7 +237,11 @@ describe('MVP-2 truthful feedback', () => {
           </Box>,
         );
         await waitFor(() => (capture.lastFrame() ?? '').includes('second'));
-        expect(stripTerminalControls(capture.lastFrame() ?? '')).toMatch(/first\n *\nsecond/);
+        // the streamed answer stands in the content column of the grid (unit 9): the blank row is a real row between two rows that begin 6 columns in;
+        // inline, the stream's first row carries the reply's word in the margin (review round 2, S2-3)
+        expect(stripTerminalControls(capture.lastFrame() ?? '')).toMatch(
+          alternate ? / {6}first\n *\n {6}second/ : /agent first\n *\n {6}second/,
+        );
         capture.unmount();
       }
     },

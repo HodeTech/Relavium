@@ -9,7 +9,11 @@ export interface SessionPageCursor {
   readonly id: string;
 }
 export interface SessionPageOptions {
-  /** Absent means every directory. This is discovery, never workspace authority. */
+  /**
+   * Absent means every directory. This is discovery, never workspace authority. An undefined value is absent here (unlike
+   * `SessionStore.listSessions`, where a present `workingDir` key is a scope even when undefined, and `countSessions`, where it is
+   * required); an empty or non-string one is refused (`SessionDiscoveryBoundaryError`).
+   */
   readonly workingDir?: string;
   /** Literal title substring; SQL wildcards in the input remain literal. */
   readonly title?: string;
@@ -36,6 +40,31 @@ export class SessionDiscoveryBoundaryError extends RelaviumError {
     this.name = 'SessionDiscoveryBoundaryError';
   }
 }
+/**
+ * A directory a read is scoped to: a non-empty string, or {@link SessionDiscoveryBoundaryError}. One check for the reads that filter by
+ * `working_dir` (the page, the bounded list and the count), so none of them reads a bad value as "every directory".
+ */
+export function scopedWorkingDir(workingDir: unknown): string {
+  if (typeof workingDir !== 'string' || workingDir.length === 0)
+    throw new SessionDiscoveryBoundaryError();
+  return workingDir;
+}
+
+/**
+ * How many live (not soft-deleted) sessions were started in `workingDir`: the number of rows `listSessionPage({ workingDir })` and
+ * `listSessions({ workingDir })` hold, read as one `count(*)` off `idx_agent_sessions_working_dir_updated` (plan pinned in
+ * apps/cli/src/harness/perf-budget.e2e.test.ts). Read-only; the directory is a bound parameter and must be a non-empty string.
+ */
+export function countSessionsInDirectory(db: Db, workingDir: unknown): number {
+  const dir = scopedWorkingDir(workingDir);
+  const row = db
+    .select({ count: sql<number>`count(*)`.mapWith(Number) })
+    .from(agentSessions)
+    .where(and(isNull(agentSessions.deletedAt), eq(agentSessions.workingDir, dir)))
+    .get();
+  return row?.count ?? 0;
+}
+
 const CursorSchema = AgentSessionSchema.pick({ id: true, updatedAt: true });
 const IdentitySchema = AgentSessionSchema.pick({
   id: true,

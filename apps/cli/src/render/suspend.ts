@@ -132,7 +132,7 @@ export async function suspendFullScreen(
  *
  * `suspendTerminal` exists ONLY inside a mounted ink tree (`useApp()`), but the slash-command dispatch that must call
  * it lives outside React: `relavium chat`'s `ReplCommandContext` is built before `driveInk` mounts, and the Home's
- * `createHomeController` is built before `RootApp` mounts. Every existing port (`runShellCommand`, `modelPicker`,
+ * `createHomeController` is built before `RootApp` mounts. Every existing port (`runShellCommand`, `models`,
  * `mentionReader`) flows the other way — built outside React, consumed inside. This one inverts that: the non-React
  * layer creates an empty port, hands it to both the command context and the component; the component `attach`es its
  * `suspendTerminal` on mount and detaches on unmount.
@@ -299,6 +299,14 @@ export function createSuspendPort(): SuspendPort {
 }
 
 /**
+ * How long after `suspendSelf()` has returned a suspension waits for SIGCONT before it continues on its own. Under a job-control shell the self-stop
+ * returns only once the process runs again, and the SIGCONT event follows within a loop turn. When the process group is ORPHANED (no job-control
+ * shell: `ssh -t host relavium`, a tmux window command, `exec relavium`, a container's PID 1) POSIX has the kernel DISCARD the default stop, so
+ * `suspendSelf()` returns at once and SIGCONT never comes: without this the held loop handle keeps a released, suspended renderer alive for ever.
+ */
+export const ORPHANED_STOP_GRACE_MS = 400;
+
+/**
  * The named, POSIX-only job-control signal seam. `SIGTSTP`/`SIGCONT` are deliberately NOT folded into the normal
  * termination callbacks: stopping a foreground job is reversible, whereas SIGINT/TERM/HUP/QUIT tear the command
  * down, close its database, and exit. Keeping the names here also avoids treating platform-specific signal numbers
@@ -313,6 +321,20 @@ export interface JobControlLifecycle {
   readonly onContinue: (listener: () => void) => () => void;
   /** Re-deliver SIGTSTP to this process after our listener has released terminal state and removed itself. */
   readonly suspendSelf: () => void;
+  /**
+   * Hold the event loop open and return what lets it go. While a stop is pending the loop would otherwise hold NOTHING: a signal handle is
+   * unref'd, stdin is paused for the handoff, a Home's frame timer is unref'd. The process is stopped inside {@link suspendSelf}, and after
+   * SIGCONT the continuation is delivered by the loop, which finds nothing to wait for and ends the process (exit 0 for the Home, 4 for a
+   * chat that "ended") before the signal's own callback runs. Absent (a test's lifecycle): nothing is held.
+   */
+  readonly keepAlive?: () => () => void;
+  /**
+   * Bring the terminal's size up to date after a continuation. A resize while the process was stopped goes to the shell (the foreground job),
+   * never to this process, so the stream still says the old size and the layout stays at it until the next resize. Run when the suspension has
+   * settled and the renderer owns the terminal again; production raises the SIGWINCH the process missed, so the stream reads the window and says
+   * `'resize'` when the size is different. Absent: nothing is done.
+   */
+  readonly refreshSize?: () => void;
 }
 
 const noop = (): void => undefined;
@@ -332,6 +354,17 @@ export const defaultJobControlLifecycle: JobControlLifecycle = {
   },
   suspendSelf: () => {
     if (process.platform !== 'win32') process.kill(process.pid, 'SIGTSTP');
+  },
+  keepAlive: () => {
+    // A ref'd timer that never fires in practice (the largest delay Node takes, about 24 days): it is a handle and nothing else.
+    const timer = setInterval(noop, 2 ** 31 - 1);
+    return () => clearInterval(timer);
+  },
+  refreshSize: () => {
+    // `tty.WriteStream` keeps `columns` and `rows` (and `getWindowSize()`, which only returns them) from SIGWINCH alone, and `process.stdout`
+    // re-reads the window and says `'resize'` when that signal arrives. A process that was stopped missed it, so it is raised here, by the
+    // process itself: the same signal the terminal would have sent, handled by Node's own code, with ink and the hosts hearing an ordinary resize.
+    if (process.platform !== 'win32' && process.stdout.isTTY) process.kill(process.pid, 'SIGWINCH');
   },
 };
 
@@ -424,6 +457,35 @@ export function wireJobControl(opts: {
     }
   };
 
+  // The ONE handle that keeps the event loop open while a stop is pending (see `JobControlLifecycle.keepAlive`): taken before the process stops,
+  // let go when the suspension has settled (the renderer redrawn and its own input handle back) or the binding is disposed. Never more than one.
+  let releaseLoop: (() => void) | undefined;
+  // The fallback for a stop the kernel DISCARDED (see {@link ORPHANED_STOP_GRACE_MS}): armed when `suspendSelf()` has returned, cleared by any continuation.
+  let orphanGuard: ReturnType<typeof setTimeout> | undefined;
+  const clearOrphanGuard = (): void => {
+    if (orphanGuard === undefined) return;
+    clearTimeout(orphanGuard);
+    orphanGuard = undefined;
+  };
+  const holdLoop = (): void => {
+    if (releaseLoop !== undefined) return;
+    try {
+      releaseLoop = opts.lifecycle.keepAlive?.();
+    } catch (cause) {
+      report(cause);
+    }
+  };
+  const letLoopGo = (): void => {
+    const release = releaseLoop;
+    releaseLoop = undefined;
+    if (release === undefined) return;
+    try {
+      release();
+    } catch (cause) {
+      report(cause);
+    }
+  };
+
   const removeSuspendListener = (): void => {
     const remove = removeSuspend;
     if (remove === undefined) return;
@@ -459,6 +521,7 @@ export function wireJobControl(opts: {
     if (disposed) return;
     const resolve = resolveContinue;
     if (resolve === undefined) return; // a stray SIGCONT must not perturb an active surface
+    clearOrphanGuard();
     // Re-arm BEFORE Ink resumes input/redraws. A fast second Ctrl-Z is then captured by our handler rather than
     // falling through to a default stop while the terminal is still being reclaimed.
     installSuspendListener();
@@ -480,8 +543,9 @@ export function wireJobControl(opts: {
       // the finally below restores our SIGTSTP listener too.
       continueSuspension();
     } finally {
-      // `suspendSelf()` returns only after SIGCONT. This is the re-arm for the no-Ink and hatch-owned paths; the
-      // Ink-owned path already re-arms in `continueSuspension` before it resolves the deferred, so this is a no-op.
+      // `suspendSelf()` returns once the process runs again: after SIGCONT under a job-control shell, and AT ONCE when the kernel discarded the
+      // stop (an orphaned process group: see {@link ORPHANED_STOP_GRACE_MS}). This is the re-arm for the no-Ink and hatch-owned paths, which
+      // continue by returning; the Ink-owned path already re-arms in `continueSuspension` before it resolves the deferred, so this is a no-op.
       installSuspendListener();
     }
   };
@@ -489,6 +553,17 @@ export function wireJobControl(opts: {
   const settle = (): void => {
     resolveContinue = undefined;
     suspending = false;
+    clearOrphanGuard();
+    letLoopGo();
+    // The renderer has the terminal back and has redrawn at the size it last knew: bring that size up to date (a resize during the stop was
+    // delivered to the shell, not to us), so it redraws again if the size changed.
+    if (!disposed) {
+      try {
+        opts.lifecycle.refreshSize?.();
+      } catch (cause) {
+        report(cause);
+      }
+    }
     installSuspendListener();
     // `SIGCONT` deliberately re-arms before Ink starts reclaiming terminal state: an external SIGTSTP can otherwise
     // default-stop the process in the tiny interval after 1049/raw input has been restored but before the mouse/
@@ -559,7 +634,20 @@ export function wireJobControl(opts: {
           return;
         }
         resolveContinue = resolve;
+        // Before the process stops: after SIGCONT the continuation is delivered by the loop, which must have something to wait for.
+        holdLoop();
         forwardSuspend();
+        // `suspendSelf()` has returned. Under a job-control shell the process was stopped and has been continued, and SIGCONT is the continuation
+        // (it reaches the loop next tick and clears this guard). When the process group is ORPHANED (`ssh -t host relavium`, a tmux window
+        // command, `exec relavium`, a container's PID 1) the kernel discards the default stop: no SIGCONT will ever come, and the held loop handle
+        // would keep a released, suspended renderer alive for ever (the terminal erased and in cooked mode). The guard continues after a grace.
+        if (!disposed && resolveContinue !== undefined) {
+          clearOrphanGuard();
+          orphanGuard = setTimeout(() => {
+            orphanGuard = undefined;
+            continueSuspension();
+          }, ORPHANED_STOP_GRACE_MS);
+        }
       });
     // Signals cannot await a promise. Absorb a terminal-write/Ink failure here: `suspendFullScreen` has already
     // performed its own partial-state reclaim, and an unhandled rejection from a signal handler is strictly worse.
@@ -599,6 +687,8 @@ export function wireJobControl(opts: {
   const dispose = (): void => {
     disposed = true;
     pendingSuspend = false;
+    clearOrphanGuard();
+    letLoopGo();
     // BOTH listeners, not just SIGCONT: `wireJobControl` installs the SIGTSTP one at construction, so
     // removing only the continue handler leaked a suspend handler per binding. Every session rebuild — a
     // `/clear`, a `/model` reseat, the onboarding→Home handoff — added another, so one Ctrl-Z eventually ran

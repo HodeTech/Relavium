@@ -15,6 +15,8 @@ import {
 } from '@relavium/shared';
 
 import { PRICING_FIELDS, pricingField, type PricingField } from '../commands/pricing-fields.js';
+import type { NoticeSurface } from '../render/notice-surface.js';
+import { formatUsdExact } from '../render/notation.js';
 import { sanitizeInline } from '../render/sanitize.js';
 
 /**
@@ -74,6 +76,9 @@ function safeModel(model: string): string {
   return sanitizeInline(model);
 }
 
+// The one type for every notice that has a shell wording and a TUI wording; re-exported so this file's importers keep their path.
+export type { NoticeSurface };
+
 /**
  * Why this model has no effort control at all — the sentence a surface shows instead of a dead overlay.
  *
@@ -81,11 +86,18 @@ function safeModel(model: string): string {
  * be newer than our snapshot, and a refresh could give it its control back; a model that publishes no knob will
  * never have one, however often we refresh. "No reasoning control" for both — which is all the old id heuristic
  * could say — tells the user nothing they can act on.
+ *
+ * The refresh is `relavium models refresh` in the shell and the `/models` popup's `Refresh the list` row in the interactive chat, which has
+ * `/models` on both of its surfaces.
  */
-export function effortUnavailableNote(model: string): string {
-  return catalogModel(model) === undefined
-    ? `${safeModel(model)} is not in Relavium's model catalog, so its reasoning control is unknown — no tier is sent. Run \`relavium models refresh\` if the model is newer than the catalog.`
-    : `${safeModel(model)} publishes no controllable reasoning tier — a tier would be ignored.`;
+export function effortUnavailableNote(model: string, surface: NoticeSurface = 'shell'): string {
+  if (catalogModel(model) !== undefined)
+    return `${safeModel(model)} publishes no controllable reasoning tier — a tier would be ignored.`;
+  const refresh =
+    surface === 'tui'
+      ? 'Open /models and choose "Refresh the list" if the model is newer than the catalog.'
+      : 'Run `relavium models refresh` if the model is newer than the catalog.';
+  return `${safeModel(model)} is not in Relavium's model catalog, so its reasoning control is unknown — no tier is sent. ${refresh}`;
 }
 
 /**
@@ -99,11 +111,12 @@ export function effortRejectedNote(
   model: string,
   requested: ReasoningEffort,
   accepted: Iterable<ReasoningEffort>,
+  surface: NoticeSurface = 'shell',
 ): string {
   const offered = new Set(accepted);
   const list = REASONING_EFFORTS.filter((tier) => offered.has(tier));
   return list.length === 0
-    ? effortUnavailableNote(model)
+    ? effortUnavailableNote(model, surface)
     : `${safeModel(model)} does not accept reasoning effort '${requested}' — it takes ${list.join(', ')}. No tier is sent.`;
 }
 
@@ -204,12 +217,16 @@ export function projectEffortToRow(
  * and `capped` (agent-runner / agent-session), so those three are the outcomes with a sentence; the exhaustive
  * default guards a future gate kind against silently taking one of the existing sentences.
  */
-export function effortWithheldNote(result: EffortGateResult, model: string): string {
+export function effortWithheldNote(
+  result: EffortGateResult,
+  model: string,
+  surface: NoticeSurface = 'shell',
+): string {
   switch (result.kind) {
     case 'rejected':
-      return effortRejectedNote(model, result.requested, result.accepted);
+      return effortRejectedNote(model, result.requested, result.accepted, surface);
     case 'uncontrollable':
-      return effortUnavailableNote(model);
+      return effortUnavailableNote(model, surface);
     case 'capped':
       return effortCappedNote(model, result.requested, result.maxTokens);
     default:
@@ -267,22 +284,22 @@ export function onceEffortNotice(sink: (note: string) => void): (note: string) =
 }
 
 /**
- * Integer micro-cents → a plain USD string (1 USD = 1e8 micro-cents), fixed-decimal so a tiny cap reads `$0.00`
- * rather than `$1e-8`. Two decimals is the granularity a cost cap is ever set at; a sub-cent cap rounds to `$0.00`,
- * which is honest — it is effectively "block everything".
+ * A cost cap as a person reads it: the exact USD of the integer micro-cents (`$0.0500`, never `$1e-8`). A cap is an amount the
+ * session is held against, so it is never rounded: a sub-cent cap reads `$0.00000001`, not `$0.00`, which would say the cap is zero.
  */
 export function capUsd(microcents: number): string {
-  return `$${(microcents / 100_000_000).toFixed(2)}`;
+  return formatUsdExact(microcents);
 }
 
 /**
- * A price flag with the value it takes, spelled by the pricing field table (`--input USD_PER_MTOK`, `--image USD_PER_IMAGE`,
+ * A price flag with the value it takes, spelled by the pricing field table (`--input-price USD_PER_MTOK`, `--image USD_PER_IMAGE`,
  * `--audio USD_PER_SECOND`): the one table `relavium models pricing` itself parses, so a remedy printed here is a command the
- * shell accepts and a new or renamed flag is one edit there, not a second copy to find. Bare words, never `<angle brackets>`:
+ * shell accepts and a new or renamed flag is one edit there, not a second copy to find. It names the command's PRIMARY spelling
+ * (`canonicalFlag`), never a deprecated one. Bare words, never `<angle brackets>`:
  * `<` and `>` are shell redirections, so a pasted remedy would read from a file named `p` and create one named `--image`.
  */
 function priceFlagHint(field: PricingField): string {
-  return `${field.flag} ${field.placeholder}`;
+  return `${field.canonicalFlag} ${field.placeholder}`;
 }
 
 /** The prices a model with no token price needs: the paired token fields (input and output), in the order the shell takes them. */
@@ -296,7 +313,11 @@ const TOKEN_PRICE_HINTS = PRICING_FIELDS.filter((field) => field.pairedWith !== 
  * A cost cap on an unpriced model is a hole: the governor cannot estimate a turn's cost, so it degrades to `allow`
  * — the right trade for a self-hosted model with ~no metered cost, but a false sense of safety if said in silence.
  * One sentence, everywhere, so the chat transcript, `relavium run`, `agent run`, and the resumed `gate` all say it
- * the same way. `strict_cost_cap` is named as the block-instead escape hatch, and `models pricing` as the fix.
+ * the same way. `strict_cost_cap` is named as the block-instead escape hatch, and the pricing command as the fix.
+ *
+ * The fix depends on where the note is read ({@link NoticeSurface}). In the shell it is the full `relavium models pricing` command
+ * with the primary flags. In the interactive chat it is the Home's `/pricing`, which a chat does not offer, so the note says to use it
+ * from the Home and names no shell command, no flag and no quoting (MVP-11 OD-20).
  */
 export function unpricedModelNote(
   model: string,
@@ -311,6 +332,7 @@ export function unpricedModelNote(
    * model-level case this function was originally written for.
    */
   modalities?: readonly MediaBilledModality[],
+  surface: NoticeSurface = 'shell',
 ): string {
   // Sanitize the provider-controlled model id at this display boundary, exactly as the sibling effort notices do —
   // a crafted id must not smuggle a terminal escape into the transcript line (it appears twice, incl. a command).
@@ -327,7 +349,15 @@ export function unpricedModelNote(
     // Bare words, never `<angle brackets>`: `<` and `>` are shell redirections, so the pasted remedy would
     // read from a file named `p` and CREATE one named `--image` rather than running.
     const flags = sorted.map((modality) => priceFlagHint(pricingField(modality))).join(' ');
-    return `${safeModel} has no ${named} rate, so the cost cap (${capUsd(capMicrocents)}) could not be applied to its ${named} output — its token cost still counts. Add one with \`relavium models pricing ${shellArg(safeModel)} --provider PROVIDER_ID ${flags}\`, or set ${strictSetting} to refuse it instead.`;
+    const addIt =
+      surface === 'tui'
+        ? 'from the Home with /pricing'
+        : `with \`relavium models pricing ${shellArg(safeModel)} --provider PROVIDER_ID ${flags}\``;
+    return `${safeModel} has no ${named} rate, so the cost cap (${capUsd(capMicrocents)}) could not be applied to its ${named} output — its token cost still counts. Add one ${addIt}, or set ${strictSetting} to refuse it instead.`;
   }
-  return `${safeModel} has no price, so the cost cap (${capUsd(capMicrocents)}) does not apply to it. Price it with \`relavium models pricing ${shellArg(safeModel)} --provider PROVIDER_ID ${TOKEN_PRICE_HINTS.join(' ')}\`, or set ${strictSetting} to refuse an unpriced model.`;
+  const priceIt =
+    surface === 'tui'
+      ? 'from the Home with /pricing'
+      : `with \`relavium models pricing ${shellArg(safeModel)} --provider PROVIDER_ID ${TOKEN_PRICE_HINTS.join(' ')}\``;
+  return `${safeModel} has no price, so the cost cap (${capUsd(capMicrocents)}) does not apply to it. Price it ${priceIt}, or set ${strictSetting} to refuse an unpriced model.`;
 }

@@ -28,6 +28,8 @@ import {
 } from './run-detail-source.js';
 
 const T0 = 1_750_000_000_000;
+/** The directory the Home is in: required by the read, and one no run here records (these tests are not about where a run started). */
+const HOME_DIRECTORY = '/work/home';
 
 let client: DbClient;
 let reader: RunHistoryReader;
@@ -81,7 +83,14 @@ describe('the log is read page by page, with the cursor on scannedThroughSeq', (
     const last = highestSeq('run-a');
     insertNewerRow('run-a', last + 1);
 
-    const read = ready(readRunDetail({ reader: counted(), runId: 'run-a', terminalHeld: false }));
+    const read = ready(
+      readRunDetail({
+        projectRoot: HOME_DIRECTORY,
+        reader: counted(),
+        runId: 'run-a',
+        terminalHeld: false,
+      }),
+    );
     expect(read.skippedRows, 'one row, counted once').toBe(1);
     expect(read.eventsComplete).toBe(true);
     expect(read.events).toHaveLength(last + 1);
@@ -121,6 +130,7 @@ describe('the log is read page by page, with the cursor on scannedThroughSeq', (
 
     const read = ready(
       readRunDetail({
+        projectRoot: HOME_DIRECTORY,
         reader: counted(),
         runId: 'run-c',
         terminalHeld: false,
@@ -161,6 +171,7 @@ describe('a list of attempt rows as long as the store reads is a cut one (PR #10
     const read = (length: number) =>
       ready(
         readRunDetail({
+          projectRoot: HOME_DIRECTORY,
           reader: { ...reader, listStepSummaries: () => stepsOf('run-steps', length) },
           runId: 'run-steps',
           terminalHeld: false,
@@ -170,7 +181,14 @@ describe('a list of attempt rows as long as the store reads is a cut one (PR #10
     expect(read(RUN_DETAIL_MAX_STEPS).stepsComplete).toBe(false);
     // The real reader of a short run is whole.
     expect(
-      ready(readRunDetail({ reader, runId: 'run-steps', terminalHeld: false })).stepsComplete,
+      ready(
+        readRunDetail({
+          projectRoot: HOME_DIRECTORY,
+          reader,
+          runId: 'run-steps',
+          terminalHeld: false,
+        }),
+      ).stepsComplete,
     ).toBe(true);
   });
 });
@@ -187,14 +205,26 @@ describe('a run whose terminal is held in the outbox is not in progress', () => 
   it('says in progress for a run that is running, and never for the same run once its end is held', async () => {
     await seedLiveRun('run-live');
     const running = ready(
-      readRunDetail({ reader: reader, runId: 'run-live', terminalHeld: false }),
+      readRunDetail({
+        projectRoot: HOME_DIRECTORY,
+        reader: reader,
+        runId: 'run-live',
+        terminalHeld: false,
+      }),
     );
     expect(running.terminalHeld).toBe(false);
     expect(JSON.stringify(running.model), 'the control: a live run reads in progress').toContain(
       'in progress',
     );
 
-    const held = ready(readRunDetail({ reader: reader, runId: 'run-live', terminalHeld: true }));
+    const held = ready(
+      readRunDetail({
+        projectRoot: HOME_DIRECTORY,
+        reader: reader,
+        runId: 'run-live',
+        terminalHeld: true,
+      }),
+    );
     expect(held.terminalHeld).toBe(true);
     expect(held.status, 'its row still says running: the page says held, from the flag').toBe(
       'running',
@@ -205,7 +235,14 @@ describe('a run whose terminal is held in the outbox is not in progress', () => 
 
   it('ignores the flag for a run that is finished: its end is durable, so it is not held', async () => {
     await seedRun(client.db, { slug: 'wf', runId: 'run-done', state: 'completed', atMs: T0 });
-    const read = ready(readRunDetail({ reader: reader, runId: 'run-done', terminalHeld: true }));
+    const read = ready(
+      readRunDetail({
+        projectRoot: HOME_DIRECTORY,
+        reader: reader,
+        runId: 'run-done',
+        terminalHeld: true,
+      }),
+    );
     expect(read.terminalHeld).toBe(false);
   });
 
@@ -213,6 +250,7 @@ describe('a run whose terminal is held in the outbox is not in progress', () => 
     await seedLiveRun('run-live');
     await seedRun(client.db, { slug: 'wf', runId: 'run-done', state: 'completed', atMs: T0 });
     const held = createRunDetailLoader({
+      projectRoot: HOME_DIRECTORY,
       reader,
       listHeld: () => Promise.resolve([{ runId: 'other' }, { runId: 'run-live' }]),
     });
@@ -223,6 +261,7 @@ describe('a run whose terminal is held in the outbox is not in progress', () => 
     expect(ready(await held('run-live-elsewhere')).terminalHeld).toBe(false);
 
     const unreadable = createRunDetailLoader({
+      projectRoot: HOME_DIRECTORY,
       reader,
       listHeld: () => Promise.reject(new Error('no outbox')),
     });
@@ -235,7 +274,9 @@ describe('a run whose terminal is held in the outbox is not in progress', () => 
 
 describe('what a detail can come to', () => {
   it('is missing for a run that is not there, and unreadable for a run whose log is damaged', async () => {
-    expect(readRunDetail({ reader, runId: 'nope', terminalHeld: false })).toEqual({
+    expect(
+      readRunDetail({ projectRoot: HOME_DIRECTORY, reader, runId: 'nope', terminalHeld: false }),
+    ).toEqual({
       kind: 'missing',
     });
 
@@ -251,7 +292,9 @@ describe('what a detail can come to', () => {
         ts: 0,
       })
       .run();
-    expect(readRunDetail({ reader, runId: 'run-bad', terminalHeld: false })).toEqual({
+    expect(
+      readRunDetail({ projectRoot: HOME_DIRECTORY, reader, runId: 'run-bad', terminalHeld: false }),
+    ).toEqual({
       kind: 'unreadable',
     });
   });
@@ -259,7 +302,9 @@ describe('what a detail can come to', () => {
   it('reads the events of the run it was asked for and no other', async () => {
     await seedRun(client.db, { slug: 'wf', runId: 'run-x', state: 'completed', atMs: T0 });
     await seedRun(client.db, { slug: 'wf', runId: 'run-y', state: 'failed', atMs: T0 + 1 });
-    const read = ready(readRunDetail({ reader, runId: 'run-x', terminalHeld: false }));
+    const read = ready(
+      readRunDetail({ projectRoot: HOME_DIRECTORY, reader, runId: 'run-x', terminalHeld: false }),
+    );
     expect(read.status).toBe('completed');
     expect(read.events).toHaveLength(highestSeq('run-x') + 1);
     expect(read.model.header.runId).toBe('run-x');
@@ -281,6 +326,7 @@ describe('the node table follows the run`s frozen workflow', () => {
   it('lists a node of the workflow that has no record after the nodes that ran, pending, with its type from the snapshot', async () => {
     await seedFixtureRuns(client.db);
     const load = createRunDetailLoader({
+      projectRoot: HOME_DIRECTORY,
       reader,
       listHeld: noHeld,
       loadSnapshot: () => FIXTURE_SNAPSHOT,
@@ -297,9 +343,29 @@ describe('the node table follows the run`s frozen workflow', () => {
     expect(running.at(-1)).toMatchObject({ id: 'ship', status: 'pending', text: 'not yet run' });
   });
 
+  it('says how many nodes the frozen workflow lists, as a figure for `r` to compare, and none when the snapshot cannot be read (round 2)', async () => {
+    await seedFixtureRuns(client.db);
+    const read = async (loadSnapshot: ((runId: string) => string | undefined) | undefined) =>
+      ready(
+        await createRunDetailLoader({
+          projectRoot: HOME_DIRECTORY,
+          reader,
+          listHeld: noHeld,
+          loadSnapshot,
+        })(FIXTURE_RUN_IDS.failed),
+      );
+    // `plan`, `build`, `review` and `ship`: the nodes the snapshot lists, the one that never ran included.
+    expect((await read(() => FIXTURE_SNAPSHOT)).authoredNodeCount).toBe(4);
+    for (const loadSnapshot of [undefined, () => 'not json', () => '{"workflow":{}}']) {
+      const detail = await read(loadSnapshot);
+      expect('authoredNodeCount' in detail).toBe(false);
+    }
+  });
+
   it('keeps the nodes that ran in the order they ran, not the order the workflow authored', async () => {
     await seedFixtureRuns(client.db);
     const load = createRunDetailLoader({
+      projectRoot: HOME_DIRECTORY,
       reader,
       listHeld: noHeld,
       loadSnapshot: () => FIXTURE_SNAPSHOT,
@@ -322,7 +388,12 @@ describe('the node table follows the run`s frozen workflow', () => {
         throw new Error('the row is gone');
       },
     ]) {
-      const load = createRunDetailLoader({ reader, listHeld: noHeld, loadSnapshot });
+      const load = createRunDetailLoader({
+        projectRoot: HOME_DIRECTORY,
+        reader,
+        listHeld: noHeld,
+        loadSnapshot,
+      });
       expect(rowsOf(await load(FIXTURE_RUN_IDS.failed)).map((row) => row.id)).toEqual([
         'plan',
         'build',
@@ -334,6 +405,7 @@ describe('the node table follows the run`s frozen workflow', () => {
   it('shows an empty run as the workflow`s nodes, none of them run', async () => {
     await seedFixtureRuns(client.db);
     const load = createRunDetailLoader({
+      projectRoot: HOME_DIRECTORY,
       reader,
       listHeld: noHeld,
       loadSnapshot: () => FIXTURE_SNAPSHOT,

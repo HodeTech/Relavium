@@ -9,7 +9,6 @@ import {
   formatBusyLine,
   formatReasoningPanel,
   formatSessionFooter,
-  formatSessionFooterWithMode,
   formatToolCall,
   formatTurnSummary,
   projectDenialExplanation,
@@ -19,14 +18,14 @@ import {
   MAX_REASONING_PANEL_LINES,
   reasoningLabelActive,
   sanitizeApprovalReason,
-  sanitizeInline,
   transcriptDocument,
   streamingAbortHint,
-  stripTerminalControls,
   wrapTranscript,
   liveAnswerRowBudget,
 } from './chat-projection.js';
-import { formatDuration, formatTokens } from './format.js';
+import { sanitizeInline, stripTerminalControls } from '../sanitize.js';
+import { formatTokens } from './format.js';
+import { formatDuration } from '../notation.js';
 import {
   initialSessionViewState,
   type TranscriptEntry,
@@ -290,6 +289,17 @@ describe('chat-projection', () => {
       expect(errorRecoveryHint(undefined)).toBeUndefined(); // a successful/aborted turn carries no code
     });
 
+    it('names the Home’s /providers for a rejected key and no shell command in any hint (ADR-0146 §6)', () => {
+      expect(errorRecoveryHint('provider_auth')).toContain(
+        'fix the key from the Home (/providers)',
+      );
+      for (const code of ERROR_CODES) {
+        expect(errorRecoveryHint(code) ?? '', code).not.toMatch(
+          /`relavium|relavium (provider|models|chat|run|gate|status|logs|import|export|doctor)/u,
+        );
+      }
+    });
+
     it('hints /compact·/trim for a context-overflow validation (the message heuristic), else no hint', () => {
       for (const msg of [
         "This model's maximum context length is 8192 tokens", // OpenAI
@@ -332,10 +342,10 @@ describe('chat-projection', () => {
   describe('formatToolCall', () => {
     it('marks an unresolved call as pending and a resolved call as done — id only, no arguments', () => {
       expect(formatToolCall({ id: 'tc-1', toolId: 'read_file', resolved: false })).toBe(
-        '→ read_file …',
+        '▸ read_file …',
       );
       expect(formatToolCall({ id: 'tc-1', toolId: 'read_file', resolved: true })).toBe(
-        '→ read_file ? outcome unknown',
+        '▸ read_file ? outcome unknown',
       );
     });
 
@@ -347,7 +357,7 @@ describe('chat-projection', () => {
       });
       // eslint-disable-next-line no-control-regex -- asserting the ABSENCE of control bytes
       expect(line).not.toMatch(/[\x00-\x1f\x7f]/); // no ESC/CR/NUL/tab/newline survived
-      expect(line).toBe('→ read file …'); // escapes stripped; the bare newline collapsed to a space
+      expect(line).toBe('▸ read file …'); // escapes stripped; the bare newline collapsed to a space
     });
   });
 
@@ -359,42 +369,41 @@ describe('chat-projection', () => {
       liveTokensTruncated: false,
     } as const;
 
-    it('says the turn is waiting for the person — not "Working…" — while an approval card is open', () => {
-      const line = formatBusyLine({
-        ...base,
-        liveTokens: 'streamed text that must not hide the wait',
-        elapsedMs: 5_000,
-        awaitingApprovalMs: 83_000,
-      });
-      expect(line.dim).toBe(true);
-      expect(line.text).toBe('⠋ Waiting for your answer 1m23s · Esc stops the turn');
-      expect(line.text).not.toContain('Working');
-      // Without a card the pre-token status is unchanged.
+    it('has no "Waiting for your answer" state: the sheet takes the prompt block’s place and its rule carries the wait (ADR-0147 §2)', () => {
+      // The retired row's words are nowhere in the builder's output, whatever the turn is doing.
+      for (const input of [
+        { ...base, elapsedMs: 5_000 },
+        { ...base, liveTokens: 'streamed text' },
+        { ...base, compacting: true },
+        { ...base, busyCommand: 'npm test' },
+      ])
+        expect(formatBusyLine(input).text).not.toContain('Waiting for your answer');
+      // The pre-token status is unchanged.
       expect(formatBusyLine({ ...base, elapsedMs: 5_000 }).text).toContain('Working… 5s');
     });
 
     it('renders the compaction moment first (dim, ADR-0062 §7), winning over every other state', () => {
       const line = formatBusyLine({ ...base, compacting: true, liveTokens: 'ignored' });
-      expect(line).toEqual({ text: '⠋ ⟳ Summarizing conversation… · Esc to cancel', dim: true });
+      expect(line).toEqual({ text: '⠋ ⟳ Summarizing conversation… · Esc cancels it', dim: true });
       // Compaction has top priority — even paired with a (mutually-exclusive in practice) shell command it wins.
       const withShell = formatBusyLine({ ...base, compacting: true, busyCommand: 'npm test' });
-      expect(withShell.text).toBe('⠋ ⟳ Summarizing conversation… · Esc to cancel');
+      expect(withShell.text).toBe('⠋ ⟳ Summarizing conversation… · Esc cancels it');
     });
 
     it('renders the `!`-shell command line (dim) and sanitizes the command', () => {
       const line = formatBusyLine({ ...base, busyCommand: 'npm\x1b[31m test' });
       expect(line.dim).toBe(true);
-      expect(line.text).toBe('⠋ ! npm test — running · Esc to cancel'); // ANSI stripped
+      expect(line.text).toBe('⠋ ! npm test — running · Esc cancels it'); // ANSI stripped
     });
 
     it('shows the pre-first-token status with the live elapsed + abort hint (dim)', () => {
       const line = formatBusyLine({ ...base, elapsedMs: 3200 });
-      expect(line).toEqual({ text: '⠋ Working… 3s · Esc to stop', dim: true });
+      expect(line).toEqual({ text: '⠋ Working… 3s · Esc stops the turn', dim: true });
     });
 
     it('omits the timer when no turn is in flight yet (elapsedMs undefined)', () => {
       const line = formatBusyLine(base);
-      expect(line).toEqual({ text: '⠋ Working… · Esc to stop', dim: true });
+      expect(line).toEqual({ text: '⠋ Working… · Esc stops the turn', dim: true });
     });
 
     it('renders streaming content plain (not dim) with the spinner and no elision when untruncated', () => {
@@ -417,9 +426,11 @@ describe('chat-projection', () => {
 
     it('labels the pre-token status "Thinking…" when reasoning is active, else "Working…" (2.5.H)', () => {
       expect(formatBusyLine({ ...base, reasoningActive: true, elapsedMs: 2000 }).text).toBe(
-        '⠋ Thinking… 2s · Esc to stop',
+        '⠋ Thinking… 2s · Esc stops the turn',
       );
-      expect(formatBusyLine({ ...base, elapsedMs: 2000 }).text).toBe('⠋ Working… 2s · Esc to stop');
+      expect(formatBusyLine({ ...base, elapsedMs: 2000 }).text).toBe(
+        '⠋ Working… 2s · Esc stops the turn',
+      );
       // Once answer tokens stream, the content wins regardless of reasoningActive (no label).
       expect(formatBusyLine({ ...base, reasoningActive: true, liveTokens: 'hi' }).text).toBe(
         '⠋ hi',
@@ -438,11 +449,11 @@ describe('chat-projection', () => {
     it('returns the standalone hint for a streaming CONTENT line (which has no inline hint)', () => {
       const content = formatBusyLine({ ...base, liveTokens: 'the answer streams' });
       expect(content.dim).toBe(false);
-      expect(streamingAbortHint(content)).toBe('Esc to stop');
+      expect(streamingAbortHint(content)).toBe('Esc stops the turn');
     });
 
     it('returns undefined for every STATUS line — they already carry their own inline hint (no double-print)', () => {
-      // Pre-token ("· Esc to stop"), compaction ("· Esc to cancel"), and shell ("· Esc to cancel") are all dim.
+      // Pre-token ("· Esc stops the turn"), compaction ("· Esc cancels it"), and shell ("· Esc cancels it") are all dim.
       expect(streamingAbortHint(formatBusyLine({ ...base, elapsedMs: 1000 }))).toBeUndefined();
       expect(streamingAbortHint(formatBusyLine({ ...base, compacting: true }))).toBeUndefined();
       expect(
@@ -475,13 +486,13 @@ describe('chat-projection', () => {
 
     it('collapsed: a header with the "show" hint and NO body', () => {
       const panel = formatReasoningPanel({ ...base, visible: false });
-      expect(panel).toEqual({ header: '✻ Reasoning · Ctrl+T show' });
+      expect(panel).toEqual({ header: '✻ Reasoning · [Ctrl+T] show' });
       expect(panel.body).toBeUndefined();
     });
 
     it('expanded: the header switches to "hide" and the sanitized body is present', () => {
       const panel = formatReasoningPanel({ ...base, visible: true });
-      expect(panel.header).toBe('✻ Reasoning · Ctrl+T hide');
+      expect(panel.header).toBe('✻ Reasoning · [Ctrl+T] hide');
       expect(panel.body).toBe('weighing the options');
     });
 
@@ -709,18 +720,6 @@ describe('chat-projection', () => {
     });
   });
 
-  describe('formatSessionFooterWithMode', () => {
-    it('appends the active mode label to the footer (always shown — auto is never hidden)', () => {
-      const state = {
-        ...initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND),
-        turnCount: 2,
-      };
-      expect(formatSessionFooterWithMode(state, 'ask')).toMatch(/· ask mode$/);
-      expect(formatSessionFooterWithMode(state, 'accept-edits')).toMatch(/· accept-edits mode$/);
-      expect(formatSessionFooterWithMode(state, 'auto')).toMatch(/· auto mode$/);
-    });
-  });
-
   describe('stripTerminalControls', () => {
     it('removes ANSI CSI + OSC escapes and bare control bytes, keeping printable text + tab/newline', () => {
       // OSC title-write, CSI color, a CR, a NUL — all stripped; the real text + \n + \t survive.
@@ -885,14 +884,15 @@ describe('chat-projection', () => {
   });
 
   describe('wrapTranscript (2.6.F Step 4b — alt-screen viewport flattening, ADR-0068 §c)', () => {
-    it('flattens a user entry to a `> `-prefixed cyan line, wrapped at cols', () => {
+    it('flattens a user entry to its words (content only) whose first row carries the `yourTurn` margin role, wrapped at cols', () => {
+      // Unit 9 (ADR-0145 §6, the grid): the text form's `> ` is not part of the screen's row; the host's mark is the row's `margin` role, drawn in
+      // the margin by `marginCell`, and the rest of the turn hangs under the text with no role (moved from Step 7a's `marker` data in the text).
       const entries: TranscriptEntry[] = [{ role: 'user', text: 'hello world' }];
       const lines = wrapTranscript(entries, 80);
-      expect(lines).toEqual([{ text: '> hello world', style: 'user' }]);
+      expect(lines).toEqual([{ text: 'hello world', style: 'user', margin: 'yourTurn' }]);
       // Full-screen wraps at words, falling back to characters for long tokens.
       expect(wrapTranscript(entries, 6)).toEqual([
-        { text: '> ', style: 'user' },
-        { text: 'hello ', style: 'user' },
+        { text: 'hello ', style: 'user', margin: 'yourTurn' },
         { text: 'world', style: 'user' },
       ]);
     });
@@ -912,9 +912,14 @@ describe('chat-projection', () => {
         summary: { stopReason: 'stop', tokensUsed: { input: 10, output: 5 } },
       };
       const okLines = wrapTranscript([okEntry], 80);
-      expect(okLines[0]).toEqual({ text: 'the answer', style: 'assistant' });
-      expect(okLines[1]?.style).toBe('summary'); // the ` {summary}` line (leading space, mirrors TranscriptLine)
-      expect(okLines[1]?.text.startsWith(' ')).toBe(true);
+      // The reply's first row carries the `agent` role (drawn only as the inline renderer's word; the full-screen margin of a reply is blank).
+      expect(okLines[0]).toEqual({ text: 'the answer', style: 'assistant', margin: 'agent' });
+      expect(okLines[1]?.style).toBe('summary');
+      // On the grid the summary stands at the content column without the document's leading space (OQ8; `entryLines` keeps it).
+      expect(okLines[1]?.text.startsWith(' ')).toBe(false);
+      expect(okLines[1]?.text).toBe(
+        formatTurnSummary({ stopReason: 'stop', tokensUsed: { input: 10, output: 5 } }),
+      );
       expect(okLines).toHaveLength(2); // a successful turn has NO recovery-hint line
 
       // A failed turn (a code with an actionable hint) appends the yellow hint line.
@@ -929,13 +934,13 @@ describe('chat-projection', () => {
       };
       const failLines = wrapTranscript([failEntry], 200);
       expect(failLines.at(-1)?.style).toBe('hint');
-      expect(failLines.at(-1)?.text).toContain('→'); // the ` → {hint}` marker, mirroring TranscriptLine
+      expect(failLines.at(-1)?.text.startsWith('→ ')).toBe(true); // the document's ` → {hint}` at the content column
     });
 
     it('strips terminal control sequences at the display boundary (no ANSI/OSC injection through the viewport)', () => {
       const entries: TranscriptEntry[] = [{ role: 'user', text: 'a\x1b[31mred\x1b[0mb' }];
       const lines = wrapTranscript(entries, 80);
-      expect(lines[0]?.text).toBe('> aredb'); // the CSI sequences are removed, exactly as TranscriptLine sanitizes
+      expect(lines[0]?.text).toBe('aredb'); // the CSI sequences are removed, exactly as TranscriptLine sanitizes
       expect(lines[0]?.text).not.toContain('\x1b');
     });
 
@@ -949,8 +954,16 @@ describe('chat-projection', () => {
         },
         { role: 'notice', text: 'n' },
       ];
-      const styles = wrapTranscript(entries, 80).map((l) => l.style);
-      expect(styles).toEqual(['user', 'assistant', 'summary', 'notice']);
+      const rows = wrapTranscript(entries, 80);
+      // One blank row before the reply (OQ3: before a turn and a reply, not before the first entry; a notice hugs the entry above).
+      expect(rows.map((l) => l.style)).toEqual([
+        'user',
+        'assistant',
+        'assistant',
+        'summary',
+        'notice',
+      ]);
+      expect(rows[1]).toEqual({ text: '', style: 'assistant' });
     });
   });
 
@@ -961,8 +974,8 @@ describe('chat-projection', () => {
         { role: 'user', text: 'two' },
         { role: 'user', text: 'three' },
       ];
-      // Each short user entry is one wrapped line at width 80 → totalLines === entry count; height passes through.
-      expect(liveScrollGeometry(entries, 80, 12)).toEqual({ totalLines: 3, height: 12 });
+      // Each short user entry is one wrapped line at width 80, and a blank row separates two turns → 3 + 2; height passes through.
+      expect(liveScrollGeometry(entries, 80, 12)).toEqual({ totalLines: 5, height: 12 });
       // The count is the WRAPPED count, not the entry count: a line wider than cols wraps to multiple rows.
       const long: TranscriptEntry[] = [{ role: 'user', text: 'x'.repeat(30) }];
       expect(liveScrollGeometry(long, 10, 8)).toEqual({
@@ -984,7 +997,11 @@ describe('chat-projection', () => {
       const first = wrapTranscript([e1], 80);
       const second = wrapTranscript([e1, e2], 80);
       expect(second.slice(0, first.length)).toEqual(first); // the appended entry only extends — history is stable
-      expect(second).toEqual([...wrapTranscript([e1], 80), ...wrapTranscript([e2], 80)]); // == the concatenation
+      // == the concatenation, the appended entry drawn after its neighbour (its separator row is the neighbour's business, `previous`)
+      expect(second).toEqual([
+        ...wrapTranscript([e1], 80),
+        ...wrapTranscript([e2], 80, false, undefined, e1),
+      ]);
     });
 
     it('reuses the cached wrap for an unchanged entry (same object on a hit) and re-wraps on a cols change', () => {
@@ -1007,7 +1024,7 @@ describe('chat-projection', () => {
       const once = wrapTranscript(big, 40);
       const twice = wrapTranscript(big, 40);
       expect(twice).toEqual(once); // stable across re-wraps of a transcript larger than any fixed cache (no thrash)
-      expect(once).toHaveLength(big.length); // each short `> msg N` line is exactly one row at cols 40
+      expect(once).toHaveLength(2 * big.length - 1); // each short turn is one row at cols 40, and a blank row separates two turns
     });
   });
 });
@@ -1124,7 +1141,7 @@ describe('transcriptDocument — what `/edit` hands to $EDITOR', () => {
  *
  * The alt screen's frame is `height: rows` and ink clips it there, so an unbounded busy line does not scroll — it
  * COLLIDES with its siblings. Reproduced at 80x24 with a 900-character answer, well under `MAX_LIVE_TOKEN_CHARS`:
- * the "Esc to stop" hint and the streamed text landed on the SAME frame row, overwriting each other.
+ * the "Esc stops the turn" hint and the streamed text landed on the SAME frame row, overwriting each other.
  */
 describe('liveAnswerRowBudget', () => {
   it('is a third of the terminal, so the viewport, prompt and footer all survive', () => {

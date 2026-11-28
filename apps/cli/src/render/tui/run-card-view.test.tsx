@@ -11,7 +11,7 @@ import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { RunGate } from '../../home/run-gates.js';
-import { waitFor } from './harness-util.js';
+import { waitFor, withoutStyles } from './harness-util.js';
 import {
   projectRunCard,
   RUN_CARD_APPEARANCE,
@@ -20,6 +20,7 @@ import {
   type RunCardState,
 } from './run-card-model.js';
 import { RunCardView } from './run-card-view.js';
+import { GLYPH_ROLES, GLYPHS, glyphOf } from './glyphs.js';
 
 afterEach(cleanup);
 
@@ -61,7 +62,7 @@ interface ViewOptions {
   readonly onFrame?: (node: DOMElement | null) => void;
 }
 
-function view(options: ViewOptions = {}) {
+function rawView(options: ViewOptions = {}) {
   return render(
     <RunCardView
       snapshot={options.snapshot ?? snapshot()}
@@ -74,7 +75,21 @@ function view(options: ViewOptions = {}) {
   );
 }
 
+/** The card, read for its WORDS: the weight the host writes into the title and the cursor row (`emphasis.ts`) is zero columns and is not part of them. */
+function view(options: ViewOptions = {}) {
+  const mounted = rawView(options);
+  return {
+    ...mounted,
+    lastFrame: (): string | undefined => {
+      const frame = mounted.lastFrame();
+      return frame === undefined ? undefined : withoutStyles(frame);
+    },
+  };
+}
+
 const linesOf = (frame: string | undefined): string[] => (frame ?? '').split('\n');
+/** The card's title row: under the sheet's heavy rule, which is the card's first row since unit 8 (ADR-0147 §1). */
+const TITLE = 1;
 
 describe('at 80×24', () => {
   it('shows the title, the author`s message behind the gutter, the gate`s facts and the keys it accepts', () => {
@@ -82,11 +97,14 @@ describe('at 80×24', () => {
       snapshot: snapshot({ gates: [gate('a', { message: 'Ship build 42 to production?' })] }),
     });
     const lines = linesOf(lastFrame());
-    expect(lines[0]).toBe('‖ waiting for you  ·  run run-0001');
+    expect(lines[0], 'the sheet’s heavy rule, `=` without colour').toMatch(
+      /^== Waiting for you =+$/u,
+    );
+    expect(lines[TITLE]).toBe('|| waiting for you  ·  run run-0001');
     expect(lines).toContain(`${RUN_CARD_GUTTER}Ship build 42 to production?`);
     expect(lines).toContain('node node-a · approval gate');
     expect(lines).toContain('Rejecting does not stop the run: the workflow routes on a rejection.');
-    expect(lines.at(-1)).toBe('Ctrl+Y approves · Ctrl+N rejects · Esc leaves it pending');
+    expect(lines.at(-1)).toBe('[Ctrl+Y] Approve · [Ctrl+N] Reject · Esc leaves it pending');
   });
 
   it('lists several gates with a cursor on the one an answer applies to', () => {
@@ -94,25 +112,38 @@ describe('at 80×24', () => {
       snapshot: snapshot({ gates: [gate('a'), gate('b'), gate('c')], cursor: 1 }),
     });
     const frame = lastFrame() ?? '';
-    expect(linesOf(frame)[0]).toBe('‖ waiting for you  ·  gate 2 of 3  ·  run run-0001');
-    expect(frame).toContain('▸ b · approval · node node-b');
+    expect(linesOf(frame)[TITLE]).toBe('|| waiting for you  ·  gate 2 of 3  ·  run run-0001');
+    expect(frame).toContain('> b · approval · node node-b');
     expect(frame).toContain('  a · approval · node node-a');
     expect(frame).toContain('  c · approval · node node-c');
     expect(linesOf(frame).at(-1)).toBe(
-      '↑/↓ choose a gate · Ctrl+Y approves · Ctrl+N rejects · Esc leaves it pending',
+      '↑/↓ choose a gate · [Ctrl+Y] Approve · [Ctrl+N] Reject · Esc leaves it pending',
     );
   });
 
-  it('says overdue with its deadline and the timeout policy', () => {
+  it('says `expired` in the deadline’s own words, as the work page’s row does, with the timeout policy and no timestamp', () => {
     const at = '2026-11-23T12:00:00.000Z';
     const { lastFrame } = view({
       snapshot: snapshot({ gates: [gate('a', { expiresAt: at, timeoutAction: 'approve' })] }),
       nowMs: Date.parse(at) + 1000,
     });
     const frame = lastFrame() ?? '';
-    expect(linesOf(frame)[0]).toBe('⚠ overdue  ·  run run-0001');
-    expect(frame).toContain(`Overdue since ${at}.`);
+    expect(linesOf(frame)[TITLE]).toBe('! expired  ·  run run-0001');
+    expect(frame).toContain('node node-a · approval gate · expired');
+    expect(frame).not.toContain('Overdue');
+    expect(frame, 'the stored timestamp is never drawn').not.toContain(at);
     expect(frame).toContain('On timeout: the gate is approved.');
+  });
+
+  it('says `expires in …` before the deadline, as the work page’s row does, and never the stored timestamp', () => {
+    const at = '2026-11-23T12:00:00.000Z';
+    const { lastFrame } = view({
+      snapshot: snapshot({ gates: [gate('a', { expiresAt: at })] }),
+      nowMs: Date.parse(at) - 5 * 60_000,
+    });
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('node node-a · approval gate · expires in 5m');
+    expect(frame).not.toContain(at);
   });
 
   it('keeps a worst-case card inside the terminal: a long message, four gates, a long notice, an overdue deadline', () => {
@@ -182,13 +213,44 @@ describe('below the minimum', () => {
 });
 
 describe('with colour off', () => {
-  it('draws no styling at all, and colour only adds to the same words', () => {
-    const plain = view({ color: false }).lastFrame() ?? '';
-    const coloured = view({ color: true }).lastFrame() ?? '';
-    expect(plain).not.toMatch(ANSI);
+  /** Every SGR parameter a frame carries. */
+  const codesOf = (frame: string): Set<string> =>
+    new Set([...frame.matchAll(STYLING)].flatMap((match) => match[0].slice(2, -1).split(';')));
+  /** Bold, inverse, underline and their closes: the styles that are not colour (ADR-0145 §5). */
+  const NOT_COLOUR = new Set(['1', '22', '7', '27', '4', '24']);
+
+  it('draws no colour, keeps the weight, and colour only adds to the same words', () => {
+    const plain = rawView({ color: false }).lastFrame() ?? '';
+    const coloured = rawView({ color: true }).lastFrame() ?? '';
+    expect([...codesOf(plain)].filter((code) => !NOT_COLOUR.has(code))).toEqual([]);
+    expect(codesOf(plain), 'the title is bold with colour off').toContain('1');
     expect(coloured).toMatch(ANSI);
-    // Strip the styling from the coloured frame: what is left is the plain frame, so colour never carried a meaning of its own.
-    expect(coloured.replace(STYLING, '')).toBe(plain);
+    expect(codesOf(coloured).size).toBeGreaterThan(codesOf(plain).size);
+    // Strip the styling from the coloured frame and write its glyphs in their plain forms: what is left is the plain frame, so colour never
+    // carried a meaning of its own.
+    const inPlainForms = GLYPH_ROLES.reduce(
+      (text, role) => text.replaceAll(GLYPHS[role].glyph, GLYPHS[role].ascii),
+      coloured.replace(STYLING, ''),
+    );
+    expect(inPlainForms).toBe(plain.replace(STYLING, ''));
+  });
+
+  it('draws the gate under the cursor as the selected row: bold and inverse, with colour on and off alike', () => {
+    for (const color of [false, true]) {
+      const frame =
+        rawView({
+          color,
+          snapshot: snapshot({ gates: [gate('a'), gate('b'), gate('c')], cursor: 1 }),
+        }).lastFrame() ?? '';
+      const row = frame.split('\n').find((line) => line.includes('b · approval · node'));
+      const open = `${ESC}[1m${ESC}[7m`;
+      expect(row, `colour ${String(color)}`).toContain(open);
+      expect(row, `colour ${String(color)}`).toContain(`${ESC}[27m${ESC}[22m`);
+      const others = frame.split('\n').find((line) => line.includes('a · approval · node'));
+      expect(others, 'a gate that is not under the cursor is not inverse').not.toContain(
+        `${ESC}[7m`,
+      );
+    }
   });
 });
 
@@ -225,13 +287,17 @@ describe('a glyph and a word for every state', () => {
     (name, state, nowMs) => {
       const appearance = RUN_CARD_APPEARANCE[name];
       const { lastFrame } = view({ snapshot: state, nowMs, color: false });
-      expect(linesOf(lastFrame())[0]).toContain(`${appearance.glyph} ${appearance.word}`);
+      expect(linesOf(lastFrame())[TITLE]).toContain(
+        `${glyphOf(appearance.role, true)} ${appearance.word}`,
+      );
       expect(projectRunCard(state, { columns: 80, rows: 24, nowMs }).state).toBe(name);
     },
   );
 
   it('every state has its own word, and no two states share a glyph and a word', () => {
-    const pairs = Object.values(RUN_CARD_APPEARANCE).map((entry) => `${entry.glyph} ${entry.word}`);
+    const pairs = Object.values(RUN_CARD_APPEARANCE).map(
+      (entry) => `${glyphOf(entry.role, false)} ${entry.word}`,
+    );
     expect(new Set(pairs).size).toBe(pairs.length);
     expect(new Set(Object.values(RUN_CARD_APPEARANCE).map((entry) => entry.word)).size).toBe(
       pairs.length,
@@ -244,9 +310,9 @@ describe('a glyph and a word for every state', () => {
     expect(keys(snapshot({ phase: 'answering', gates: [] }))).toBe(
       'Answering… · Esc leaves the view',
     );
-    expect(keys(snapshot({ phase: 'answered', gates: [] }))).toBe('Esc closes');
-    expect(keys(snapshot({ phase: 'settled', gates: [] }))).toBe('Esc closes');
-    expect(keys(snapshot({ phase: 'empty', gates: [] }))).toBe('Esc closes');
+    expect(keys(snapshot({ phase: 'answered', gates: [] }))).toBe('Esc close');
+    expect(keys(snapshot({ phase: 'settled', gates: [] }))).toBe('Esc close');
+    expect(keys(snapshot({ phase: 'empty', gates: [] }))).toBe('Esc close');
   });
 });
 
@@ -255,7 +321,8 @@ describe('what an author can put in a gate`s message', () => {
     const message = [
       'Approve?',
       'Ctrl+Y approves · Ctrl+N rejects',
-      '▸ z · approval · node forged',
+      '› z · approval · node forged',
+      '▸ y · approval · node forged',
       '\u001b[2J\u001b]0;pwned\u0007done',
     ].join('\n');
     const { lastFrame } = view({ snapshot: snapshot({ gates: [gate('a', { message })] }) });
@@ -265,9 +332,10 @@ describe('what an author can put in a gate`s message', () => {
     expect(authored.length).toBeGreaterThan(0);
     expect(authored.join('\n')).not.toMatch(/ctrl\s*[+-]\s*[yn]/iu);
     expect(lines.filter((line) => /Ctrl\+Y/u.test(line))).toEqual([
-      'Ctrl+Y approves · Ctrl+N rejects · Esc leaves it pending',
+      '[Ctrl+Y] Approve · [Ctrl+N] Reject · Esc leaves it pending',
     ]);
-    expect(lines.filter((line) => line.startsWith('▸'))).toEqual([]);
+    // the list cursor is `›` (`>` with colour off): no row of this one-gate card starts with a marker, whatever the author wrote
+    expect(lines.filter((line) => /^[›>▸]/u.test(line))).toEqual([]);
     expect(lastFrame()).not.toContain('\u001b]');
     expect(lastFrame()).not.toContain('pwned\u0007');
   });

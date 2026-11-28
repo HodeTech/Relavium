@@ -12,7 +12,6 @@ import {
   focusFor,
   isFocused,
   resolveFocus,
-  stepFocus,
   stripRows,
   type StripFocus,
   type StripRow,
@@ -70,37 +69,6 @@ describe('resolveFocus: the focus as it is on the rows now', () => {
   });
 });
 
-describe('stepFocus', () => {
-  const rows = [run('a'), run('b'), session('s')];
-
-  it('goes down from the prompt onto the first row, and from row to row; the last row stays', () => {
-    const first = stepFocus(rows, undefined, 1);
-    expect(first).toEqual(focus('run', 'a'));
-    const second = stepFocus(rows, first, 1);
-    expect(second).toEqual(focus('run', 'b'));
-    const last = stepFocus(rows, second, 1);
-    expect(last).toEqual(focus('session', 's'));
-    expect(stepFocus(rows, last, 1), 'nothing below the last row').toEqual(last);
-  });
-
-  it('goes up row by row, and from the first row back to the prompt; up from the prompt stays there', () => {
-    expect(stepFocus(rows, focus('session', 's'), -1)).toEqual(focus('run', 'b'));
-    expect(stepFocus(rows, focus('run', 'a'), -1)).toBeUndefined();
-    expect(stepFocus(rows, undefined, -1)).toBeUndefined();
-  });
-
-  it('steps from where the focus stands now when its row moved, and starts again from the prompt when its row is gone', () => {
-    expect(stepFocus([run('new'), ...rows], focus('run', 'a'), 1)).toEqual(focus('run', 'b'));
-    expect(stepFocus([run('x'), run('y')], focus('run', 'gone'), 1)).toEqual(focus('run', 'x'));
-    expect(stepFocus([run('x'), run('y')], focus('run', 'gone'), -1)).toBeUndefined();
-  });
-
-  it('has nowhere to go over no rows', () => {
-    expect(stepFocus([], undefined, 1)).toBeUndefined();
-    expect(stepFocus([], focus('run', 'a'), -1)).toBeUndefined();
-  });
-});
-
 describe('focusAt and isFocused', () => {
   it('names a row by its identity alone; there is none past the rows', () => {
     expect(focusAt([run('a'), session('s')], 1)).toEqual(focus('session', 's'));
@@ -125,7 +93,6 @@ describe('stripRows: the rows `↑`/`↓` reach, in the order the strip draws th
   });
   const sessionRow = (sessionId: string): HomeSessionRow => ({
     sessionId,
-    workingDir: '/work',
     title: undefined,
     agentSlug: 'chat',
     modelId: undefined,
@@ -135,11 +102,12 @@ describe('stripRows: the rows `↑`/`↓` reach, in the order the strip draws th
   });
   const parked = (runId: string): ParkedRunRow => ({ runId, kind: 'approval', gates: 1 });
   const snapshot = (over: Partial<HomeSnapshot>): HomeSnapshot => ({
-    attention: { gates: [], failedRuns: [] },
+    failedRuns: [],
     recentSessions: [],
     recentRuns: [],
     recentAgents: [],
-    unreadableRunIds: [],
+    unreadableRuns: [],
+    totals: { attention: 0, sessions: 0, runs: 0 },
     isEmpty: false,
     ...over,
   });
@@ -148,7 +116,7 @@ describe('stripRows: the rows `↑`/`↓` reach, in the order the strip draws th
     const rows = stripRows(
       [parked('p1'), parked('p2')],
       snapshot({
-        attention: { gates: [], failedRuns: [runRow('f1', 'failed')] },
+        failedRuns: [runRow('f1', 'failed')],
         recentSessions: [sessionRow('s1'), sessionRow('s2')],
         recentRuns: [runRow('r1', 'completed'), runRow('r2', 'running')],
       }),
@@ -167,36 +135,49 @@ describe('stripRows: the rows `↑`/`↓` reach, in the order the strip draws th
     ).toBe(true);
   });
 
-  it('lists a run once, and leaves out a run whose log could not be read, whose row stays a display row', () => {
+  it('lists a run once: an unreadable run is one unreadable row, never also a parked, failed or recent row', () => {
     const rows = stripRows(
       [parked('p1')],
       snapshot({
-        attention: { gates: [], failedRuns: [runRow('u1', 'failed'), runRow('f1', 'failed')] },
+        failedRuns: [runRow('u1', 'failed'), runRow('f1', 'failed')],
         recentRuns: [runRow('p1', 'paused'), runRow('r1', 'completed')],
-        unreadableRunIds: ['u1'],
+        unreadableRuns: [{ runId: 'u1', reason: 'corrupt-row' }],
       }),
     );
-    expect(rows.map((row) => row.id)).toEqual(['p1', 'f1', 'r1']);
+    expect(rows.map((row) => `${row.role}:${row.id}`)).toEqual([
+      'parked:p1',
+      'failed:f1',
+      'unreadable:u1',
+      'recent:r1',
+    ]);
   });
 
-  it('has no row for the strip rows that only display: a gate of a run that is not parked here, an agent', () => {
+  it('focuses an unreadable run (Enter says why it cannot be read): a run row by its id, after the failed runs, in the Attention order', () => {
+    const rows = stripRows(
+      [parked('p1')],
+      snapshot({
+        failedRuns: [runRow('f1', 'failed')],
+        unreadableRuns: [
+          { runId: 'u1', reason: 'newer-version' },
+          { runId: 'u2', reason: 'could-not-read' },
+        ],
+        recentSessions: [sessionRow('s1')],
+        recentAgents: [{ agentSlug: 'coder', lastUsedAt: '2026-11-23T00:00:00.000Z' }],
+      }),
+    );
+    expect(rows).toEqual([
+      { kind: 'run', id: 'p1', role: 'parked' },
+      { kind: 'run', id: 'f1', role: 'failed' },
+      { kind: 'run', id: 'u1', role: 'unreadable' },
+      { kind: 'run', id: 'u2', role: 'unreadable' },
+      { kind: 'session', id: 's1', role: 'session' },
+    ]);
+  });
+
+  it('has no row for an agent, which only displays', () => {
     const rows = stripRows(
       [],
       snapshot({
-        attention: {
-          gates: [
-            {
-              runId: 'elsewhere',
-              workflowSlug: 'wf',
-              gateId: 'g',
-              gateType: 'approval',
-              nodeId: 'n',
-              message: 'm',
-              expiresAt: undefined,
-            },
-          ],
-          failedRuns: [],
-        },
         recentAgents: [{ agentSlug: 'coder', lastUsedAt: '2026-11-23T00:00:00.000Z' }],
       }),
     );

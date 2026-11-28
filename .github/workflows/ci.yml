@@ -80,9 +80,12 @@ jobs:
     # build, tool checks and the replay smoke's six sequential, individually bounded 45s workers.
     # Keep a finite outer watchdog without truncating those unchanged native/test bounds.
     # MVP-8 added about 14,000 tests: one run on this job was cancelled at 25m16s during the format step
-    # (tests, build and db-sync had passed) and the next took 18m31s, so 25 minutes has no headroom. Thirty is the
-    # most the source-smoke check allows (tools/ci/require-packed-cli.test.mjs).
-    timeout-minutes: 30
+    # (tests, build and db-sync had passed) and the next took 18m31s, so 25 minutes has no headroom. MVP-11 then
+    # added about 3,500 more (the surface matrix, the transcript grid and the width evidence against tmux): on the
+    # runner the CLI suite alone takes 19 to 20 minutes (1,106 s and 1,142 s in two runs, 986 s locally with two
+    # workers) and the steps after it about 5, so the job needs about 32 minutes and was cancelled at 30 twice.
+    # Forty-five is the most the source-smoke check allows (tools/ci/require-packed-cli.test.mjs).
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:

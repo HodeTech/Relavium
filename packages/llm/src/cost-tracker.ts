@@ -88,10 +88,11 @@ export interface Rates {
  * All of it is context the model has to hold this turn, and it is a long conversation's cached history that pushes
  * it over the threshold in the first place.
  *
- * One gap, deliberately not papered over: **cache WRITES are billed at the flat rate**, never a tier's. models.dev's
- * tier schema publishes `input`, `output` and `cache_read` — and no `cache_write` — so a per-tier write rate is not a
- * number we have. Inventing one by scaling would be a guess on a money path. Filed in deferred-tasks; the exposure is
- * a cache-write-heavy prompt above 272k on the four `gpt-5.6` variants.
+ * One gap, deliberately not papered over: **cache WRITES are billed at the flat rate**, never a tier's. The catalog's
+ * tier carries `input`, `output` and `cache_read` only: `toPriceTiers` drops the `cache_write` models.dev has published
+ * for some tiers since 2026-11 (24 rows, among them `claude-haiku-5-5`), and inventing one by scaling would be a guess on
+ * a money path. Filed in deferred-tasks, with the date the trigger fired. The exposure today is none (no adapter sends
+ * `cache_control`, so no request writes the cache); it becomes real with the first adapter that does.
  */
 export interface RateBasis {
   readonly rates: Rates;

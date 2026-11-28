@@ -78,7 +78,7 @@ describe('models pricing through the dispatch path', () => {
       executeCommand('models.pricing', input({ input: '3', output: '9' }), context(io)),
     ).resolves.toBe(EXIT_CODES.success);
     expect(out()).toBe(
-      'Set user pricing for acme-custom-1 (openai): input $3/Mtok, output $9/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n',
+      'Set user pricing for acme-custom-1 (openai): input $3 per M, output $9 per M. It applies to your next run/chat and survives `relavium models refresh`.\n',
     );
     const rows = createModelCatalogStore(client.db, { uuid: () => 'row', now: () => 1 }).listAll();
     expect(rows.map((row) => [row.modelId, row.source, row.inputCostPerMtokMicrocents])).toEqual([

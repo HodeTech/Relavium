@@ -1,12 +1,15 @@
 import type { CompactionResult, TrimResult } from '@relavium/core';
 
 import type { CatalogEntry } from '../workflows/catalog.js';
-import { sanitizeInline, stripTerminalControls } from '../render/tui/chat-projection.js';
+import { sanitizeInline, stripTerminalControls } from '../render/sanitize.js';
+import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import type { SessionCostRow } from '@relavium/db';
 import { isUsageCoverageComplete, type UsageCoverage } from '@relavium/shared';
 
+import { formatUsdExact } from '../render/notation.js';
+import type { Surface } from '../render/surface.js';
 import { formatReportedCost } from '../render/tui/format.js';
-import { resumeHint } from './resume-hint.js';
+import { blankMarkerGlyphs, glyph } from '../render/tui/glyphs.js';
 
 /**
  * Pure formatters for the in-REPL info commands (2.5.C S4) — `/cost` and `/workflows`. The output is rendered as
@@ -14,6 +17,126 @@ import { resumeHint } from './resume-hint.js';
  * unit-tested with no FS, no session, and no ink, and every dynamic field (a workflow slug) is sanitized at the
  * boundary so a crafted catalog entry can never forge a notice row or inject an escape.
  */
+
+/**
+ * One line of the `/cost` report in parts: the words the host writes before and after, and the model id between them, which is text a
+ * provider or a shared database holds and so is never written here but by the surface that draws it ({@link costNotice} sanitises it for the
+ * transcript, the `/cost` popup scrubs it with the full floor of a surface that has a chord step). A line with no model has none.
+ */
+export interface CostLine {
+  readonly head: string;
+  readonly model?: string;
+  readonly tail: string;
+}
+
+/** The `/cost` report as structured lines: what {@link costNotice} joins into a notice and the popup draws as a report (one source of wording). */
+export interface CostParts {
+  /** `Session cost: ...`: the one total line. */
+  readonly total: string;
+  /** What qualifies the total: the release note, the durability warning, the models seen only by usage. */
+  readonly notes: readonly CostLine[];
+  /** One line per model row of the breakdown. */
+  readonly rows: readonly CostLine[];
+}
+
+/** A {@link CostLine} as one line of text, its model (when it has one) passed through `mapModel`. */
+export function costLineText(line: CostLine, mapModel: (model: string) => string): string {
+  return `${line.head}${line.model === undefined ? '' : mapModel(line.model)}${line.tail}`;
+}
+
+/**
+ * The structure of the `/cost` notice: its total, its notes and its rows, every word in place and every model id raw. {@link costNotice} is
+ * these parts joined; the `/cost` popup draws the same parts, so the two cannot name different facts or word one differently.
+ */
+export function costParts(
+  totalCostMicrocents: number,
+  rows: readonly SessionCostRow[],
+  opts: {
+    readonly durabilityBroken?: boolean;
+    readonly released?: number;
+    readonly coverage?: UsageCoverage;
+    readonly models?: readonly { readonly model: string; readonly coverage: UsageCoverage }[];
+  } = {},
+): CostParts {
+  const total = `Session cost: ${formatReportedCost(
+    totalCostMicrocents,
+    opts.coverage,
+    rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
+  )}`;
+  const modelCoverage = new Map(opts.models?.map((entry) => [entry.model, entry.coverage]));
+  // ADR-0074 §1 requires the surface that RENDERS the committed amount to also expose clearing it, and to say
+  // when the record behind it is no longer durable (#W15-3). Both were reachable in code and invisible here.
+  const notes: CostLine[] = [];
+  if (opts.released !== undefined && opts.released > 0) {
+    notes.push({
+      head: `Released ~${formatUsdExact(opts.released)} of estimated-but-unconfirmed spend back to the cap.`,
+      tail: '',
+    });
+  }
+  if (opts.durabilityBroken === true) {
+    // Says only what is true: the cap IS still being enforced in this process; what is broken is the record's
+    // survival. A user who reads "the cap is off" would behave very differently from one who reads this.
+    notes.push({
+      head:
+        'warning: a conservative commitment could not be written durably — the cap still holds in this ' +
+        'session, but a resume would not see it. Use /cost --release to clear it deliberately.',
+      tail: '',
+    });
+  }
+  // A usage-only model has no realized-money row. Keep it visible without inventing a completed call.
+  for (const entry of opts.models ?? []) {
+    if (!rows.some((row) => !row.isLegacy && row.model === entry.model))
+      notes.push({
+        head: '  ',
+        model: entry.model,
+        tail: ` — ${formatReportedCost(0, entry.coverage)}`,
+      });
+  }
+  const lines = rows.map((r): CostLine => {
+    const share =
+      totalCostMicrocents > 0 ? Math.round((r.costMicrocents / totalCostMicrocents) * 100) : 0;
+    const money = `  ${formatReportedCost(r.costMicrocents, modelCoverage.get(r.model) ?? opts.coverage, r.unpricedCalls)}  ${String(share).padStart(3)}%`;
+
+    // The legacy row is handled PER ROW, not per panel. A resumed pre-2.6.C session that spends AGAIN carries BOTH the
+    // legacy aggregate and real model rows — the likeliest way a user meets this table — and rendering the aggregate
+    // through the normal path would print `$0.0420  40%  before per-model attribution  (0 calls, 0 tok)`: real money,
+    // zero calls, zero tokens, with the "unavailable" disclosure gone from the panel entirely. Its counts are
+    // structurally 0 (the per-attempt increments it would have needed were never kept), so it must never claim them.
+    //
+    // The branch is on the row's `isLegacy` FLAG, never on its model string. A string compare would misrender a user's
+    // custom model that happens to be named LEGACY_COST_SENTINEL as "breakdown unavailable" and hide its real spend.
+    if (r.isLegacy) {
+      return {
+        head: `${money}  before per-model attribution — breakdown unavailable (this spend predates it)`,
+        tail: '',
+      };
+    }
+
+    // ADR-0074 §1/§4 — the conservative estimate, rendered as *estimated, possibly billed* and NEVER added into
+    // the money figure. It is what the cap is actually holding against this model, so a user refused a turn on a
+    // `$0.0000` session can see why. Same wording as `relavium logs`, so the two surfaces cannot drift.
+    const held =
+      r.conservativeMicrocents > 0
+        ? `  — ~${formatUsdExact(r.conservativeMicrocents)} estimated, possibly billed`
+        : '';
+    // A commitment made BEFORE any realized egress on this model leaves a row with no calls and no tokens. Saying
+    // "(0 calls, 0 tok)" would assert the model was used zero times for zero money, while an estimate
+    // against it is holding the cap — the opposite of what the panel is for.
+    if (r.callCount === 0 && r.conservativeMicrocents > 0) {
+      return { head: `${money}  `, model: r.model, tail: `  (no completed call)${held}` };
+    }
+    const calls = `${r.callCount} ${r.callCount === 1 ? 'call' : 'calls'}`;
+    const tokens = `${r.inputTokens + r.outputTokens} tok`;
+    const unpriced =
+      r.unpricedCalls > 0 ? `  — price unknown for ${r.unpricedCalls} of ${calls}` : '';
+    return {
+      head: `${money}  `,
+      model: r.model,
+      tail: `  (${calls}, ${tokens})${unpriced}${held}`,
+    };
+  });
+  return { total, notes, rows: lines };
+}
 
 /**
  * The `/cost` notice — the session's spend, broken down PER MODEL (ADR-0070).
@@ -33,6 +156,8 @@ import { resumeHint } from './resume-hint.js';
  * The total is `agent_sessions.total_cost_microcents`, the authoritative realized sum used by the cap alongside
  * conservative holds (ADR-0028/0074). An incomplete usage receipt adds no guessed realized charge; ADR-0104's
  * durable coverage qualifies that known sum, and usage-only models remain visible. It is not a provider invoice.
+ *
+ * The wording is {@link costParts}'; this is the plain text of it, a model id sanitised for the transcript.
  */
 export function costNotice(
   totalCostMicrocents: number,
@@ -44,70 +169,84 @@ export function costNotice(
     readonly models?: readonly { readonly model: string; readonly coverage: UsageCoverage }[];
   } = {},
 ): string {
-  const total = `Session cost: ${formatReportedCost(
-    totalCostMicrocents,
-    opts.coverage,
-    rows.reduce((sum, row) => sum + row.unpricedCalls, 0),
-  )}`;
-  const modelCoverage = new Map(opts.models?.map((entry) => [entry.model, entry.coverage]));
-  // ADR-0074 §1 requires the surface that RENDERS the committed amount to also expose clearing it, and to say
-  // when the record behind it is no longer durable (#W15-3). Both were reachable in code and invisible here.
-  const notes: string[] = [];
-  if (opts.released !== undefined && opts.released > 0) {
-    notes.push(`Released ~${opts.released}µ¢ of estimated-but-unconfirmed spend back to the cap.`);
-  }
-  if (opts.durabilityBroken === true) {
-    // Says only what is true: the cap IS still being enforced in this process; what is broken is the record's
-    // survival. A user who reads "the cap is off" would behave very differently from one who reads this.
-    notes.push(
-      'warning: a conservative commitment could not be written durably — the cap still holds in this ' +
-        'session, but a resume would not see it. Use /cost --release to clear it deliberately.',
-    );
-  }
-  // A usage-only model has no realized-money row. Keep it visible without inventing a completed call.
-  for (const entry of opts.models ?? []) {
-    if (!rows.some((row) => !row.isLegacy && row.model === entry.model))
-      notes.push(`  ${sanitizeInline(entry.model)} — ${formatReportedCost(0, entry.coverage)}`);
-  }
-  if (rows.length === 0) return [total, ...notes].join('\n');
+  const parts = costParts(totalCostMicrocents, rows, opts);
+  return [
+    parts.total,
+    ...[...parts.notes, ...parts.rows].map((line) => costLineText(line, sanitizeInline)),
+  ].join('\n');
+}
 
-  const lines = rows.map((r) => {
-    const share =
-      totalCostMicrocents > 0 ? Math.round((r.costMicrocents / totalCostMicrocents) * 100) : 0;
-    const money = `  ${formatReportedCost(r.costMicrocents, modelCoverage.get(r.model) ?? opts.coverage, r.unpricedCalls)}  ${String(share).padStart(3)}%`;
+/**
+ * One entry of a catalog section: the slug is text a project's files hold (a file name), never written here but by the surface that draws it;
+ * so is the `reason` an invalid entry holds (what the parser said of the file: field names an author wrote).
+ */
+export interface CatalogRowParts {
+  readonly slug: string;
+  readonly valid: boolean;
+  readonly reason?: string;
+}
 
-    // The legacy row is handled PER ROW, not per panel. A resumed pre-2.6.C session that spends AGAIN carries BOTH the
-    // legacy aggregate and real model rows — the likeliest way a user meets this table — and rendering the aggregate
-    // through the normal path would print `$0.0420  40%  before per-model attribution  (0 calls, 0 tok)`: real money,
-    // zero calls, zero tokens, with the "unavailable" disclosure gone from the panel entirely. Its counts are
-    // structurally 0 (the per-attempt increments it would have needed were never kept), so it must never claim them.
-    //
-    // The branch is on the row's `isLegacy` FLAG, never on its model string. A string compare would misrender a user's
-    // custom model that happens to be named LEGACY_COST_SENTINEL as "breakdown unavailable" and hide its real spend.
-    if (r.isLegacy) {
-      return `${money}  before per-model attribution — breakdown unavailable (this spend predates it)`;
-    }
+/** The most characters of a parse reason a catalog row carries: a reason names fields an author wrote and can be as long as the file's error. */
+export const CATALOG_REASON_MAX = 100;
 
-    // ADR-0074 §1/§4 — the conservative estimate, rendered as *estimated, possibly billed* and NEVER added into
-    // the money figure. It is what the cap is actually holding against this model, so a user refused a turn on a
-    // `$0.0000` session can see why. Same wording as `relavium logs`, so the two surfaces cannot drift.
-    const held =
-      r.conservativeMicrocents > 0
-        ? `  — ~${r.conservativeMicrocents}µ¢ estimated, possibly billed`
-        : '';
-    // A commitment made BEFORE any realized egress on this model leaves a row with no calls and no tokens. Saying
-    // "(0 calls, 0 tok)" would assert the model was used zero times for zero money, while an estimate against it
-    // is holding the cap — the opposite of what the panel is for.
-    if (r.callCount === 0 && r.conservativeMicrocents > 0) {
-      return `${money}  ${sanitizeInline(r.model)}  (no completed call)${held}`;
-    }
-    const calls = `${r.callCount} ${r.callCount === 1 ? 'call' : 'calls'}`;
-    const tokens = `${r.inputTokens + r.outputTokens} tok`;
-    const unpriced =
-      r.unpricedCalls > 0 ? `  — price unknown for ${r.unpricedCalls} of ${calls}` : '';
-    return `${money}  ${sanitizeInline(r.model)}  (${calls}, ${tokens})${unpriced}${held}`;
-  });
-  return [total, ...notes, ...lines].join('\n');
+/**
+ * What follows an entry's slug when the file did not parse: ` (invalid)`, with the reason the catalog already holds when there is one
+ * (` (invalid: nodes.0.agent: unknown agent)`, as `relavium list` says it). The reason goes through `scrub` WHOLE first, as the surface scrubs
+ * every string it draws, and is cut after: the cut is the host's own `…` (a second scrub would fold it into three dots).
+ */
+export function invalidMark(reason: string | undefined, scrub: (text: string) => string): string {
+  const said = reason === undefined ? '' : scrub(reason).trim();
+  if (said === '') return ' (invalid)';
+  const characters = Array.from(said);
+  const shown =
+    characters.length > CATALOG_REASON_MAX
+      ? `${characters.slice(0, CATALOG_REASON_MAX - 1).join('')}…`
+      : said;
+  return ` (invalid: ${shown})`;
+}
+
+/** One kind of the catalog: its heading (`Workflows (2):` or `Agents: none`) and its entries. */
+export interface CatalogSectionParts {
+  readonly heading: string;
+  readonly entries: readonly CatalogRowParts[];
+}
+
+/** The structure of the `/workflows` notice: nothing found at all, or the two sections. */
+export type CatalogParts =
+  | { readonly kind: 'empty' }
+  | { readonly kind: 'sections'; readonly sections: readonly CatalogSectionParts[] };
+
+/** What `/workflows` says when there is no `.relavium/` directory from the working directory up: path-free, like the empty-project line below. */
+export const NO_PROJECT_NOTICE = 'No .relavium/ project found from the current directory.';
+
+/** The words a project that EXISTS but holds nothing is told: distinct from the caller's "No .relavium/ project found" message, path-free like it. */
+export const CATALOG_EMPTY_NOTICE = 'No workflows or agents found in this project.';
+
+/** One `kind` section: a count header + one entry per slug (invalid entries flagged, never dropped). */
+function catalogSectionParts(
+  heading: string,
+  entries: readonly CatalogEntry[],
+): CatalogSectionParts {
+  return {
+    heading: entries.length === 0 ? `${heading}: none` : `${heading} (${entries.length}):`,
+    entries: entries.map((entry) => ({
+      slug: entry.slug,
+      valid: entry.valid,
+      ...(entry.valid || entry.error === undefined ? {} : { reason: entry.error }),
+    })),
+  };
+}
+
+/** The structure of the `/workflows` notice: what {@link catalogNotice} joins and the popup draws. */
+export function catalogParts(
+  workflows: readonly CatalogEntry[],
+  agents: readonly CatalogEntry[],
+): CatalogParts {
+  if (workflows.length === 0 && agents.length === 0) return { kind: 'empty' };
+  return {
+    kind: 'sections',
+    sections: [catalogSectionParts('Workflows', workflows), catalogSectionParts('Agents', agents)],
+  };
 }
 
 /** The `/workflows` notice — the discovered workflow + agent catalogs (each slug sanitized), grouped by kind. A
@@ -117,20 +256,19 @@ export function catalogNotice(
   workflows: readonly CatalogEntry[],
   agents: readonly CatalogEntry[],
 ): string {
-  if (workflows.length === 0 && agents.length === 0) {
-    return 'No workflows or agents found in this project.';
-  }
-  return [catalogSection('Workflows', workflows), catalogSection('Agents', agents)].join('\n');
-}
-
-/** One `kind` section: a count header + one sanitized line per entry (invalid entries flagged, never dropped). */
-function catalogSection(heading: string, entries: readonly CatalogEntry[]): string {
-  if (entries.length === 0) return `${heading}: none`;
-  const rows = entries.map((entry) => {
-    const slug = sanitizeInline(entry.slug);
-    return `  ${slug}${entry.valid ? '' : ' (invalid)'}`;
-  });
-  return `${heading} (${entries.length}):\n${rows.join('\n')}`;
+  const parts = catalogParts(workflows, agents);
+  if (parts.kind === 'empty') return CATALOG_EMPTY_NOTICE;
+  return parts.sections
+    .map((section) =>
+      [
+        section.heading,
+        ...section.entries.map(
+          (entry) =>
+            `  ${sanitizeInline(entry.slug)}${entry.valid ? '' : invalidMark(entry.reason, sanitizeUntrustedInline)}`,
+        ),
+      ].join('\n'),
+    )
+    .join('\n');
 }
 
 /** Group large integers with thin separators for a readable token count (`14200` → `14,200`). */
@@ -187,13 +325,25 @@ export function trimNotice(result: TrimResult): string {
   }
 }
 
+/** Where a `/clear` notice is shown: the Home's hosted chat (it has `/resume`), or a stand-alone `relavium chat` (it has no Home). */
+export type ClearedNoticeSurface = Extract<Surface, 'home' | 'standalone-chat'>;
+
 /**
  * The `/clear` notice (ADR-0062 §7) — the current conversation has been ended (still persisted + resumable) and a
- * fresh session started. The shared resume hint names a shell-neutral ID or the native picker, so a stored ID
- * cannot turn the recovery command into shell syntax. Other surfaces can write non-UUID session IDs.
+ * fresh session started.
+ *
+ * The notice names no shell command and no session id (MVP-11 OD-20, ADR-0145 §7.4): it is shown inside the TUI, and a command
+ * there must exist on the surface that shows it. `/resume` lives on the Home, so the Home's hosted chat names it directly, and a
+ * stand-alone chat (which has no Home and no `/resume`) names the Home in words and says `relavium` alone. The shell line that
+ * names the saved session's id is printed when the chat has closed (`resumeHint`), never in the transcript.
+ *
+ * `surface` defaults to the Home because the Home's controller calls this with no argument; the stand-alone chat passes its own.
+ * The notice takes no session id: it names none (above), and a parameter that was never read invited the one thing it must not do.
  */
-export function clearedNotice(oldSessionId: string): string {
-  return `✨ Started a fresh conversation. The previous one is saved. ${resumeHint(oldSessionId).trimEnd()}`;
+export function clearedNotice(surface: ClearedNoticeSurface = 'home'): string {
+  return surface === 'home'
+    ? '✨ Started a fresh conversation. The previous one is saved; /resume continues it.'
+    : '✨ Started a fresh conversation. The previous one is saved; to continue it, start Relavium without arguments and use /resume on the Home.';
 }
 
 /**
@@ -228,11 +378,13 @@ export function clearedNotice(oldSessionId: string): string {
  *
  * Both ids are `model_catalog` ids (curated), but `sanitizeInline`-guarded defensively: a live-catalog id is
  * provider-sourced and `history.db` is shared across surfaces, so a crafted value must not smuggle a terminal escape
- * into the transcript.
+ * into the transcript. For the same reason an id cannot carry a speaker-marker glyph (`›`, `▸`, `⇄`: `blankMarkerGlyphs`, ADR-0145 §6): the
+ * host's own `⇄` leads this sentence and an id must not be able to draw a second one, here or in the inline intro, which is written to the
+ * terminal and never passes the transcript's row guard.
  */
 export function modelSwitchNotice(oldModel: string, newModel: string): string {
   return (
-    `⇄ model changed ${sanitizeInline(oldModel)} → ${sanitizeInline(newModel)} — the new model sees the text ` +
+    `${glyph('modelSwitch')} model changed ${blankMarkerGlyphs(sanitizeInline(oldModel))} → ${blankMarkerGlyphs(sanitizeInline(newModel))} — the new model sees the text ` +
     `transcript plus content-free records of earlier tool calls (tool name and outcome), and for the question tool ` +
     `what you were asked and how you answered. Prior tool arguments and results (including files a tool read) are ` +
     `not carried; text you sent — @-attached file contents included — is.`

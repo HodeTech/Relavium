@@ -22,14 +22,14 @@ describe('Home command typo guidance', () => {
     const controller = createHomeController({
       startChat,
       initializeProject,
-      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
       homeStore: {
         read: () => ({
-          attention: { gates: [], failedRuns: [] },
+          failedRuns: [],
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],
-          unreadableRunIds: [],
+          unreadableRuns: [],
+          totals: { attention: 0, sessions: 0, runs: 0 },
           isEmpty: true,
         }),
       },
@@ -49,18 +49,40 @@ describe('Home command typo guidance', () => {
     const starts = startChat.mock.calls.length;
     const lines = processLine.mock.calls.length;
     submit('/inti');
-    expect(controller.getSnapshot().notice).toBe('Unknown command. Did you mean /init?');
+    if (chat) {
+      // `/init` is the Home's, not a chat's (ADR-0145 §7.5, OD-2): a chat's list does not carry it, so a near miss of it is not suggested
+      // there. The chat's own dispatch answers the line, as it answers any word it does not know.
+      expect(controller.getSnapshot().notice).toBeUndefined();
+      await vi.waitFor(() => expect(processLine).toHaveBeenCalledTimes(lines + 1));
+    } else {
+      expect(controller.getSnapshot().notice).toBe('Unknown command. Did you mean /init?');
+      expect(processLine).toHaveBeenCalledTimes(lines);
+    }
     expect(controller.getSnapshot().input.text).toBe('');
     expect(startChat).toHaveBeenCalledTimes(starts);
-    expect(processLine).toHaveBeenCalledTimes(lines);
     expect(initializeProject).not.toHaveBeenCalled();
     expect(controller.getSnapshot().mode).toBe(chat ? 'chat' : 'home');
+    const before = processLine.mock.calls.length;
     submit('/init extra');
-    expect(controller.getSnapshot().notice).toBe('/init accepts no arguments.');
+    if (chat) {
+      // In a chat the typed word is answered with the one-line pointer to the Home, in the transcript; nothing opens and nothing is sent.
+      expect(controller.getSnapshot().notice).toBeUndefined();
+      expect(processLine).toHaveBeenCalledTimes(before);
+      expect(
+        store
+          .getSnapshot()
+          .state.transcript.some(
+            (entry) =>
+              entry.role === 'notice' && entry.text === '/init is available from the Home.',
+          ),
+      ).toBe(true);
+    } else {
+      expect(controller.getSnapshot().notice).toBe('/init accepts no arguments.');
+    }
     expect(initializeProject).not.toHaveBeenCalled();
     if (chat) {
       submit('/mode plan');
-      await vi.waitFor(() => expect(processLine).toHaveBeenCalledTimes(lines + 1));
+      await vi.waitFor(() => expect(processLine).toHaveBeenCalledTimes(before + 1));
     }
     await controller.teardownActive();
   });

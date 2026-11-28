@@ -8,6 +8,8 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createHomeController } from '../render/tui/home-controller.js';
+import { createPopupHost } from '../popups/popup-host.js';
+import { openSettings } from '../popups/settings-port.js';
 import { isolateSdkEnvironment } from './fixtures/provider-header-fixture.js';
 import { createModelCatalogPort } from './model-catalog-port.js';
 import { createProviderResolver, providerHasKey } from './providers.js';
@@ -195,23 +197,34 @@ describe('retained catalog credential changes', () => {
     expect(f.authorizations).toHaveLength(1);
   });
 
-  it('samples on actual Home picker open/refresh events while repeated renderer snapshot reads do not probe keys', async () => {
+  it('samples on actual Home /models open and refresh events while repeated renderer snapshot reads do not probe keys', async () => {
     const f = fixture();
+    // The `/models` popup over the Home's own port, on a popup host the test is the slot of (ADR-0148 §3: the catalog is read when the
+    // popup opens and after a refresh, never while a frame is drawn).
+    const host = createPopupHost({ placement: 'overlay' });
+    host.bindOpenGate(() => undefined);
+    host.bindVisibility(() => true);
+    host.bindPageRows(() => 17);
+    host.bindInnerWidth(() => 66);
     const controller = createHomeController({
       startChat: () => Promise.reject(new Error('chat is not exercised')),
       homeStore: {
         read: () => ({
-          attention: { gates: [], failedRuns: [] },
+          failedRuns: [],
           recentSessions: [],
           recentRuns: [],
           recentAgents: [],
-          unreadableRunIds: [],
+          unreadableRuns: [],
+          totals: { attention: 0, sessions: 0, runs: 0 },
           isEmpty: true,
         }),
       },
-      doctorProbes: { keychain: () => undefined, config: () => undefined, toolHost: {} },
       onExit: vi.fn(),
       onError: vi.fn(),
+      announce: vi.fn(),
+      openSettings: ({ command, chat }) => {
+        void openSettings({ host, port: chat, command, origin: 'home' });
+      },
       models: {
         ...f.port,
         currentDefault: () => undefined,
@@ -219,46 +232,51 @@ describe('retained catalog credential changes', () => {
         writeDefault: () => undefined,
       },
     });
+    /** The rows of the open list once its refresh has settled (the line above them no longer says a refresh is in flight). */
+    const settledRows = async () => {
+      await vi.waitFor(() => {
+        const content = host.getSnapshot().frame?.steps[0]?.content;
+        expect(content?.kind).toBe('list');
+        if (content?.kind === 'list') expect(content.heading?.status).not.toBe('running');
+      });
+      const content = host.getSnapshot().frame?.steps[0]?.content;
+      return content?.kind === 'list' ? content.rows : [];
+    };
+    const openai = (rows: Awaited<ReturnType<typeof settledRows>>) =>
+      rows.filter((row) => row.section !== true && (row.detail ?? '').includes('OpenAI'));
     const open = () => {
       for (const char of '/models') controller.handleKey(char, {});
       controller.handleKey('', { return: true });
     };
     open();
-    await vi.waitFor(() => expect(controller.getSnapshot().modelPicker?.loading).toBe(false));
-    const firstView = controller.getSnapshot().modelPicker;
+    const keyless = await settledRows();
+    expect(openai(keyless).length).toBeGreaterThan(0);
     expect(
-      firstView?.entries
-        .filter((entry) => entry.provider === 'openai')
-        .every((entry) => entry.unavailableReason === 'no-key'),
+      openai(keyless).every((row) => row.enabled === false && row.reason === 'no key for OpenAI'),
     ).toBe(true);
+    const firstView = host.getSnapshot();
     const reads = f.get.mock.calls.length;
-    for (let frame = 0; frame < 100; frame++)
-      expect(controller.getSnapshot().modelPicker).toBe(firstView);
+    for (let frame = 0; frame < 100; frame++) expect(host.getSnapshot()).toBe(firstView);
     expect(f.get).toHaveBeenCalledTimes(reads);
-    controller.handleKey('', { escape: true });
+    host.input('', { escape: true });
     f.policy.allowForInvocation('openai');
     open();
-    await vi.waitFor(() => expect(controller.getSnapshot().modelPicker?.loading).toBe(false));
-    const secondView = controller.getSnapshot().modelPicker;
-    expect(
-      secondView?.entries.some((entry) => entry.provider === 'openai' && entry.available),
-    ).toBe(true);
+    const second = await settledRows();
+    expect(openai(second).some((row) => row.enabled !== false)).toBe(true);
     expect(f.authorizations).toEqual([`Bearer ${first}`]);
+    const secondView = host.getSnapshot();
     const afterRefresh = f.get.mock.calls.length;
-    for (let frame = 0; frame < 100; frame++)
-      expect(controller.getSnapshot().modelPicker).toBe(secondView);
+    for (let frame = 0; frame < 100; frame++) expect(host.getSnapshot()).toBe(secondView);
     expect(f.get).toHaveBeenCalledTimes(afterRefresh);
-    controller.handleKey('', { escape: true });
+    host.input('', { escape: true });
     f.env['OPENAI_API_KEY'] = '';
     open();
-    await vi.waitFor(() => expect(controller.getSnapshot().modelPicker?.loading).toBe(false));
+    const third = await settledRows();
     expect(
-      controller
-        .getSnapshot()
-        .modelPicker?.entries.filter((entry) => entry.provider === 'openai')
-        .every((entry) => entry.unavailableReason === 'no-key'),
+      openai(third).every((row) => row.enabled === false && row.reason === 'no key for OpenAI'),
     ).toBe(true);
     expect(f.authorizations).toHaveLength(1);
+    host.dispose();
     await controller.teardownActive();
   });
 });

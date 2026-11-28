@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ClipboardOutcome, ClipboardWriter } from '../clipboard.js';
 import type { ReseatTarget } from '../../commands/chat.js';
 import type { ApprovalAnswer } from '../../chat/chat-mode.js';
-import type { DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import { createSuspendPort } from '../suspend.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
@@ -16,12 +15,9 @@ import {
   assertRenderStoreAgree,
   type TranscriptEntry,
 } from './session-view-model.js';
-import { bracketed, settleFrames, waitFor } from './harness-util.js';
+import { bracketed, settleFrames, waitFor, withoutStyles } from './harness-util.js';
 import type { PermissionsPort } from '../../permissions/chat-permissions.js';
-import { boundAgentView } from '../../chat/bound-agent-view.js';
-import { buildDefaultChatAgent } from '../../chat/default-agent.js';
-import { permissionsSheetOf } from './chat-sheet.js';
-import { SHEET_SETTLE_MS } from './permissions-sheet.js';
+import type { SettingsPort } from '../../popups/settings-port.js';
 import { RootApp } from './home-app.js';
 import {
   createHomeController,
@@ -29,6 +25,9 @@ import {
   type HomeController,
   type HomeModelsPort,
 } from './home-controller.js';
+import { CHAT_HEADER_ROWS } from './chat-layout.js';
+import { chatGrid } from './chat-grid.js';
+import { WORDMARK } from './home-layout.js';
 import { COPIED_TOAST_MS } from './tui-constants.js';
 
 /**
@@ -57,14 +56,27 @@ import { COPIED_TOAST_MS } from './tui-constants.js';
 
 afterEach(cleanup);
 
-const STUB_DOCTOR_PROBES: DoctorProbes = { keychain: () => {}, config: () => {}, toolHost: {} };
+/**
+ * The 1-based terminal row of the in-Home chat's viewport's n-th row (1 for the first): the chat's header takes the rows above the viewport
+ * (ADR-0146 §4) and the mouse mapping reads the viewport's measured top, so a press on the first transcript row is at row `CHAT_HEADER_ROWS + 1`.
+ */
+const viewportRow = (n: number): number => CHAT_HEADER_ROWS + n;
+/**
+ * The 1-based terminal column of the n-th CONTENT cell of the in-Home chat's transcript (1 for the first): it stands on the chat's grid (MVP-11
+ * unit 9), so its text starts right of the margin, and a press in the margin clamps to the first content cell.
+ */
+const contentColumn = (n: number): number => chatGrid(100).margin + n;
+
+/** The frame below the chat's header: the first user line is the session title, drawn in the header, so what the VIEWPORT shows is read from here. */
+const belowHeader = (frame: string): string => frame.split('\n').slice(CHAT_HEADER_ROWS).join('\n');
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 const homeStore: HomeStore = { read: () => EMPTY };
@@ -85,24 +97,22 @@ const turnStarted = (timestamp: string): SessionStreamHandleEvent => ({
 /** A minimal in-Home chat session fake — only the fields the controller reads on the paste / timer paths. The
  *  `sessionId` is parameterized so a `/models` reseat fake can hand back a DIFFERENT session object that keeps the
  *  SAME id (the reseat invariant the scroll-reset test discriminates against). */
-function makeSession(
-  store: ChatStoreController,
-  sessionId = 'sess-fake',
-  permissions?: PermissionsPort,
-): HomeChatSession {
+function makeSession(store: ChatStoreController, sessionId = 'sess-fake'): HomeChatSession {
   return {
     store,
     sessionId,
     processLine: async () => {},
     shouldStop: () => false,
     stopReason: () => 'exit',
-    ...(permissions === undefined ? {} : { permissions }),
     teardown: () => Promise.resolve(),
+    // What the `/models` popup's member of a chat the Home hosts needs of its session: a settings port and its tier setter.
+    settings: { surface: 'home-chat', announce: () => {} },
+    onSetEffort: () => {},
   };
 }
 
-/** A single-entry {@link HomeModelsPort} fake — just enough to open the in-Home `/models` picker and accept the one
- *  model (which triggers a live reseat when `reseatChat` is wired). Mirrors the fuller fake in home-controller.test.ts. */
+/** A single-entry {@link HomeModelsPort} fake — just enough for the in-Home `/models` popup's member to switch to the one model (a live
+ *  reseat when `reseatChat` is wired). */
 function makeModelsPort(
   modelId: string,
   provider: ModelCatalogEntry['provider'] = 'anthropic',
@@ -131,6 +141,11 @@ function makeModelsPort(
 
 interface MountedHome {
   readonly c: HomeController;
+  /**
+   * `/models` in the chat in front, as the popup's `This chat` applies it: the line routed to the Home's opener (`openSettings`), then the
+   * chat's member switched to `modelId` (the popup's own keys are `popups/models-*.test.ts`'s). Whether the line was routed.
+   */
+  readonly switchModel: (modelId: string) => boolean;
   readonly harness: ReturnType<typeof render>;
   /** Invoke the resize callback `RootApp` registered via `subscribeResize` (the terminal-resize signal). */
   readonly fireResize: () => void;
@@ -174,8 +189,13 @@ function mountHome(
   let onResize: () => void = () => {};
   let size = opts.size ?? { cols: 100, rows: 30 };
   const snapshot = opts.snapshot; // captured so `read: () => snapshot` narrows without an `as` cast
+  let opened: SettingsPort | undefined;
+  // Read through a function: what the controller's `openSettings` set is not seen by the narrowing of a local.
+  const openedPort = (): SettingsPort | undefined => opened;
   const c = createHomeController({
-    doctorProbes: STUB_DOCTOR_PROBES,
+    openSettings: ({ chat }) => {
+      opened = chat;
+    },
     startChat: opts.startChat ?? (() => Promise.resolve(makeSession(store))),
     ...(opts.reseatChat !== undefined ? { reseatChat: opts.reseatChat } : {}),
     ...(opts.models !== undefined ? { models: opts.models } : {}),
@@ -189,7 +209,7 @@ function mountHome(
   // render — so a divergent fixture fails loudly. Inside a component it would be swallowed by ink's no-op error
   // callbacks and the test would pass on a DEAD TREE, which is exactly how two of these fixtures used to "pass".
   assertRenderStoreAgree(opts.alternateScreen === true, store.getSnapshot().state.transcriptBound);
-  const harness = render(
+  const rendered = render(
     <RootApp
       {...(opts.inputEnabled === undefined ? {} : { inputEnabled: opts.inputEnabled })}
       controller={c}
@@ -207,9 +227,28 @@ function mountHome(
       {...(opts.onSuspend === undefined ? {} : { onSuspend: opts.onSuspend })}
     />,
   );
+  // The host writes bold and inverse into its text whatever the colour setting is (`emphasis.ts`): the frames these tests read are
+  // asked for their words, so they are read without the styling (a test about the styling reads the raw bytes elsewhere).
+  const harness = {
+    ...rendered,
+    lastFrame: (): string | undefined => {
+      const frame = rendered.lastFrame();
+      return frame === undefined ? undefined : withoutStyles(frame);
+    },
+  };
   return {
     c,
     harness,
+    switchModel: (modelId) => {
+      opened = undefined;
+      c.handleKey('/', {});
+      for (const ch of 'models') c.handleKey(ch, {});
+      c.handleKey('', { return: true });
+      const models = openedPort()?.models;
+      if (models === undefined) return false;
+      models.switchModel?.({ modelId, provider: 'anthropic' });
+      return true;
+    },
     fireResize: () => onResize(),
     setSize: (next) => {
       size = next;
@@ -359,8 +398,8 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
     const frame = (): string => harness.lastFrame() ?? '';
     await waitFor(() => frame().includes('HMSG39'));
     expect(frame()).toContain('HMSG39'); // the newest entry (tail) is shown
-    expect(frame()).not.toContain('HMSG0'); // the oldest scrolled off the top — the alt buffer has no scrollback
-    expect(frame().split('\n').length).toBeLessThanOrEqual(30); // bounded to the size's rows (getSize ⇒ 30)
+    expect(belowHeader(frame())).not.toContain('HMSG0'); // the oldest scrolled off the top — the alt buffer has no scrollback (its title is in the header)
+    expect(frame().split('\n').length).toBeLessThanOrEqual(30 - 1); // bounded to the frame's rows (getSize ⇒ 30, less one)
   });
 
   it('SCROLLS the in-Home transcript: PgUp leaves the tail, PgDn resumes it (RootApp keymap path, Step 4b-2)', async () => {
@@ -443,7 +482,7 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
     harness.stdin.write('\x1b[<64;10;5M'); // a wheel notch behind the overlay
     await settleFrames();
 
-    expect(c.getSnapshot().palette?.query).toBe(''); // the mouse bytes did NOT enter the palette filter
+    expect(c.getSnapshot().palette?.state.query).toBe(''); // the mouse bytes did NOT enter the palette filter
     expect(frame()).toContain('HMSG59'); // …and the transcript did not scroll behind the overlay
   });
 
@@ -457,7 +496,7 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
     const sessionA = makeSession(store, 'sess-A');
     const sessionB = makeSession(store, 'sess-A'); // reseat: DIFFERENT object, SAME sessionId, SAME transcript store
     const reseatChat = vi.fn(() => Promise.resolve(sessionB));
-    const { c, harness } = mountHome(store, {
+    const { c, harness, switchModel } = mountHome(store, {
       alternateScreen: true,
       startChat: () => Promise.resolve(sessionA),
       reseatChat,
@@ -474,13 +513,8 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
     await settleFrames();
     expect(frame()).not.toContain('HMSG59'); // scrolled up off the tail (follow paused)
 
-    // Drive the in-Home /models reseat via the controller (deterministic): `/` → filter `models` → run → accept.
-    c.handleKey('/', {});
-    for (const ch of 'models') c.handleKey(ch, {});
-    c.handleKey('', { return: true });
-    await settleFrames();
-    expect(c.getSnapshot().modelPicker).toBeDefined(); // the picker opened in-chat
-    c.handleKey('', { return: true }); // accept the only model → live reseat
+    // Drive the in-Home /models reseat via the controller (deterministic): `/` → filter `models` → run → the popup's `This chat`.
+    expect(switchModel('claude-opus-4-8')).toBe(true); // the popup's member was routed in-chat
     await waitFor(() => c.getSnapshot().session === sessionB);
     await settleFrames();
 
@@ -499,7 +533,6 @@ describe('RootApp — the suspend port (ADR-0068 §e)', () => {
   it('attaches a WORKING suspendTerminal while mounted, and detaches on unmount', async () => {
     const port = createSuspendPort();
     const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () =>
         Promise.resolve(
           makeSession(createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND)),
@@ -565,12 +598,12 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
     m.harness.stdin.write('\x1a');
     await settleFrames();
     expect(onSuspend).toHaveBeenCalledOnce();
-    m.harness.stdin.write('\x1b[<0;1;1M');
+    m.harness.stdin.write(`\x1b[<0;1;${viewportRow(1)}M`);
     await settleFrames();
-    m.harness.stdin.write('\x1b[<32;3;1M');
+    m.harness.stdin.write(`\x1b[<32;${contentColumn(3)};${viewportRow(1)}M`);
     await settleFrames();
     enabled = false;
-    m.harness.stdin.write('\x1b[<0;3;1m');
+    m.harness.stdin.write(`\x1b[<0;${contentColumn(3)};${viewportRow(1)}m`);
     m.harness.stdin.write(bracketed('SEALED_HOME_PASTE'));
     m.harness.stdin.write('\x1a');
     await settleFrames();
@@ -593,11 +626,11 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
     await enterChat(m.c);
     await waitFor(() => (m.harness.lastFrame() ?? '').includes('AAAA'));
 
-    m.harness.stdin.write('\x1b[<0;1;1M'); // press line 0, column 0
+    m.harness.stdin.write(`\x1b[<0;1;${viewportRow(1)}M`); // press line 0, column 0
     await settleFrames();
-    m.harness.stdin.write('\x1b[<32;3;1M'); // drag to column 2 (inclusive)
+    m.harness.stdin.write(`\x1b[<32;${contentColumn(3)};${viewportRow(1)}M`); // drag to column 2 (inclusive)
     await settleFrames();
-    m.harness.stdin.write('\x1b[<0;3;1m'); // release ⇒ copy
+    m.harness.stdin.write(`\x1b[<0;${contentColumn(3)};${viewportRow(1)}m`); // release ⇒ copy
     await settleFrames();
 
     expect(copied).toEqual(['AAA']);
@@ -669,15 +702,15 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
       m.harness.stdin.write('\x1b[<64;5;5M'); // wheel up: leave the tail
       await settleFrames();
     }
-    const thirdRow = (m.harness.lastFrame() ?? '').split('\n')[2]?.trim();
+    const thirdRow = (m.harness.lastFrame() ?? '').split('\n')[CHAT_HEADER_ROWS + 2]?.trim();
     expect(thirdRow).toMatch(/^row-\d\d$/);
     expect(thirdRow).not.toBe('row-02');
 
-    m.harness.stdin.write('\x1b[<0;1;3M'); // press the third row (an INNER row: row 1 is the edge-scroll zone)
+    m.harness.stdin.write(`\x1b[<0;1;${viewportRow(3)}M`); // press the third row (an INNER row: row 1 is the edge-scroll zone)
     await settleFrames();
-    m.harness.stdin.write('\x1b[<32;99;3M'); // drag past its right edge ⇒ the whole row
+    m.harness.stdin.write(`\x1b[<32;99;${viewportRow(3)}M`); // drag past its right edge ⇒ the whole row
     await settleFrames();
-    m.harness.stdin.write('\x1b[<0;99;3m');
+    m.harness.stdin.write(`\x1b[<0;99;${viewportRow(3)}m`);
     await settleFrames();
 
     expect(copied).toEqual([thirdRow]);
@@ -702,12 +735,12 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
 
     // No `settleFrames` between the append and the gesture: `scrollGeomRef` still says 60 lines.
     store.notice('row-60');
-    m.harness.stdin.write('\x1b[<0;1;3M');
-    m.harness.stdin.write('\x1b[<32;99;3M');
-    m.harness.stdin.write('\x1b[<0;99;3m');
+    m.harness.stdin.write(`\x1b[<0;1;${viewportRow(3)}M`);
+    m.harness.stdin.write(`\x1b[<32;99;${viewportRow(3)}M`);
+    m.harness.stdin.write(`\x1b[<0;99;${viewportRow(3)}m`);
     await settleFrames();
 
-    const thirdRow = (m.harness.lastFrame() ?? '').split('\n')[2]?.trim();
+    const thirdRow = (m.harness.lastFrame() ?? '').split('\n')[CHAT_HEADER_ROWS + 2]?.trim();
     expect(copied).toEqual([thirdRow]); // the row the append pushed there, not the one that was there before
   });
 
@@ -716,7 +749,7 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
     // for as long as no line is wider than the terminal — so make one that is.
     const copied: string[] = [];
     const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
-    store.notice('A'.repeat(140)); // at 100 columns this wraps into two display rows
+    store.notice('A'.repeat(140)); // at 100 columns the content column is 84 wide (unit 9's grid): two display rows
     const m = mountHome(store, {
       alternateScreen: true,
       clipboard: (text) => {
@@ -728,9 +761,11 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
     await waitFor(() => (m.harness.lastFrame() ?? '').includes('AAAA'));
 
     const frame = (m.harness.lastFrame() ?? '').split('\n');
-    const firstRow = frame.findIndex((l) => l.startsWith('AAAA'));
+    // both rows of the notice stand at EXACTLY the content column (8 columns in at 100): a hanging wrap, no stray indent
+    const atContent = `${' '.repeat(chatGrid(100).margin)}AAAA`;
+    const firstRow = frame.findIndex((l) => l.startsWith(atContent));
     expect(firstRow).toBeGreaterThanOrEqual(0);
-    expect(frame[firstRow + 1]?.startsWith('AAAA')).toBe(true); // it really wrapped
+    expect(frame[firstRow + 1]?.startsWith(atContent)).toBe(true); // it really wrapped
 
     // Drag the SECOND visual row only. Terminal rows are 1-based.
     const row = String(firstRow + 2);
@@ -742,7 +777,7 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
     await settleFrames();
 
     expect(copied).toHaveLength(1);
-    expect(copied[0]).toBe('A'.repeat(40)); // the 40-char remainder, not all 140
+    expect(copied[0]).toBe('A'.repeat(140 - chatGrid(100).content)); // the 56-char remainder, not all 140
   });
 
   it('a RESIZE drops the live selection — re-wrapping moves every display-line index it holds', async () => {
@@ -758,16 +793,16 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
     await enterChat(m.c);
     await waitFor(() => (m.harness.lastFrame() ?? '').includes('AAAA'));
 
-    m.harness.stdin.write('\x1b[<0;1;1M'); // press…
+    m.harness.stdin.write(`\x1b[<0;1;${viewportRow(1)}M`); // press…
     await settleFrames();
-    m.harness.stdin.write('\x1b[<32;3;1M'); // …drag…
+    m.harness.stdin.write(`\x1b[<32;${contentColumn(3)};${viewportRow(1)}M`); // …drag…
     await settleFrames();
 
     m.setSize({ cols: 60, rows: 30 });
     m.fireResize();
     await settleFrames();
 
-    m.harness.stdin.write('\x1b[<0;3;1m'); // …release AFTER the resize
+    m.harness.stdin.write(`\x1b[<0;${contentColumn(3)};${viewportRow(1)}m`); // …release AFTER the resize
     await settleFrames();
     expect(copied).toEqual([]); // the anchor was dropped, so there is nothing to copy
   });
@@ -793,11 +828,11 @@ describe('RootApp — the copy-on-select "Sent to terminal clipboard" toast', ()
   const copyOnce = async (m: MountedHome): Promise<void> => {
     await enterChat(m.c);
     await waitFor(() => (m.harness.lastFrame() ?? '').includes('AAAA'));
-    m.harness.stdin.write('\x1b[<0;1;1M'); // press line 0, column 0
+    m.harness.stdin.write(`\x1b[<0;1;${viewportRow(1)}M`); // press line 0, column 0
     await settleFrames();
-    m.harness.stdin.write('\x1b[<32;3;1M'); // drag to column 2 (inclusive)
+    m.harness.stdin.write(`\x1b[<32;${contentColumn(3)};${viewportRow(1)}M`); // drag to column 2 (inclusive)
     await settleFrames();
-    m.harness.stdin.write('\x1b[<0;3;1m'); // release ⇒ copy
+    m.harness.stdin.write(`\x1b[<0;${contentColumn(3)};${viewportRow(1)}m`); // release ⇒ copy
     await settleFrames();
   };
 
@@ -836,11 +871,7 @@ describe('RootApp — the copy-on-select "Sent to terminal clipboard" toast', ()
         reseatChat: () => Promise.resolve(next),
       });
       await copyOnce(m);
-      m.c.handleKey('/', {});
-      for (const char of 'models') m.c.handleKey(char, {});
-      m.c.handleKey('', { return: true });
-      await waitFor(() => m.c.getSnapshot().modelPicker !== undefined);
-      m.c.handleKey('', { return: true });
+      expect(m.switchModel('next-model')).toBe(true);
       await waitFor(() => m.c.getSnapshot().session === next);
       expect(m.c.getSnapshot().session).toBe(next);
       deliver(failed ? { kind: 'failed' } : { kind: 'written', characters: 3 });
@@ -903,15 +934,16 @@ describe('RootApp — the copy-on-select "Sent to terminal clipboard" toast', ()
 });
 
 /**
- * The branded Home banner ON SCREEN (2.6.F Step 5g). `banner.test.ts` pins the plaque itself; this pins that it
- * REPLACES the plain heading, obeys `[preferences].show_banner`, and never pushes the prompt off an 80x24 terminal.
+ * The Home's landing ON SCREEN (ADR-0146 §1, MVP-11 unit 7). `home-landing-frames.test.tsx` pins the empty Home's geometry; this pins that the
+ * block is page 1's whatever the Home holds, that `[preferences].show_banner` obeys the maintainer's rule of 2026-11-26 (`true` and absent show the
+ * block, `false` shows the one-line spaced wordmark instead), that a Home with something to continue draws the same landing under every setting
+ * (its strip is the work page's), and that the landing never pushes the prompt off an 80x24 terminal.
  */
-describe('RootApp — the branded Home banner', () => {
+describe('RootApp — the Home landing and its title', () => {
   const BUSY: HomeSnapshot = {
-    attention: { gates: [], failedRuns: [] },
+    failedRuns: [],
     recentSessions: [
       {
-        workingDir: '/workspace',
         sessionId: 'sess-9',
         title: 'a chat',
         agentSlug: 'default',
@@ -923,7 +955,8 @@ describe('RootApp — the branded Home banner', () => {
     ],
     recentRuns: [],
     recentAgents: [],
-    unreadableRunIds: [],
+    unreadableRuns: [],
+    totals: { attention: 0, sessions: 1, runs: 0 },
     isEmpty: false,
   };
 
@@ -933,61 +966,77 @@ describe('RootApp — the branded Home banner', () => {
     return m.harness.lastFrame() ?? '';
   };
 
-  /** The frame's lines, trimmed — so "is the plain heading anywhere on screen" is one question, not a position. */
+  /** The frame's lines, trimmed — so "is the title a row of its own anywhere on screen" is one question, not a position. */
   const rows = (frame: string): string[] => frame.split('\n').map((l) => l.trim());
 
-  it('an EMPTY Home shows the plaque, and the plain heading is GONE (it is replaced, not stacked)', async () => {
+  it('an EMPTY Home shows the block: the spaced wordmark, the rail and its three labels and notes', async () => {
     const frame = await frameOf({});
-    expect(frame).toContain('R E L A V I U M');
-    expect(frame).toContain('Own every run.');
-    // Checking only row 0 would pass while the heading sat just BELOW the plaque (break-verified).
+    expect(rows(frame)).toContain(WORDMARK);
+    for (const text of ['Start as an agent', 'Ship the workflow', 'Own every run'])
+      expect(frame).toContain(text);
+    for (const text of ['talk to an agent', 'save it as YAML', 'every run kept'])
+      expect(frame).toContain(text);
+    // The old plain heading and welcome line are gone: the title is the spaced wordmark and nothing of the old words is drawn.
     expect(rows(frame)).not.toContain('relavium');
+    expect(frame).not.toContain('Welcome to Relavium');
   });
 
-  it('a BUSY Home falls back to the plain heading — the banner auto-dismisses', async () => {
-    const frame = await frameOf({ snapshot: BUSY });
-    expect(frame).not.toContain('R E L A V I U M');
-    expect(rows(frame)).toContain('relavium');
+  // The landing is ALWAYS the calm landing (MVP-11 unit 7, maintainer 2026-11-26): a BUSY Home draws it as an empty one does (the block, or the
+  // one-line title with `show_banner = false`), and its strip is the work page's, one `↓` away.
+  it('a BUSY Home draws the landing as an empty one does — the block unless `show_banner = false` — and not its strip', async () => {
+    for (const showBanner of [undefined, true, false] as const) {
+      const frame = await frameOf({
+        snapshot: BUSY,
+        ...(showBanner === undefined ? {} : { showBanner }),
+      });
+      expect(rows(frame), `show_banner=${String(showBanner)}`).toContain(WORDMARK);
+      expect(frame.includes('Start as an agent'), `show_banner=${String(showBanner)}`).toBe(
+        showBanner !== false,
+      );
+      expect(rows(frame)).not.toContain('relavium');
+      expect(frame, 'the strip is the work page’s').not.toContain('a chat');
+    }
   });
 
-  it('`show_banner = false` hides it even on an empty Home', async () => {
+  it('`show_banner = true` and an absent setting both show the block on an empty Home', async () => {
+    for (const opts of [{ showBanner: true }, {}]) {
+      const frame = await frameOf(opts);
+      expect(frame, JSON.stringify(opts)).toContain('Start as an agent');
+    }
+  });
+
+  it('`show_banner = false` shows the one-line title INSTEAD of the block on an empty Home: no rail, the prompt, the rule and the hint stay', async () => {
     const frame = await frameOf({ showBanner: false });
-    expect(frame).not.toContain('R E L A V I U M');
+    expect(rows(frame)[0]).toBe(WORDMARK);
+    expect(frame).not.toContain('Start as an agent');
+    expect(frame).not.toContain('talk to an agent');
+    expect(frame).not.toMatch(/@\.{5}/u); // the plain-form rail
+    expect(frame).toContain('e.g. summarize the files in this folder');
+    expect(frame).toContain('[/] commands');
   });
 
-  it('`show_banner = true` brings it back on a busy Home', async () => {
-    const frame = await frameOf({ showBanner: true, snapshot: BUSY });
-    expect(frame).toContain('R E L A V I U M');
-  });
-
-  it('on an 80x24 terminal the plaque never obscures the prompt', async () => {
+  it('on an 80x24 terminal the landing never obscures the prompt and no line is wider than the terminal', async () => {
     const frame = await frameOf({ size: { cols: 80, rows: 24 } });
-    expect(frame).toContain('R E L A V I U M');
+    expect(frame).toContain('Start as an agent');
     // The prompt marker still renders, and no line wrapped past 80 columns.
-    expect(frame).toContain('>');
+    expect(frame).toContain('> e.g. summarize the files in this folder');
+    expect(frame.split('\n').length).toBeLessThanOrEqual(23);
     for (const line of frame.split('\n')) expect(line.length).toBeLessThanOrEqual(80);
   });
 
-  it('renders WITHOUT a React duplicate-key error under NO_COLOR — the two ASCII borders are byte-identical', async () => {
-    // The Home mounts ink with `patchConsole: false`, so a React runtime error goes straight to stderr — printed onto
-    // the alt buffer, over the frame. Keying the plaque's rows by their TEXT did exactly that (whole-phase review).
+  it('renders WITHOUT a React error under NO_COLOR — the plain rail is drawn once, and nothing is keyed by its text', async () => {
+    // The Home mounts ink with `patchConsole: false`, so a React runtime error goes straight to stderr — printed onto the alt buffer, over the frame.
     const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
       const m = mountHome(createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND), {
         color: false,
       });
       await settleFrames();
-      expect(m.harness.lastFrame() ?? '').toContain('R E L A V I U M');
+      expect(m.harness.lastFrame() ?? '').toContain(WORDMARK);
       expect(spy).not.toHaveBeenCalled();
     } finally {
       spy.mockRestore();
     }
-  });
-
-  it('a FORCED banner on a busy 80x24 Home stands down rather than crowd the strip', async () => {
-    const frame = await frameOf({ showBanner: true, snapshot: BUSY, size: { cols: 80, rows: 24 } });
-    expect(frame).not.toContain('R E L A V I U M');
-    expect(frame).toContain('a chat'); // the strip the banner would have pushed away
   });
 });
 
@@ -1096,13 +1145,8 @@ describe('RootApp — a /models reseat keeps the conversation on screen (F1)', (
     await enterChat(m.c);
     await waitFor(() => (m.harness.lastFrame() ?? '').includes('what is 2+2'));
 
-    // Open the reseat picker from the chat palette (`/` → filter `models` → run), then accept the one model.
-    m.c.handleKey('/', {});
-    for (const ch of 'models') m.c.handleKey(ch, {});
-    m.c.handleKey('', { return: true });
-    await settleFrames();
-    expect(m.c.getSnapshot().modelPicker).toBeDefined(); // the picker opened IN the chat
-    m.c.handleKey('', { return: true }); // accept ⇒ a LIVE reseat
+    // `/models` from the chat palette (`/` → filter `models` → run), then the popup's `This chat` on the one model ⇒ a LIVE reseat.
+    expect(m.switchModel('claude-opus-4-8')).toBe(true);
     await waitFor(
       () => m.c.getSnapshot().session?.store.getSnapshot().state.model === 'claude-opus-4-8',
     );
@@ -1129,320 +1173,5 @@ describe('RootApp — a /models reseat keeps the conversation on screen (F1)', (
     expect(carried.at(-1)?.role).toBe('notice');
     expect(carried.at(-1)?.text).toContain('claude-sonnet-4-6 → claude-opus-4-8'); // the marker, in order
     expect(carried.at(-1)?.text).toContain('@-attached file contents included'); // ADR-0059's bound disclosure
-  });
-});
-
-/**
- * Poll until `predicate` holds and FAIL if it never does. `harness-util`'s `waitFor` returns silently on a timeout, so a bare `await waitFor(...)`
- * asserts nothing (a removed paste handler survived the mutation sweep that way); a lone Esc is also held back a moment while the input layer
- * rules out an escape sequence, so the budget is real time, as in `interrupt-wiring.test.tsx`.
- */
-const untilTrue = (predicate: () => boolean, timeout = 3000): Promise<void> =>
-  vi.waitFor(
-    () => {
-      if (!predicate())
-        throw new Error(`the condition did not become true: ${predicate.toString()}`);
-    },
-    { timeout, interval: 15 },
-  );
-
-describe('RootApp — the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
-  const port: PermissionsPort = {
-    surface: 'chat',
-    load: () => ({
-      project: {
-        ok: true,
-        rows: [{ id: 'a', label: 'npm, 1 argument', remembered: '2026-11-19 12:00Z' }],
-      },
-      session: [],
-    }),
-    withdraw: () => ({ tone: 'done', text: 'Withdrawn. Auto mode asks about it again.' }),
-  };
-  const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-  it('is drawn docked in the chat when the command is typed, takes a paste away from the prompt, and closes on Esc', async () => {
-    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    const { c, harness } = mountHome(store, {
-      startChat: () => Promise.resolve(makeSession(store, 'sess-fake', port)),
-    });
-    await enterChat(c);
-    harness.stdin.write('/permissions');
-    harness.stdin.write('\r');
-    await untilTrue(() => (harness.lastFrame() ?? '').includes('Permissions · ask mode'));
-    const frame = harness.lastFrame() ?? '';
-    expect(frame).toContain('This project · remembered (1)');
-    expect(frame).toContain('› npm, 1 argument');
-    expect(frame).toContain('↑/↓ select · [d / Del] withdraw · Esc close');
-    // A paste is not input to the sheet and not text for the prompt behind it.
-    harness.stdin.write(bracketed('pasted words'));
-    await settleFrames();
-    expect(c.getSnapshot().input.text).toBe('');
-    expect(harness.lastFrame() ?? '').not.toContain('pasted words');
-    harness.stdin.write('\u001b');
-    await untilTrue(() => !(harness.lastFrame() ?? '').includes('Permissions ·'));
-  });
-
-  it('does not scroll the in-Home transcript behind it: PgUp reaches the sheet (the alt-screen gate)', async () => {
-    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
-    for (let i = 0; i < 60; i += 1) store.appendUser(`HMSG${String(i)}`);
-    const { c, harness } = mountHome(store, {
-      alternateScreen: true,
-      startChat: () => Promise.resolve(makeSession(store, 'sess-fake', port)),
-    });
-    await enterChat(c);
-    const frame = (): string => harness.lastFrame() ?? '';
-    await untilTrue(() => frame().includes('HMSG59'));
-    harness.stdin.write('/permissions');
-    harness.stdin.write('\r');
-    await untilTrue(() => c.getSnapshot().chatSheet !== undefined);
-    await settleFrames();
-    harness.stdin.write('\x1b[5~'); // PgUp: the sheet's own page key
-    await settleFrames();
-    harness.stdin.write('\x1b[5~');
-    await settleFrames();
-    expect(c.getSnapshot().chatSheet, 'the sheet is still open').toBeDefined();
-    expect(frame(), 'the transcript did not scroll behind the sheet').toContain('HMSG59');
-  });
-
-  it('draws the sheet at the terminal’s real width and height: it fits an 80x24 terminal and says so below it', async () => {
-    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    const m = mountHome(store, {
-      size: { cols: 80, rows: 24 },
-      startChat: () => Promise.resolve(makeSession(store, 'sess-fake', port)),
-    });
-    await enterChat(m.c);
-    m.harness.stdin.write('/permissions');
-    m.harness.stdin.write('\r');
-    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Permissions · ask mode'));
-    const sheetLines = (m.harness.lastFrame() ?? '')
-      .split('\n')
-      .filter((line) => line.includes('remembered') || line.includes('select · [d'));
-    for (const line of sheetLines) expect(line.length).toBeLessThanOrEqual(80);
-    m.setSize({ cols: 80, rows: 23 });
-    m.fireResize();
-    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Enlarge the terminal'));
-  });
-
-  it('draws the rule as wide as the terminal allows, not at a fixed 80 columns', async () => {
-    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    const m = mountHome(store, {
-      size: { cols: 100, rows: 30 },
-      startChat: () => Promise.resolve(makeSession(store, 'sess-fake', port)),
-    });
-    await enterChat(m.c);
-    m.harness.stdin.write('/permissions');
-    m.harness.stdin.write('\r');
-    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Permissions · ask mode'));
-    const rule = (m.harness.lastFrame() ?? '')
-      .split('\n')
-      .find((line) => line.includes('Permissions · ask mode'));
-    // two columns of margin on a 100-column terminal: the sheet's own cap is 100, so the rule is 98 wide
-    expect(rule?.trimEnd().length).toBe(98);
-  });
-
-  it('is told the terminal size, so a withdrawal is not asked for in a frame that cannot show the question', async () => {
-    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    const m = mountHome(store, {
-      startChat: () => Promise.resolve(makeSession(store, 'sess-fake', port)),
-    });
-    await enterChat(m.c);
-    m.harness.stdin.write('/permissions');
-    m.harness.stdin.write('\r');
-    await untilTrue(() => m.c.getSnapshot().chatSheet !== undefined);
-    await sleep(SHEET_SETTLE_MS + 100);
-    m.setSize({ cols: 60, rows: 20 });
-    m.fireResize();
-    await settleFrames();
-    m.harness.stdin.write('d');
-    await settleFrames();
-    expect(permissionsSheetOf(m.c.getSnapshot().chatSheet)?.armed).toBe(false);
-    m.setSize({ cols: 100, rows: 30 });
-    m.fireResize();
-    await settleFrames();
-    // The `d` above was typed into a sheet that could not arm, and that counts as typing: it is refused again, and says why.
-    m.harness.stdin.write('d');
-    await untilTrue(() =>
-      (permissionsSheetOf(m.c.getSnapshot().chatSheet)?.message?.text ?? '').startsWith(
-        'Typed keys are ignored',
-      ),
-    );
-    expect(permissionsSheetOf(m.c.getSnapshot().chatSheet)?.armed).toBe(false);
-    // An arrow key says the person is choosing a row again.
-    m.harness.stdin.write('\u001b[B');
-    m.harness.stdin.write('\u001b[A');
-    await settleFrames();
-    m.harness.stdin.write('d');
-    await untilTrue(() => permissionsSheetOf(m.c.getSnapshot().chatSheet)?.armed === true);
-  });
-});
-
-describe('RootApp — the /agent sheet in the in-Home chat (ADR-0140 §3)', () => {
-  const VIEW = boundAgentView(
-    buildDefaultChatAgent('claude-opus-4-8', 'high', 'anthropic'),
-    'high',
-  );
-  const withAgent = (store: ChatStoreController): HomeChatSession => ({
-    ...makeSession(store),
-    boundAgent: () => VIEW,
-  });
-
-  it('is drawn docked in the chat with the bound agent’s fields, takes a paste away from the prompt, and closes on Esc', async () => {
-    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    const { c, harness } = mountHome(store, {
-      startChat: () => Promise.resolve(withAgent(store)),
-    });
-    await enterChat(c);
-    harness.stdin.write('/agent');
-    harness.stdin.write('\r');
-    await untilTrue(() => (harness.lastFrame() ?? '').includes('Agent · relavium-chat'));
-    const frame = harness.lastFrame() ?? '';
-    expect(frame).toContain('claude-opus-4-8');
-    expect(frame).toContain('Provider');
-    expect(frame).toContain('anthropic');
-    expect(frame).toContain('the built-in chat agent');
-    expect(frame).toContain('Reasoning effort  high');
-    expect(frame).toContain('Esc close');
-    harness.stdin.write(bracketed('pasted words'));
-    await settleFrames();
-    expect(c.getSnapshot().input.text).toBe('');
-    expect(harness.lastFrame() ?? '').not.toContain('pasted words');
-    harness.stdin.write('\u001b');
-    await untilTrue(() => !(harness.lastFrame() ?? '').includes('Agent · relavium-chat'));
-  });
-
-  it('does not scroll the in-Home transcript behind it: PgUp reaches the sheet (the alt-screen gate)', async () => {
-    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
-    for (let i = 0; i < 60; i += 1) store.appendUser(`AMSG${String(i)}`);
-    const { c, harness } = mountHome(store, {
-      alternateScreen: true,
-      startChat: () => Promise.resolve(withAgent(store)),
-    });
-    await enterChat(c);
-    await untilTrue(() => (harness.lastFrame() ?? '').includes('AMSG59'));
-    harness.stdin.write('/agent');
-    harness.stdin.write('\r');
-    await untilTrue(() => c.getSnapshot().chatSheet?.kind === 'agent');
-    await settleFrames();
-    harness.stdin.write('\x1b[5~');
-    await settleFrames();
-    expect(c.getSnapshot().chatSheet?.kind, 'the sheet is still open').toBe('agent');
-    expect(harness.lastFrame() ?? '', 'the transcript did not scroll behind the sheet').toContain(
-      'AMSG59',
-    );
-  });
-
-  it('draws at the terminal’s real size: its lines fit 80 columns, it is no taller than twelve rows at 80x24, and below the floor it says so', async () => {
-    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    const m = mountHome(store, {
-      size: { cols: 80, rows: 24 },
-      startChat: () => Promise.resolve(withAgent(store)),
-    });
-    await enterChat(m.c);
-    m.harness.stdin.write('/agent');
-    m.harness.stdin.write('\r');
-    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Agent · relavium-chat'));
-    const lines = (m.harness.lastFrame() ?? '').split('\n');
-    const from = lines.findIndex((line) => line.includes('Agent · relavium-chat'));
-    const sheet = lines.slice(from);
-    expect(sheet.length).toBeLessThanOrEqual(12);
-    for (const line of sheet) expect(line.length).toBeLessThanOrEqual(80);
-    m.setSize({ cols: 80, rows: 23 });
-    m.fireResize();
-    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Enlarge the terminal'));
-    m.harness.stdin.write('\u001b');
-    await untilTrue(() => m.c.getSnapshot().chatSheet === undefined);
-  });
-});
-
-describe('RootApp — the /permissions tab on the bare Home (ADR-0137 §3, ADR-0140 §3)', () => {
-  const homePort: PermissionsPort = {
-    surface: 'project',
-    load: () => ({
-      project: {
-        ok: true,
-        rows: [{ id: 'a', label: 'npm, 1 argument', remembered: '2026-11-19 12:00Z' }],
-      },
-      session: undefined,
-    }),
-    withdraw: () => ({ tone: 'done', text: 'Withdrawn. Auto mode asks about it again.' }),
-  };
-  const openFromPalette = async (m: MountedHome): Promise<void> => {
-    m.harness.stdin.write('/');
-    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('permissions'));
-    m.harness.stdin.write('permissions');
-    m.harness.stdin.write('\r');
-    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('▸ Permissions'));
-  };
-  /** The Permissions tab's sheet, while the tab host is open on it. */
-  const tabSheet = (m: MountedHome) => {
-    const screen = m.c.getSnapshot().screen;
-    return screen?.kind === 'tab-host' ? screen.host.sheet : undefined;
-  };
-
-  it('is drawn in place of the Home from the palette: the tab strip and the project’s list only, no session section, and Esc closes it back to the Home', async () => {
-    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    const m = mountHome(store, { permissions: homePort, size: { cols: 100, rows: 30 } });
-    await openFromPalette(m);
-    const frame = m.harness.lastFrame() ?? '';
-    expect(frame).toContain('This project · remembered (1)');
-    expect(frame).toContain('› npm, 1 argument');
-    expect(frame).toContain('[d] withdraw');
-    expect(frame, 'the bare Home has no session list').not.toContain('This session');
-    expect(frame).toContain('Defined  │  Active  │  History  │  ▸ Permissions');
-    expect(frame).toContain('←/→ tab · Tab cycle · ↑/↓ select · [d / Del] withdraw · Esc close');
-    m.harness.stdin.write('\u001b');
-    await untilTrue(() => !(m.harness.lastFrame() ?? '').includes('▸ Permissions'));
-    expect(m.c.getSnapshot().mode).toBe('home');
-    expect(m.c.getSnapshot().screen).toBeUndefined();
-  });
-
-  it('draws at the terminal’s real width and says so below the floor, as in a chat', async () => {
-    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    const m = mountHome(store, { permissions: homePort, size: { cols: 100, rows: 30 } });
-    await openFromPalette(m);
-    const rule = (m.harness.lastFrame() ?? '').split('\n').find((line) => line.startsWith('───'));
-    expect(rule?.trimEnd().length, 'two columns of margin on a 100-column terminal').toBe(98);
-    m.setSize({ cols: 80, rows: 23 });
-    m.fireResize();
-    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Enlarge the terminal'));
-  });
-
-  it('PgDn and PgUp reach the sheet, not a long Home notice that landed after it opened (the notice window is paged by them)', async () => {
-    const many: PermissionsPort = {
-      ...homePort,
-      load: () => ({
-        project: {
-          ok: true,
-          rows: Array.from({ length: 12 }, (_, i) => ({
-            id: `g${String(i)}`,
-            label: 'npm, 1 argument',
-            remembered: '2026-11-19 12:00Z',
-          })),
-        },
-        session: undefined,
-      }),
-    };
-    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    const m = mountHome(store, { permissions: many, size: { cols: 100, rows: 30 } });
-    await openFromPalette(m);
-    const long = Array.from({ length: 40 }, (_, i) => `notice line ${String(i)}`).join('\n');
-    m.c.setProviderState(false, long); // a late notice (a background setup result) arrives behind the open sheet
-    await untilTrue(() => m.c.getSnapshot().notice === long);
-    m.harness.stdin.write('\x1b[6~');
-    // the key went to the sheet: a page is six rows
-    await untilTrue(() => tabSheet(m)?.cursor === 6);
-    m.harness.stdin.write('\x1b[5~'); // and PgUp is the sheet's too
-    await untilTrue(() => tabSheet(m)?.cursor === 0);
-  });
-
-  it('hides the Home’s own prompt and footer while the sheet is open, so there is one keyboard owner on screen', async () => {
-    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    const m = mountHome(store, { permissions: homePort, size: { cols: 100, rows: 30 } });
-    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('/ for commands'));
-    await openFromPalette(m);
-    const open = m.harness.lastFrame() ?? '';
-    expect(open).not.toContain('/ for commands');
-    m.harness.stdin.write('\u001b');
-    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('/ for commands'));
   });
 });

@@ -1,7 +1,7 @@
 # Relavium
 
 <p align="center">
-  <img src="assets/readme/relavium-hero.svg" alt="Relavium — start as an agent, ship the workflow, own every run" width="100%">
+  <img src="assets/readme/relavium-hero.png" alt="Relavium — start as an agent, ship the workflow, own every run" width="100%">
 </p>
 
 <p align="center">
@@ -27,7 +27,7 @@
   <a href="#get-started">Get started</a> ·
   <a href="#why-relavium">Why Relavium</a> ·
   <a href="#architecture">Architecture</a> ·
-  <a href="#project-status">Status</a> ·
+  <a href="#where-things-stand">Status</a> ·
   <a href="docs/README.md">Documentation</a>
 </p>
 
@@ -36,10 +36,15 @@ persistent session, keep the flow that proves useful, and graduate it into a rev
 `.relavium.yaml` workflow. The conversation and the workflow are not separate products —
 they are two entry points into the same engine, tool registry, model seam, and event stream.
 
+> **Right now:** the CLI is on npm as `relavium@0.1.1`. The next release, v0.2.0, is built
+> and held back on purpose; the work that makes the terminal feel like one product is in review.
+> Desktop, VS Code, and cloud execution are planned. [Where things stand](#where-things-stand)
+> says exactly what is in which state.
+
 ## From conversation to infrastructure
 
 <p align="center">
-  <img src="assets/readme/agent-to-workflow.svg" alt="A Relavium agent session becoming a committed workflow and observable runs" width="100%">
+  <img src="assets/readme/agent-to-workflow.png" alt="A Relavium agent session becoming a committed workflow and observable runs" width="100%">
 </p>
 
 Most agent tools make you choose between a flexible chat and an operable workflow. Relavium
@@ -61,6 +66,32 @@ The published CLI is the fastest way to use Relavium. It requires **Node.js 22 o
 ```bash
 npm install -g relavium
 ```
+
+**Try a workflow in a minute — no API key needed.** A workflow is a plain file, so save this
+as `hello.relavium.yaml`:
+
+```yaml
+schema_version: '1.0'
+workflow:
+  id: hello-pipeline
+  name: Hello pipeline
+  inputs:
+    - { name: who, type: string }
+    - { name: times, type: number }
+  nodes:
+    - { id: start, type: input }
+    - { id: greet, type: transform, transform: "({ greeting: 'Hello, ' + inputs.who + '!', count: inputs.times * 2 })" }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: greet }
+    - { from: greet, to: out }
+```
+
+```bash
+relavium run ./hello.relavium.yaml --input who=Ada --input times=3
+```
+
+Now the real thing — an agent.
 
 1. Connect a provider. The key is read from stdin and stored in the OS keychain —
    never passed through argv.
@@ -88,9 +119,25 @@ Prefer to author first? `relavium create` scaffolds an agent or a minimal workfl
 [CLI command reference](docs/reference/cli/commands.md) for the complete surface and the
 [local development runbook](docs/runbooks/local-dev-setup.md) to build from source.
 
+## A look at the next release
+
+<p align="center">
+  <img src="assets/readme/home-tour.gif" alt="A tour of the Relavium Home: the first run, the slash palette, a workflow run started with /run and confirmed, and the Runs screen listing the finished run" width="100%">
+</p>
+
+<p align="center">
+  <sub>The development build's Home. v0.2.0 is not published, so <code>npm install</code> still gives <code>0.1.1</code>.<br>
+  Real frames of the application, restyled. <a href="assets/readme/README.md">What is real in these images</a>.</sub>
+</p>
+
+Type `relavium` and the Home opens: start an agent, press `/` for every command, run a workflow
+(`/run` asks for its inputs and for your confirmation before anything starts), and open any past
+run from the Runs screen. The answer to a question the system asks is always yours to give; a
+held key cannot give it for you.
+
 ## Why Relavium
 
-| | |
+| Principle | What it means |
 |---|---|
 | **Conversation becomes infrastructure** | A useful session can graduate into a durable workflow instead of disappearing into chat history. |
 | **Git-native by construction** | Workflows are diffable `.relavium.yaml` files — reviewable in pull requests and owned by the team that runs them. |
@@ -102,7 +149,7 @@ Prefer to author first? `relavium create` scaffolds an agent or a minimal workfl
 ## Architecture
 
 <p align="center">
-  <img src="assets/readme/relavium-architecture.svg" alt="Relavium architecture: multiple surfaces over one engine with AgentSession, WorkflowEngine, the LLM seam, MCP, and durable storage" width="100%">
+  <img src="assets/readme/relavium-architecture.png" alt="Relavium architecture: multiple surfaces over one engine with AgentSession, WorkflowEngine, the LLM seam, MCP, and durable storage" width="100%">
 </p>
 
 The center of Relavium is `@relavium/core`, a strict TypeScript engine with **zero
@@ -118,23 +165,44 @@ keychain access, files, processes, and network I/O without making the engine
 platform-specific. Read the [architecture overview](docs/architecture/) or the
 [decision records](docs/decisions/) for the reasoning behind those boundaries.
 
-> The CLI is the currently published product surface. Desktop and VS Code integrations,
-> plus managed inference and cloud execution, are under development or planned. The
-> diagram shows the shared-engine topology, not equal release availability.
+> The CLI is the only product surface so far. Desktop and VS Code integrations, plus
+> managed inference and cloud execution, are under development or planned. The diagram
+> shows the shared-engine topology, not equal release availability.
 
-## What ships today
+## Where things stand
 
-| Capability | Available in `relavium@0.1.1` |
+Relavium is under active development, and the CLI comes first. Three states, kept apart on
+purpose, because "built" and "published" are not the same thing:
+
+| State | What it is |
 |---|---|
-| Conversational agents | Streaming multi-turn chat, persisted sessions, resume, model reseat, context compaction, and workflow export |
+| **Published** — `relavium@0.1.1` on npm | The workflow runtime, the chat, authoring, and the inbound MCP client, listed in full [below](#whats-in-relavium011). |
+| **Built on `main`, not published** — on the way to v0.2.0 | `relavium` opens a full-screen **Home** where you do everything ([ADR-0122](docs/decisions/0122-the-home-is-the-interactive-product.md)): connect a provider, start a project, chat, run a workflow, answer its gates, browse and resume past work. The chat can read, search and edit files and run commands, under four honest modes (`ask`, `plan`, `accept-edits`, `auto`) with a docked approval card and remembered command permissions. |
+| **In review** — [PR #103](https://github.com/HodeTech/Relavium/pull/103) | **One surface language** for the whole CLI (MVP-11): reports, settings and flows as centred popups, the questions the system asks as bottom sheets, an ordered slash palette, a calm two-page Home, and a transcript with a margin the host draws, so the product's own marks and the words a model writes stay apart. Its [close-out evidence](docs/roadmap/phases/mvp-11/closeout-evidence.md) lists what is still owed. |
+| **Planned** | A Tauri desktop app (the agent-management center, not an IDE), a VS Code extension, managed inference, and cloud execution. |
+
+Publication of v0.2.0 is held by a release guard until the pre-1.0 release path is decided,
+so `npm install` still gives you `0.1.1`. To try what is on `main`, build from source with
+the [local development runbook](docs/runbooks/local-dev-setup.md).
+
+Status changes quickly, so this README intentionally stays high-level. The canonical source
+for the exact active work, what shipped when, and the open obligations is
+[docs/roadmap/current.md](docs/roadmap/current.md).
+
+### What's in `relavium@0.1.1`
+
+| Capability | In the published CLI |
+|---|---|
+| Conversational agents | `relavium chat`: a streaming multi-turn session with tool-call annotations, `chat-list` / `chat-resume` / `chat-export`, and `/export` to turn a session into a workflow scaffold; a one-shot `agent run` with an offline fixture replay |
 | Workflow runtime | YAML parse and validation, DAG execution, parallel branches, retries, model fallback, checkpoints, and typed live events |
-| Human control | Per-tool approval modes plus durable workflow gates that can pause and resume out of process |
-| Operations | Interactive Home, run status and history, event-log replay, deterministic exit codes, and NDJSON output for CI |
-| Providers and tools | Anthropic, OpenAI-compatible, Gemini, an inbound MCP client, built-in tools, and a live/offline model catalog |
-| Local ownership | BYOK, OS-keychain storage, project-local git artifacts, and local run/session history |
+| Human control | Interactive human gates that can pause a run and resume it from another process with `relavium gate` |
+| Operations | `run`, `list`, `logs`, `status` over durable local history, a live terminal view, deterministic exit codes, and NDJSON output (`--json`) for CI |
+| Authoring | `create`, `import`, and `export` — validated, share-safe YAML with no provider key in it |
+| Providers and tools | Anthropic, OpenAI-compatible and Gemini behind one seam, an inbound MCP client with an SSRF floor, and media output with a contained `save_to` |
+| Local ownership | BYOK, OS-keychain storage, project-local git artifacts, and local run history |
 
 For exact command behavior and contracts, use the [reference documentation](docs/reference/)
-rather than this overview.
+and the [CHANGELOG](apps/cli/CHANGELOG.md) rather than this overview.
 
 ## Local-first, precisely
 
@@ -151,45 +219,6 @@ rather than this overview.
 
 The binding guarantees live in the [product constraints](docs/product-constraints.md) and
 [security standard](docs/standards/security-review.md).
-
-## Project status
-
-Relavium is under active development. The **CLI is published as v0.1.1**; the pure engine,
-agent-session entry point, workflow runtime, inbound MCP client, and CLI management surface
-are implemented. **Phase 2.6.5 — Core Reliability Remediation is complete with approved
-deferrals**, with W8 merged in PR #92. The joint Phase 2.5.5/2.6 security remediation
-Wave 2 merged to `main` on 2026-10-15 as PR #94. The first eight steps of Wave 3
-(“Clear the ground”) followed on 2026-10-18 as PR #95, and the hardened release tooling and
-the MVP plan on 2026-11-04 as PR #96, and the MVP's first milestone (run output, run history
-and liveness) on 2026-11-07 as PR #97. Since 2026-10-26 the **CLI MVP comes first**: Wave 3
-is paused, not dropped, while the work a CLI user feels — visible run results, a chat agent
-that can edit and run commands, readable replies, conversational authoring, web, the Home
-hub and MCP management — leads to `relavium` v0.2.0. Since 2026-11-08 the interactive product is the
-full-screen Home: you type `relavium` and do everything there, while subcommands stay for scripting
-([ADR-0122](docs/decisions/0122-the-home-is-the-interactive-product.md)).
-
-MVP-2 is complete and merged to `main` through [PR #98](https://github.com/HodeTech/Relavium/pull/98)
-(2026-11-11):
-readable chat, native provider setup, project initialization and safe session
-discovery/resume. The [merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11)
-records completed review and verification. MVP-3 is complete and merged to `main` through
-[PR #99](https://github.com/HodeTech/Relavium/pull/99) (2026-11-18), together with MVP-3b, MVP-3c and MVP-3d: ranged reads
-and search, exact edits, inspectable file writes that keep their security metadata, the docked approval card and honest chat
-modes, an interrupted turn that stays as a marker, and `ask_user` with its question and answer kept with the session. The
-[merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18) records the review and
-verification and its two open CI observations (the final head's coverage job hit its time limit, and one acceptance-tool test
-timed out once in the merge commit's push run, which a re-run cleared). Between MVP-3 and MVP-4,
-[PR #100](https://github.com/HodeTech/Relavium/pull/100) (2026-11-18) made several `relavium` processes on one home able to write at the same
-time (each waits for the staging inventory instead of failing) and made CI run once per commit; its
-[merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#pr-100-merge-checkpoint-2026-11-18) lists what is still owed. MVP-4
-(command permissions, the interrupt keymap, turn limits, the `/permissions` sheet and the Home entry points; ADR-0115, 0118, 0136, 0137 and 0138) is complete and on `main`
-through [PR #101](https://github.com/HodeTech/Relavium/pull/101), merged on 2026-11-21 (its
-[merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#pr-101-merge-checkpoint-2026-11-21) lists what is still owed); the Home as the hub (MVP-8) is implemented and reviewed, and its pull request ([PR #102](https://github.com/HodeTech/Relavium/pull/102)) is open for review with the review's findings answered. The
-published npm version remains `0.1.1`.
-
-Status changes quickly, so this README intentionally stays high-level. The canonical source
-for the exact active wave, completed work, and open reliability obligations is
-[docs/roadmap/current.md](docs/roadmap/current.md).
 
 ## Repository map
 
@@ -230,6 +259,7 @@ The canonical documentation is organized by the question you are trying to answe
 | [Vision](docs/vision.md) · [Product constraints](docs/product-constraints.md) · [UVP](docs/uvp.md) | What is Relavium, and why does it exist? |
 | [Architecture](docs/architecture/) · [ADRs](docs/decisions/) | How is it built, and why these boundaries? |
 | [Reference](docs/reference/) | What are the exact YAML, event, CLI, database, and integration contracts? |
+| [Tutorials](docs/tutorials/) | How do I start a chat session, or run a workflow in CI? |
 | [Roadmap](docs/roadmap/README.md) · [Current state](docs/roadmap/current.md) | What is shipped, active, and next? |
 | [Standards](docs/standards/) · [Runbooks](docs/runbooks/) | How should the project be changed and operated? |
 

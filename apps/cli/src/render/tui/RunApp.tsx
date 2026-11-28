@@ -1,18 +1,30 @@
-import { Box, Text } from 'ink';
+import { Box, useWindowSize } from 'ink';
+import { Text } from './text.js';
 import { useSyncExternalStore, type ReactElement } from 'react';
 
 import {
   formatReportedCost,
   formatProducedMedia,
   formatTokens,
+  NODE_STATUS_ROLE,
   spinnerFrame,
   statusColor,
-  statusGlyph,
 } from './format.js';
+import {
+  blankMarkerGlyphs,
+  glyphOf,
+  statusCellOf,
+  STATUS_WORD_WIDTH,
+  withGlyphForm,
+  wordOf,
+} from './glyphs.js';
 import { colorProps, dimProps, nodeSuffix } from './projection.js';
 import type { RunStore } from './run-store.js';
 import { MAX_ACTIVE_TOKEN_LINES, type NodeView } from './run-view-model.js';
 import { sanitizeInline, stripTerminalControls } from '../sanitize.js';
+import { screenText } from './screen-text.js';
+import { inkRows } from './sheet-frame.js';
+import { expandTabs } from './viewport.js';
 
 /**
  * The thin `ink` projection of the {@link RunStore}'s snapshot (workstream **2.E**). It holds NO logic of
@@ -26,10 +38,17 @@ function NodeLine(
   props: Readonly<{ node: NodeView; tick: number; useColor: boolean }>,
 ): ReactElement {
   const { node, tick, useColor } = props;
-  const glyph = node.status === 'running' ? spinnerFrame(tick) : statusGlyph(node.status);
+  const role = NODE_STATUS_ROLE[node.status];
+  // A running node animates (the spinner is not a table glyph) in the column the static glyphs use; the others draw the table's glyph, in
+  // its plain form when colour is off. The status word stands beside the glyph, and the row is cut at the terminal's edge from the END, so
+  // a long node id is what is lost, never the word.
+  const mark =
+    node.status === 'running'
+      ? spinnerFrame(tick).padEnd(statusCellOf(role, !useColor).length)
+      : statusCellOf(role, !useColor);
   return (
-    <Text {...colorProps(useColor, statusColor(node.status))}>
-      {glyph} {sanitizeInline(node.nodeId)}
+    <Text {...colorProps(useColor, statusColor(node.status))} wrap="truncate-end">
+      {mark} {wordOf(role).padEnd(STATUS_WORD_WIDTH)} {sanitizeInline(node.nodeId)}
       {sanitizeInline(nodeSuffix(node))}
     </Text>
   );
@@ -40,6 +59,13 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
     props.store.subscribe,
     props.store.getSnapshot,
   );
+  // A model's line (its reasoning, its tokens, a tool line, a warning) through the screen's filter, its marker glyphs blanked (the host's marks are
+  // its own, as the chat's rows do) and its tabs spread to the stops a terminal draws, then cut by the layout's measure where ink would count it
+  // narrower than a terminal draws it (MVP-11 unit 9, review round 5): ink cuts every other row itself.
+  const { columns } = useWindowSize();
+  const modelRow = (text: string): string =>
+    inkRows(expandTabs(blankMarkerGlyphs(screenText(text))), Math.max(1, columns), 'truncate')[0] ??
+    '';
 
   const activeNode = state.activeNodeId === undefined ? undefined : state.nodes[state.activeNodeId];
   const activeLines =
@@ -68,7 +94,7 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
           <Text {...dimProps(color)}>thinking · {sanitizeInline(activeNode.nodeId)}</Text>
           {reasoningLines.map((line, i) => (
             <Text key={i} {...dimProps(color)} wrap="truncate-end">
-              {stripTerminalControls(line)}
+              {modelRow(stripTerminalControls(line))}
             </Text>
           ))}
         </Box>
@@ -78,14 +104,16 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
       {activeNode !== undefined && activeLines.length > 0 ? (
         <Box flexDirection="column" marginTop={1}>
           <Text {...colorProps(color, 'cyan')}>
-            ▌ {sanitizeInline(activeNode.nodeId)}
-            {state.activeModel === undefined ? '' : ` · ${sanitizeInline(state.activeModel)}`}
+            {/* the model's id is the provider's text: one row, cut by the layout's measure as the rows below it are (review round 6, I-4) */}
+            {modelRow(
+              `${glyphOf('activeBar', !color)} ${sanitizeInline(activeNode.nodeId)}${state.activeModel === undefined ? '' : ` · ${sanitizeInline(state.activeModel)}`}`,
+            )}
           </Text>
           {/* `truncate-end` bounds each logical line to one terminal row — a newline-free token blast or a
               narrow terminal can't blow the live region up to dozens of wrapped rows (§2.E narrow-terminal). */}
           {activeLines.map((line, i) => (
             <Text key={i} {...dimProps(color)} wrap="truncate-end">
-              {stripTerminalControls(line)}
+              {modelRow(stripTerminalControls(line))}
             </Text>
           ))}
         </Box>
@@ -96,7 +124,7 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
         <Box flexDirection="column" marginTop={1}>
           {state.toolLines.map((line, i) => (
             <Text key={i} {...dimProps(color)} wrap="truncate-end">
-              {sanitizeInline(line)}
+              {modelRow(sanitizeInline(line))}
             </Text>
           ))}
         </Box>
@@ -108,7 +136,7 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
           {state.producedMedia.map((media) => (
             // The content-addressed handle is unique (the view-model dedups by it) + stable — a sound React key.
             <Text key={media.handle} {...colorProps(color, 'magenta')} wrap="truncate-end">
-              {sanitizeInline(formatProducedMedia(media))}
+              {sanitizeInline(withGlyphForm(!color, () => formatProducedMedia(media)))}
             </Text>
           ))}
         </Box>
@@ -119,7 +147,7 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
         <Box flexDirection="column" marginTop={1}>
           {state.warnings.map((w, i) => (
             <Text key={i} {...colorProps(color, 'yellow')} wrap="truncate-end">
-              ⚠ {sanitizeInline(w)}
+              {modelRow(`${glyphOf('warning', !color)} ${sanitizeInline(w)}`)}
             </Text>
           ))}
         </Box>
@@ -127,7 +155,8 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
 
       {/* Running cost footer (and total tokens once the run completes) */}
       <Box marginTop={1}>
-        <Text {...colorProps(color, 'gray')}>
+        {/* one row however long the id: the footer is cut at the terminal's edge from the end, never wrapped */}
+        <Text {...colorProps(color, 'gray')} wrap="truncate-end">
           {state.runId === undefined ? '' : `run ${sanitizeInline(state.runId)}  ·  `}
           cost{' '}
           {formatReportedCost(

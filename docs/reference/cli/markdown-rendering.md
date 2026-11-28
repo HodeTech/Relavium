@@ -1,7 +1,7 @@
 # CLI assistant markdown rendering
 
 - **Status**: Implemented and independently accepted on development
-- **Date**: 2026-11-10 (amended 2026-11-23, see the note below)
+- **Date**: 2026-11-10 (amended 2026-11-23 and 2026-11-27, see the note below)
 - **Surface**: Interactive CLI, full-screen and inline, standalone and in-Home chat
 - **Related**: [ADR-0114](../../decisions/0114-in-house-markdown-rendering-for-the-chat-transcript.md), [ADR-0143](../../decisions/0143-a-wide-table-keeps-its-grid-and-records-are-the-last-resort.md), [ADR-0144](../../decisions/0144-fenced-code-is-highlighted-by-an-in-house-lexical-scanner.md), [chat-session.md](chat-session.md), [accessibility.md](accessibility.md), [MVP-2 proposal](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-2-preflight-and-execution-proposal--2026-11-09)
 
@@ -18,6 +18,9 @@ decisions: the wrapped grid and records for a table that does not fit
 2026-11-23), and [syntax highlighting](#syntax-highlighting)
 ([ADR-0144](../../decisions/0144-fenced-code-is-highlighted-by-an-in-house-lexical-scanner.md), Accepted
 2026-11-23). The acceptance record above covers the rest.
+
+**Amended 2026-11-27.** The width a row is laid out at is the transcript grid's content column, not the terminal's
+([Geometry](#geometry), [chat-session.md](chat-session.md#the-margin-and-the-content-column), MVP-11 unit 9).
 
 ## Scope and source
 
@@ -348,11 +351,17 @@ A `DisplayLine` occupies one terminal row. Its `text` equals the concatenated
 drawn spans. Measure grapheme clusters across adjacent span boundaries, so a
 combining mark or ZWJ sequence split by markup cannot be counted twice. Resolve
 style changes inside one grapheme consistently for the whole cluster. Full-line
-width must agree with Ink's `string-width` measurement. Selection and clipboard
+width is the CLI's `displayWidth` (`render/tui/viewport.ts`): it equals Ink's `string-width` count except for a cluster a terminal draws wider than `string-width`
+counts, where it is larger and is **never less than Ink's count**; the screen filter runs on the text before it is laid out, so what is measured is what is drawn. Selection and clipboard
 partition the same displayed text by the existing column primitive.
 
 Both renderers draw the same word-wrapped rows, with semantic spans as nested
-Ink text. They share parsed constructs, literal fallbacks and tab geometry. Borders, gutters and prefixes
+Ink text. **A row's width is the content column, not the terminal's**: the chat lays a
+reply out at the width of [the transcript grid](chat-session.md#the-margin-and-the-content-column)
+(68 columns at 80, 84 at 100, 96 from 112), the live tail and the finished reply alike, and
+the margin to its left is the host's, so a row of the reply never reaches it. A continuation
+row of prose starts at its text and never begins with the space the line broke at; the rows of a
+code block keep theirs. They share parsed constructs, literal fallbacks and tab geometry. Borders, gutters and prefixes
 count toward the live row budget. Spinner, elision line, prompt and abort hint
 remain visible at 80×24. For a positive row width smaller than one wide grapheme,
 the geometry layer draws `?` for that cluster as a terminating display fallback;

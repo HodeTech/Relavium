@@ -1,7 +1,8 @@
 /**
  * `/import` and `/pricing` are Home commands ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
- * §9, MVP-8 step 5): typed or pasted at the landing, or chosen from its palette, each opens its card on the native flow and shows the sentence
- * the card resolves with; with a chat in front neither is routed, and the chat's own dispatch answers the line.
+ * §9, MVP-8 step 5): typed or pasted at the landing, or chosen from its palette, each opens its popup on the native flow; what it resolves with
+ * is ONE notification on the Home's channel (a popup closed with nothing written), never the Home's notice, and nothing when its Done step
+ * said what happened (MVP-11 unit 6, 6.3; ADR-0148 §6); with a chat in front neither is routed, and the chat's own dispatch answers the line.
  *
  * The cards themselves are `import-card.test.ts` and `pricing-card.test.ts`, the ports `import-port.test.ts` and `pricing-port.test.ts`, and
  * the wiring in `driveHome` is `drive-home.test.ts`. What is proved here is the controller's half: the route, the palette entry, the notices
@@ -23,11 +24,12 @@ import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 const WAIT_MS = 5000;
 
 const EMPTY: HomeSnapshot = {
-  attention: { gates: [], failedRuns: [] },
+  failedRuns: [],
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
-  unreadableRunIds: [],
+  unreadableRuns: [],
+  totals: { attention: 0, sessions: 0, runs: 0 },
   isEmpty: true,
 };
 
@@ -60,12 +62,16 @@ type Dependency = (typeof WORDS)[number]['dependency'];
 interface Mounted {
   readonly controller: HomeController;
   readonly lines: string[];
+  /** What the Home's channel was handed (`deps.announce`). */
+  readonly announced: string[];
   readonly onError: ReturnType<typeof vi.fn>;
   readonly onExit: ReturnType<typeof vi.fn>;
 }
 
 /** A Home with `deps` for the two cards (any of them absent) and a chat that records the lines it is handed. */
-function mount(wired: Partial<Record<Dependency, () => Promise<string>>> = {}): Mounted {
+function mount(
+  wired: Partial<Record<Dependency, () => Promise<string | undefined>>> = {},
+): Mounted {
   const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
   const lines: string[] = [];
   const session: HomeChatSession = {
@@ -81,36 +87,43 @@ function mount(wired: Partial<Record<Dependency, () => Promise<string>>> = {}): 
   };
   const onError = vi.fn();
   const onExit = vi.fn();
+  const announced: string[] = [];
   const deps: HomeControllerDeps = {
     ...(wired.importDefined === undefined ? {} : { importDefined: wired.importDefined }),
     ...(wired.pricing === undefined ? {} : { pricing: wired.pricing }),
-    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => Promise.resolve(session),
     homeStore: { read: () => EMPTY },
+    announce: (text) => {
+      announced.push(text);
+    },
     onExit,
     onError,
   };
-  return { controller: createHomeController(deps), lines, onError, onExit };
+  return { controller: createHomeController(deps), lines, announced, onError, onExit };
 }
 
 /** A card whose answer the test releases by hand, so the state while it is open can be read. */
 function heldCard() {
-  let release: (sentence: string) => void = () => {};
+  let release: (sentence: string | undefined) => void = () => {};
   let fail: (cause: unknown) => void = () => {};
   const card = vi.fn(
     () =>
-      new Promise<string>((resolve, reject) => {
+      new Promise<string | undefined>((resolve, reject) => {
         release = resolve;
         fail = reject;
       }),
   );
-  return { card, release: (sentence: string) => release(sentence), fail: (c: unknown) => fail(c) };
+  return {
+    card,
+    release: (sentence: string | undefined) => release(sentence),
+    fail: (c: unknown) => fail(c),
+  };
 }
 
 describe.each(WORDS)('$word at the landing', ({ word, dependency, label, ...says }) => {
-  it('opens its card exactly once, clears the line, holds the keyboard while it is open and shows the sentence it resolves with', async () => {
+  it('opens its card exactly once, clears the line, holds the keyboard while it is open and announces the sentence it resolves with', async () => {
     const held = heldCard();
-    const { controller } = mount({ [dependency]: held.card });
+    const { controller, announced } = mount({ [dependency]: held.card });
     controller.handlePaste(word);
     controller.handleKey('', ENTER);
     expect(held.card).toHaveBeenCalledTimes(1);
@@ -124,13 +137,28 @@ describe.each(WORDS)('$word at the landing', ({ word, dependency, label, ...says
     await vi.waitFor(() => expect(controller.getSnapshot().nativeActionBusy).toBe(false), {
       timeout: WAIT_MS,
     });
-    expect(controller.getSnapshot().notice).toBe('The card’s own sentence.');
+    // one notification on the Home's channel; the Home's notice is not written (ADR-0148 §6, MVP-11 unit 6)
+    expect(announced).toEqual(['The card’s own sentence.']);
+    expect(controller.getSnapshot().notice).toBeUndefined();
     expect(held.card, 'the card is not opened again by the answer').toHaveBeenCalledTimes(1);
+  });
+
+  it('says nothing at all when the popup’s Done step said what happened (it resolves with no notification)', async () => {
+    const held = heldCard();
+    const { controller, announced } = mount({ [dependency]: held.card });
+    controller.handlePaste(word);
+    controller.handleKey('', ENTER);
+    held.release(undefined);
+    await vi.waitFor(() => expect(controller.getSnapshot().nativeActionBusy).toBe(false), {
+      timeout: WAIT_MS,
+    });
+    expect(announced).toEqual([]);
+    expect(controller.getSnapshot().notice).toBeUndefined();
   });
 
   it('is opened by the palette the same way: one open, the same sentence, the palette closed', async () => {
     const card = vi.fn(() => Promise.resolve('from the palette'));
-    const { controller } = mount({ [dependency]: card });
+    const { controller, announced } = mount({ [dependency]: card });
     controller.handleKey('/', {}); // an empty prompt: the palette opens
     expect(controller.getSnapshot().palette).toBeDefined();
     type(controller, word.slice(1));
@@ -138,7 +166,8 @@ describe.each(WORDS)('$word at the landing', ({ word, dependency, label, ...says
     expect(controller.getSnapshot().palette, 'the palette is closed').toBeUndefined();
     await flush();
     expect(card).toHaveBeenCalledTimes(1);
-    expect(controller.getSnapshot().notice).toBe('from the palette');
+    expect(announced).toEqual(['from the palette']);
+    expect(controller.getSnapshot().notice).toBeUndefined();
     expect(controller.getSnapshot().nativeActionBusy).toBe(false);
   });
 
@@ -175,7 +204,7 @@ describe.each(WORDS)('$word at the landing', ({ word, dependency, label, ...says
 
   it('a fault in the card becomes a notice that names no cause: the keyboard is given back and the Home goes on', async () => {
     const held = heldCard();
-    const { controller, onError, onExit } = mount({ [dependency]: held.card });
+    const { controller, announced, onError, onExit } = mount({ [dependency]: held.card });
     controller.handlePaste(word);
     controller.handleKey('', ENTER);
     expect(controller.getSnapshot().nativeActionBusy).toBe(true);
@@ -192,7 +221,7 @@ describe.each(WORDS)('$word at the landing', ({ word, dependency, label, ...says
     controller.handleKey('', ENTER);
     expect(held.card).toHaveBeenCalledTimes(2);
     held.release('second time');
-    await vi.waitFor(() => expect(controller.getSnapshot().notice).toBe('second time'), {
+    await vi.waitFor(() => expect(announced).toEqual(['second time']), {
       timeout: WAIT_MS,
     });
   });
@@ -249,7 +278,7 @@ describe.each(WORDS)('$word with a chat in front', ({ word, dependency }) => {
   });
 });
 
-describe('what a chat does with the line when a word is not routed to the Home', () => {
+describe('what a chat does with the line of a word only the Home has', () => {
   /** A chat in front, and the lines its own dispatch was handed after `hello`. */
   async function inChat(): Promise<Mounted> {
     const m = mount({
@@ -266,19 +295,24 @@ describe('what a chat does with the line when a word is not routed to the Home',
     return m;
   }
 
-  it('/pricing reaches the chat’s own dispatch, which answers it as the unknown slash it is', async () => {
-    const m = await inChat();
-    m.controller.handlePaste('/pricing');
-    m.controller.handleKey('', ENTER);
-    await vi.waitFor(() => expect(m.lines).toEqual(['/pricing']), { timeout: WAIT_MS });
-  });
-
-  it('/import is a near miss of the chat’s /export, which a chat answers locally and never runs', async () => {
-    const m = await inChat();
-    m.controller.handlePaste('/import');
-    m.controller.handleKey('', ENTER);
-    await flush();
-    expect(m.controller.getSnapshot().notice).toBe('Unknown command. Did you mean /export?');
-    expect(m.lines, 'the suggestion never runs the command it names').toEqual([]);
-  });
+  it.each(['/pricing', '/import'])(
+    '%s is answered with one line that names the Home, in the transcript: it opens nothing, is not sent to the chat and is not an unknown command (ADR-0145 §7.4)',
+    async (word) => {
+      const m = await inChat();
+      m.controller.handlePaste(word);
+      m.controller.handleKey('', ENTER);
+      await flush();
+      const transcript =
+        m.controller.getSnapshot().session?.store.getSnapshot().state.transcript ?? [];
+      expect(
+        transcript.flatMap((entry) => (entry.role === 'notice' ? [entry.text] : [])),
+      ).toContain(`${word} is available from the Home.`);
+      expect(
+        m.controller.getSnapshot().notice,
+        'not "Unknown command" and no suggestion',
+      ).toBeUndefined();
+      expect(m.controller.getSnapshot().nativeActionBusy).toBe(false);
+      expect(m.lines, 'the line is not sent to the chat').toEqual([]);
+    },
+  );
 });

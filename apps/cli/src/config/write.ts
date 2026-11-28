@@ -96,6 +96,12 @@ export interface GlobalPreferenceWrite {
 export interface PreparedConfigWrite {
   /** Whether the target existed when prepared and therefore needs a visible rewrite notice. */
   readonly rewriteNeeded: boolean;
+  /**
+   * The exact text {@link publish} writes, when it writes one (absent for a write that writes nothing). A caller that must later tell whether
+   * the file still holds what IT wrote compares against this, never against a read-back after the rename, which another writer may already
+   * have replaced (MVP-11 unit 6, SE-L2). Preferences only: a config never holds a key.
+   */
+  readonly text?: string;
   /** Publish once admitted. The assertion may throw before mutation and immediately before rename. */
   publish(assertAdmitting?: () => void): ConfigWriteResult;
 }
@@ -208,6 +214,24 @@ export function prepareKeychainUnavailableAcknowledged(
   );
 }
 
+/**
+ * The remembered skip of the first-run provider setup (ADR-0146 §6, ruled 2026-11-24; operator-owned onboarding state, ADR-0112): a closed
+ * setter that can write `first_run_setup_skipped = true` and nothing else. The Home publishes it through its visible-publication path, so a
+ * hand-made config is rewritten only behind its disclosure; it carries no value the person typed.
+ */
+export function prepareFirstRunSetupSkipped(
+  home: string = homedir(),
+  targetPath?: string,
+  observer?: ConfigReadObserver,
+): PreparedConfigWrite {
+  return prepareWrite(
+    (existing) => ({ ...existing.preferences, first_run_setup_skipped: true }),
+    home,
+    targetPath,
+    observer,
+  );
+}
+
 /** Closed operator-only setters; model-preference writers cannot select modes. */
 export function prepareDefaultChatMode(
   mode: ChatMode,
@@ -279,6 +303,7 @@ function prepareWrite(
   let published = false;
   return {
     rewriteNeeded,
+    text,
     publish(assertAdmitting = () => {}) {
       if (published) throw new Error('Config write was already published.');
       assertAdmitting();

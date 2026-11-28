@@ -381,14 +381,7 @@ export function reduceToolReviewKey(
   // turn. Stepping back grants nothing, so it needs no acknowledged frame: a person who cannot read the full view (a terminal too
   // small, an unreadable identity) must still be able to leave it without stopping the turn, as `Ctrl+N` denies without a frame.
   if (isInterruptKey(input, key)) return { kind: state.kind === 'approval' ? 'abort' : 'close' };
-  if (key.escape) {
-    if (state.kind !== 'approval') return { kind: 'close' };
-    if (state.denial !== undefined) return reviewChange(state, { denial: undefined, message: '' });
-    if (state.searching)
-      return reviewChange(state, { searching: false, query: undefined, message: '' });
-    if (state.screen !== 'card') return backToTheCard(state);
-    return { kind: 'abort' };
-  }
+  if (key.escape) return reduceEscape(state);
   if (key.ctrl || key.meta) {
     // A chord answers only an approval card, and never where a text field owns the keyboard: inside the reason box or the
     // search box (or the call list) a chord is not an answer, whatever the letter.
@@ -706,6 +699,33 @@ function backToTheCard(state: ToolReviewState): ReviewKeyAction {
   });
 }
 
+/** `Esc`: one level back (see {@link reduceToolReviewKey}). */
+function reduceEscape(state: ToolReviewState): ReviewKeyAction {
+  // `/details` (ADR-0148 §7): a call's view steps back to the list, and the list closes.
+  if (state.kind !== 'approval')
+    return state.screen === 'full' ? backToTheList(state) : { kind: 'close' };
+  if (state.denial !== undefined) return reviewChange(state, { denial: undefined, message: '' });
+  if (state.searching)
+    return reviewChange(state, { searching: false, query: undefined, message: '' });
+  if (state.screen !== 'card') return backToTheCard(state);
+  return { kind: 'abort' };
+}
+
+/** A details screen's way back from a call's view to the list of calls (`b`, and `Esc`). */
+function backToTheList(state: ToolReviewState): ReviewKeyAction {
+  return reviewChange(state, {
+    screen: 'list',
+    reveal: false,
+    numeric: false,
+    message: '',
+    document: undefined,
+    callId: undefined,
+    requiredTarget: undefined,
+    inspected: [],
+    cursor: REVIEW_START,
+  });
+}
+
 function reduceFullReviewKey(
   state: ToolReviewState,
   input: string,
@@ -720,20 +740,7 @@ function reduceFullReviewKey(
       : { kind: 'none' };
   if (input === '/') return reviewChange(state, { searching: true, query: '' });
   if (input === 'c') return { kind: 'copy' };
-  if (input === 'b')
-    return state.kind === 'approval'
-      ? backToTheCard(state)
-      : reviewChange(state, {
-          screen: 'list',
-          reveal: false,
-          numeric: false,
-          message: '',
-          document: undefined,
-          callId: undefined,
-          requiredTarget: undefined,
-          inspected: [],
-          cursor: REVIEW_START,
-        });
+  if (input === 'b') return state.kind === 'approval' ? backToTheCard(state) : backToTheList(state);
   if (document === undefined || page === undefined) return { kind: 'none' };
   // Movement. The geometry is the page's own, so a page, an `End` and a scroll agree with what is drawn.
   const view: ScrollView = {
