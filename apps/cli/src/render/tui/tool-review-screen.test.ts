@@ -2125,6 +2125,10 @@ describe('escapedFit is bounded: what it costs follows the width, not the length
     return performance.now() - start;
   };
 
+  // What the three tests below guard is the SHAPE of the cost (it follows the width, not the 512 characters: a quadratic version takes seconds), not a
+  // speed. They took 30 ms here and 209 ms against a 200 ms bound on the CI runner; a second keeps the teeth and leaves the runner its slowness.
+  const WIDTHS_BOUND_MS = 1_000;
+
   describe('a 512-character target of a base letter and 511 combining marks', () => {
     const MARKED = `a${MARK.repeat(511)}`;
     const SPREAD = `a${MARK}`.repeat(256);
@@ -2136,26 +2140,26 @@ describe('escapedFit is bounded: what it costs follows the width, not the length
       expect(displayWidth(SPREAD)).toBe(256);
     });
 
-    it('is returned whole when it is one cell wide, within the width, at 5..120 columns, in well under 200 ms', () => {
+    it('is returned whole when it is one cell wide, within the width, at 5..120 columns, in well under a second', () => {
       const widths = Array.from({ length: 116 }, (_, index) => 5 + index);
       const outs: string[] = [];
       const elapsed = timed(() => {
         for (const width of widths) outs.push(escapedFit(MARKED, width));
       });
-      expect(elapsed, 'all 116 widths, in total').toBeLessThan(200);
+      expect(elapsed, 'all 116 widths, in total').toBeLessThan(WIDTHS_BOUND_MS);
       for (const [index, out] of outs.entries()) {
         expect(displayWidth(out), `@${widths[index]}`).toBeLessThanOrEqual(widths[index] ?? 0);
         expect(out).toBe(MARKED);
       }
     });
 
-    it('is cut to the width, ending in an ellipsis, as a whole-token prefix, at 5..120 columns, in well under 200 ms', () => {
+    it('is cut to the width, ending in an ellipsis, as a whole-token prefix, at 5..120 columns, in well under a second', () => {
       const widths = Array.from({ length: 116 }, (_, index) => 5 + index);
       const outs: string[] = [];
       const elapsed = timed(() => {
         for (const width of widths) outs.push(escapedFit(SPREAD, width));
       });
-      expect(elapsed, 'all 116 widths, in total').toBeLessThan(200);
+      expect(elapsed, 'all 116 widths, in total').toBeLessThan(WIDTHS_BOUND_MS);
       const tokens = escapeTokens(SPREAD);
       for (const [index, out] of outs.entries()) {
         const width = widths[index] ?? 0;
@@ -2168,13 +2172,13 @@ describe('escapedFit is bounded: what it costs follows the width, not the length
       }
     });
 
-    it('in middle mode keeps a head and a tail, within the width, in well under 200 ms', () => {
+    it('in middle mode keeps a head and a tail, within the width, in well under a second', () => {
       const widths = Array.from({ length: 116 }, (_, index) => 5 + index);
       const outs: string[] = [];
       const elapsed = timed(() => {
         for (const width of widths) outs.push(escapedFit(SPREAD, width, 'middle'));
       });
-      expect(elapsed, 'all 116 widths, in total').toBeLessThan(200);
+      expect(elapsed, 'all 116 widths, in total').toBeLessThan(WIDTHS_BOUND_MS);
       const tokens = escapeTokens(SPREAD);
       for (const [index, out] of outs.entries()) {
         const width = widths[index] ?? 0;
