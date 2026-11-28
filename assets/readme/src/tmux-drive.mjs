@@ -1,10 +1,23 @@
 // Drives a REAL program inside tmux and captures its screen (with ANSI colour) after each step.
 // Usage: import { runScenario } from './tmux-drive.mjs'
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// tmux by an absolute path, never by a PATH search: a PATH entry that someone else can write could stand in for it.
+const TMUX_CANDIDATES = [
+  process.env.TMUX_BIN,
+  '/opt/homebrew/bin/tmux',
+  '/usr/local/bin/tmux',
+  '/usr/bin/tmux',
+];
+function tmuxPath() {
+  const found = TMUX_CANDIDATES.find((path) => path !== undefined && existsSync(path));
+  if (found === undefined) throw new Error('tmux not found (set TMUX_BIN to its absolute path)');
+  return found;
+}
 
 /**
  * @param {{ socket: string, cwd: string, env: Record<string,string>, command: string[], cols: number, rows: number,
@@ -12,7 +25,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  */
 export async function runScenario(s) {
   const tmux = (...args) =>
-    execFileSync('tmux', ['-L', s.socket, '-f', '/dev/null', ...args], { encoding: 'utf8' });
+    execFileSync(tmuxPath(), ['-L', s.socket, '-f', '/dev/null', ...args], { encoding: 'utf8' });
   mkdirSync(s.outDir, { recursive: true });
   const envArgs = Object.entries(s.env).map(([k, v]) => `${k}=${v}`);
   const session = 'v';

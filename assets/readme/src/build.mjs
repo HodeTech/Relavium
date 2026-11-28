@@ -136,7 +136,7 @@ async function captureHome() {
     socket: 'relavium-readme',
     cwd: project,
     env: { HOME: home, TERM: 'xterm-256color', COLORTERM: 'truecolor' },
-    command: ['node', cli],
+    command: [process.execPath, cli],
     cols: 80,
     rows: 24,
     outDir: join(run, 'frames'),

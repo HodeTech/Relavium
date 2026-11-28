@@ -4,6 +4,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { decodePng } from './png.mjs';
 
+/** What the decoder returns for the end code (the reader below is called by the top-level code, so this is declared first). */
+const END = Symbol('end');
+
 const [gifPath, dir] = process.argv.slice(2);
 const b = readFileSync(gifPath);
 let p = 6;
@@ -56,44 +59,48 @@ while (p < b.length) {
   }
 }
 
-function lzwDecode(data, min, length) {
+/** The spec's LZW decoder state: a dictionary that grows, the code size that grows with it, and the entry before. */
+function createDecoder(min) {
   const clear = 1 << min;
   const end = clear + 1;
-  let size = min + 1;
   let dict = [];
+  let prev;
+  const state = { size: min + 1 };
   const reset = () => {
-    dict = [];
-    for (let i = 0; i < clear; i += 1) dict[i] = [i];
-    dict[clear] = [];
-    dict[end] = [];
-    size = min + 1;
+    dict = Array.from({ length: end + 1 }, (_, i) => (i < clear ? [i] : []));
+    state.size = min + 1;
+    prev = undefined;
   };
   reset();
+  /** The entry a code stands for: undefined for a clear code (nothing to output), END for the end code. */
+  state.take = (code) => {
+    if (code === clear) return reset();
+    if (code === end) return END;
+    const entry = code < dict.length ? dict[code] : prev && [...prev, prev[0]];
+    if (entry === undefined) throw new Error('bad code');
+    if (prev !== undefined && dict.length < 4096) dict.push([...prev, entry[0]]);
+    if (dict.length === 1 << state.size && state.size < 12) state.size += 1;
+    prev = entry;
+    return entry;
+  };
+  return state;
+}
+
+function lzwDecode(data, min, length) {
+  const decoder = createDecoder(min);
   const out = [];
   let bits = 0;
   let nbits = 0;
-  let prev;
   for (const byte of data) {
     bits |= byte << nbits;
     nbits += 8;
-    while (nbits >= size) {
-      const code = bits & ((1 << size) - 1);
-      bits >>= size;
-      nbits -= size;
-      if (code === clear) {
-        reset();
-        prev = undefined;
-        continue;
-      }
-      if (code === end) return out;
-      let entry;
-      if (code < dict.length) entry = dict[code];
-      else if (prev !== undefined) entry = [...prev, prev[0]];
-      else throw new Error('bad code');
-      out.push(...entry);
-      if (prev !== undefined && dict.length < 4096) dict.push([...prev, entry[0]]);
-      if (dict.length === 1 << size && size < 12) size += 1;
-      prev = entry;
+    while (nbits >= decoder.size) {
+      const code = bits & ((1 << decoder.size) - 1);
+      bits >>= decoder.size;
+      nbits -= decoder.size;
+      const entry = decoder.take(code);
+      if (entry === END) return out;
+      if (entry !== undefined) out.push(...entry);
     }
   }
   return out.slice(0, length);

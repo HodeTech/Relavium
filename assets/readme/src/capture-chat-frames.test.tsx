@@ -5,7 +5,7 @@
 import '../../../apps/cli/src/render/tui/force-color.js';
 import type { SessionStreamHandleEvent } from '@relavium/core';
 import { writeFileSync } from 'node:fs';
-import { it } from 'vitest';
+import { expect, it } from 'vitest';
 import { mountStandaloneChat } from '../../../apps/cli/src/render/tui/surface-matrix/chat-host.js';
 
 const OUT = new URL('./frames/chat-frames.json', import.meta.url).pathname;
@@ -90,6 +90,12 @@ it('captures the chat frames', async () => {
     } finally {
       m.unmount();
     }
+  }
+  // A capture that drew nothing would write a useless file: every scene shows the person's request and the status line.
+  for (const [name, rows] of Object.entries(frames)) {
+    const text = rows.join('\n');
+    expect(text, `${name}: the person's request`).toContain('Turn the steps I do every Friday');
+    expect(text, `${name}: the status line`).toContain('ask mode');
   }
   writeFileSync(OUT, JSON.stringify(frames, null, 1));
 });

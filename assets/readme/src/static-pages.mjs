@@ -43,7 +43,7 @@ const baseCss = (w, h) => `
   .pill{display:inline-block;border-radius:999px;font:700 11.5px/1 ${SANS};letter-spacing:.14em;padding:8px 14px}
 `;
 
-const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const esc = (s) => s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 
 /** Collapses every run of two or more blank rows to one: a chat view keeps a tall, empty transcript above its prompt. */
 function compactRows(grid) {
@@ -64,7 +64,7 @@ export function heroHtml(chatFramesPath) {
   const frames = JSON.parse(readFileSync(chatFramesPath, 'utf8'));
   const grid = compactRows(parseAnsi(frames.running.join('\n'), 80, frames.running.length));
   // drop the title that the header carries on its right: it repeats the user's row
-  const chatRows = grid.map(rowHtml).join('');
+  const chatRows = grid.map((row) => rowHtml(row)).join('');
   return `<!doctype html><meta charset="utf-8"><title>hero</title><style>${baseCss(1280, 560)}
   .b1{width:560px;height:560px;left:-160px;top:-200px;background:#E7DFFB;opacity:.95}
   .b2{width:460px;height:460px;left:830px;top:320px;background:#FCE6D8;opacity:.95}
@@ -151,13 +151,17 @@ export function flowHtml() {
       art: `<div class="rr hi">› <b class="ok">✓</b> completed &nbsp;9d9575a5</div><div class="rr">&nbsp; <b class="ok">✓</b> completed &nbsp;b89315c4</div><div class="rr">&nbsp; <b class="run">◐</b> running &nbsp;&nbsp;&nbsp;c04e1f77</div>`,
     },
   ];
+  const arrowAfter = (i) =>
+    i < steps.length - 1
+      ? '<div class="arrow" style="left:' + String(48 + i * 298 + 258) + 'px">›</div>'
+      : '';
   const cards = steps
     .map(
       (s, i) => `<div class="step" style="left:${48 + i * 298}px">
   <div class="num" style="background:${s.tint};color:${s.deep}">${s.n}</div>
   <div class="art" style="background:${s.tint}55;border-color:${s.tint}">${s.art}</div>
   <div class="st">${esc(s.title)}</div><div class="sa">${esc(s.a)}</div><div class="sb">${esc(s.b)}</div>
-</div>${i < 3 ? `<div class="arrow" style="left:${48 + i * 298 + 258}px">›</div>` : ''}`,
+</div>${arrowAfter(i)}`,
     )
     .join('');
   return `<!doctype html><meta charset="utf-8"><title>continuum</title><style>${baseCss(1280, 440)}

@@ -36,31 +36,46 @@ export function parseAnsi(text, cols, rows) {
   return grid;
 }
 
+const PLAIN = { fg: undefined, bold: false, dim: false, inverse: false };
+
+/** Attributes that one SGR code sets or clears on its own. */
+const SINGLE = new Map([
+  [0, () => ({ ...PLAIN })],
+  [1, (st) => ({ ...st, bold: true })],
+  [2, (st) => ({ ...st, dim: true })],
+  [22, (st) => ({ ...st, bold: false, dim: false })],
+  [7, (st) => ({ ...st, inverse: true })],
+  [27, (st) => ({ ...st, inverse: false })],
+  [39, (st) => ({ ...st, fg: undefined })],
+]);
+
+/** A colour code that stands alone (30-37, 90-97), as a name; `undefined` when `c` is not one. */
+function basicColour(c) {
+  if (c >= 30 && c <= 37) return BASIC[c - 30];
+  if (c >= 90 && c <= 97) return `bright-${BASIC[c - 90]}`;
+  return undefined;
+}
+
+/** The colour of `38;5;n` or `38;2;r;g;b`, kept as a tagged string (the theme decides), and how many codes it used. */
+function extendedColour(codes, k) {
+  if (codes[k + 1] === 5) return { fg: `256:${codes[k + 2]}`, used: 2 };
+  if (codes[k + 1] === 2)
+    return { fg: `rgb:${codes[k + 2]},${codes[k + 3]},${codes[k + 4]}`, used: 4 };
+  return { fg: undefined, used: 0 };
+}
+
 function applySgr(state, params) {
   const codes = params === '' ? [0] : params.split(/[;:]/).map(Number);
   let next = { ...state };
   for (let k = 0; k < codes.length; k += 1) {
     const c = codes[k];
-    if (c === 0) next = { fg: undefined, bold: false, dim: false, inverse: false };
-    else if (c === 1) next.bold = true;
-    else if (c === 2) next.dim = true;
-    else if (c === 22) {
-      next.bold = false;
-      next.dim = false;
-    } else if (c === 7) next.inverse = true;
-    else if (c === 27) next.inverse = false;
-    else if (c === 39) next.fg = undefined;
-    else if (c >= 30 && c <= 37) next.fg = BASIC[c - 30];
-    else if (c >= 90 && c <= 97) next.fg = `bright-${BASIC[c - 90]}`;
+    const single = SINGLE.get(c);
+    if (single !== undefined) next = single(next);
+    else if (basicColour(c) !== undefined) next.fg = basicColour(c);
     else if (c === 38) {
-      // 38;5;n or 38;2;r;g;b: kept as a tagged string, the theme decides
-      if (codes[k + 1] === 5) {
-        next.fg = `256:${codes[k + 2]}`;
-        k += 2;
-      } else if (codes[k + 1] === 2) {
-        next.fg = `rgb:${codes[k + 2]},${codes[k + 3]},${codes[k + 4]}`;
-        k += 4;
-      }
+      const { fg, used } = extendedColour(codes, k);
+      if (fg !== undefined) next.fg = fg;
+      k += used;
     }
     // background colours (40-47, 48;...) are not used by the screens captured here
   }

@@ -37,7 +37,7 @@ const MARK_TINT = new Map([
   ['✻', THEME.lavender],
 ]);
 
-const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const esc = (s) => s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 
 function colourOf(cell) {
   if (cell.fg === 'cyan') return cell.dim ? THEME.accentDim : THEME.accent;
@@ -63,7 +63,7 @@ export function rowHtml(row) {
       style = `color:${THEME.keyInk};background:${THEME.keyBg}`;
     }
     if (cell.bold) style += ';font-weight:700';
-    const ascii = cell.ch.charCodeAt(0) < 128;
+    const ascii = cell.ch.codePointAt(0) < 128;
     cls += ascii ? '' : ' w';
     out += `<span class="${cls}" style="${style}">${cell.ch === ' ' ? '&nbsp;' : esc(cell.ch)}</span>`;
   });
@@ -74,7 +74,7 @@ export function rowHtml(row) {
  * @param {{ grid: import('./ansi.mjs').Cell[][], title: string, caption: { step: number, text: string }, width: number, height: number }} f
  */
 export function frameHtml(f) {
-  const rows = f.grid.map(rowHtml).join('');
+  const rows = f.grid.map((row) => rowHtml(row)).join('');
   const dots = THEME.dots.map((c) => `<i style="background:${c}"></i>`).join('');
   return `<!doctype html><meta charset="utf-8"><title>frame</title>
 <style>
