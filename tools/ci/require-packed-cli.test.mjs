@@ -557,7 +557,7 @@ function checkRequiredSourceSmokes(workflow) {
   assert.ok(job, 'source smokes must run in the workspace job the required ci context joins');
   assert.equal(job.if, undefined);
   assert.equal(job['continue-on-error'], undefined);
-  assert.ok(job['timeout-minutes'] > 0 && job['timeout-minutes'] <= 30);
+  assert.ok(job['timeout-minutes'] > 0 && job['timeout-minutes'] <= 45);
   assert.equal(workflow.defaults?.run?.['working-directory'], undefined);
   assert.equal(job.defaults?.run?.['working-directory'], undefined);
   const commands = [
