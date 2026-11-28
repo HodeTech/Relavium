@@ -61,6 +61,11 @@ document, unlike a mouse selection's visual rows). The three carry the transcrip
 starts with `> `, and there is no margin and no blank row between turns. None needs the mouse, and all restore every terminal mode on
 the way back.
 
+**Caveat (found by the PR #103 review, 2026-11-28; not fixed):** "whole" means the whole of what the live view holds. On the inline
+renderer, after a `/models` reseat (an inline reseat does not reprint the earlier static entries), the three hatches see the entries
+from the reseat on; the earlier turns stay in the terminal's own scrollback and in the saved session (`relavium chat-export`). The full-screen
+renderer carries its current view across a reseat. Registered in [deferred-tasks.md](../../roadmap/deferred-tasks.md#mvp-11-pr-103-review-follow-ups-2026-11-28).
+
 ## The escape hatch — the inline renderer
 
 The **inline renderer** is retained, first-class, and keeps the pre-full-screen

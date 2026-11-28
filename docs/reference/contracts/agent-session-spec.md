@@ -455,6 +455,9 @@ The schema is strict at every level: an unknown kind or an extra field is refuse
 - **Rows.** The row is `role: 'system'` with empty `content` and the typed `record` field. It is never together
   with `compaction` or `interruption`, and a `mode_change` names two different modes. The store refuses a row that
   breaks these rules at its boundary, and the database refuses it again.
+  **Where `from !== to` is enforced** (noted 2026-11-28, PR #103 review): `SessionRecordSchema` on its own accepts two equal
+  modes; the rule lives in `SessionMessageSchema`'s refinement (the row) and in the database `CHECK`, so a caller that parses a
+  bare record must apply it itself.
 - **`mode_change`.** The effective chat mode of a live, interactive session changed from `from` to `to`. Every
   effective change is recorded, so the record of a mode has its end as well as its start; a non-interactive or
   `--json` session always runs in `ask` and records nothing. A **widening** change is applied only if its row

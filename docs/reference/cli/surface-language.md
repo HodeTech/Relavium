@@ -2,7 +2,7 @@
 
 > Last updated: 2026-11-28
 
-- **Status**: Reference — implemented on `development` through MVP-11 unit 9; the close-out (unit 10) is pending.
+- **Status**: Reference — implemented on `development` through MVP-11 unit 10; the close-out is written and [PR #103](https://github.com/HodeTech/Relavium/pull/103) is open (not merged).
 - **Surface**: the interactive CLI: the [Home](home.md) and [`relavium chat`](chat-session.md), in the full-screen and the inline renderer. The plain, `--json` and one-shot drivers draw none of it ([§7](#7-plain---json-and-one-shot-output)).
 - **Decisions**: [ADR-0145](../../decisions/0145-the-cli-has-one-surface-language.md) (the language), [ADR-0146](../../decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md) (the Home and the chat), [ADR-0147](../../decisions/0147-a-system-started-question-is-a-sheet-with-a-frame-and-a-wait-clock.md) (the sheet), [ADR-0148](../../decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) (the popup).
 - **Code**: the language lives in data modules, five of which this page cites — [`repl-commands.ts`](../../../apps/cli/src/commands/repl-commands.ts), [`legend.ts`](../../../apps/cli/src/render/tui/legend.ts), [`glyphs.ts`](../../../apps/cli/src/render/tui/glyphs.ts), [`sheet-frame.ts`](../../../apps/cli/src/render/tui/sheet-frame.ts) and [`notation.ts`](../../../apps/cli/src/render/notation.ts). None imports `ink`, `react` or `node:` (a lint fence, `CLI_DATA_MODULES` in `eslint.config.mjs`).
@@ -226,7 +226,7 @@ The sides are open, with one blank column of margin inside each side, so the fra
 | Backdrop | Everything but the slot is dimmed with colour on; the popup's own cells never are | None |
 | Floor | Below 80×24 a notice with the way back replaces the popup | The same |
 
-The slot is the last child of a host's root and the **only absolutely positioned node** in the CLI (`popup-absolute-only.test.ts`); `backdrop-dim.test.tsx` checks every cell. Keys: `↑/↓` select; `Enter` goes to the next step or applies; `Esc` goes back one step and closes on the first; `Ctrl+C` closes the whole popup and arms no exit window; neither confirms anything. A popup opens only on the user's command, between turns, with no card or sheet open (the first-run provider setup is the one exception); a sheet that arrives closes it unanswered; it writes nothing into the transcript or the Home's notice, the model-switch marker excepted ([ADR-0148 §2](../../decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md#2-opening-ownership-and-what-a-popup-may-cover) and [§6](../../decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md#6-the-residue-rule-and-its-exception)). What each Home popup shows is [home.md](home.md#the-homes-management-popups-mvp-11-unit-8-2026-11-27)'s; `/mode` is [chat-session.md](chat-session.md#the-mode-popup-mvp-11-unit-8-2026-11-27)'s.
+The slot is the last child of a host's root and the **only absolutely positioned node** in the CLI (`popup-absolute-only.test.ts`); `backdrop-dim.test.tsx` checks every cell. Keys: `↑/↓` select; `Enter` goes to the next step or applies; `Esc` goes back one step and closes on the first; `Ctrl+C` closes the whole popup, or first disarms an armed confirmation line ([ADR-0148 §3](../../decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md#3-keys-and-answers)), and arms no exit window; neither confirms anything. A popup opens only on the user's command, between turns, with no card or sheet open (the first-run provider setup is the one exception); a sheet that arrives closes it unanswered; it writes nothing into the transcript or the Home's notice, the model-switch marker excepted ([ADR-0148 §2](../../decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md#2-opening-ownership-and-what-a-popup-may-cover) and [§6](../../decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md#6-the-residue-rule-and-its-exception)). What each Home popup shows is [home.md](home.md#the-homes-management-popups-mvp-11-unit-8-2026-11-27)'s; `/mode` is [chat-session.md](chat-session.md#the-mode-popup-mvp-11-unit-8-2026-11-27)'s.
 
 ### 4.3 The inspection popup
 
@@ -234,7 +234,7 @@ The approval's full view (`[v]`) and `/details` are one **large popup that belon
 
 ### 4.4 The Runs screen
 
-The one screen the Home keeps for browsing runs: two tabs, **Active** and **History**, this directory's runs by default (`[a] all`). It is the code's `tab-host`, entered from the landing only, and `Esc` goes back one level or closes it. Its keys, rows and budgets are [home.md](home.md#the-runs-screen-active-and-history-mvp-8-step-4-2026-11-23-narrowed-in-mvp-11-unit-8-2026-11-27)'s.
+The one screen the Home keeps for browsing runs: two tabs, **Active** and **History**, this directory's runs by default (`[a] all`). It is the code's `tab-host`, entered from the landing or the work page, and `Esc` goes back one level or closes it. Its keys, rows and budgets are [home.md](home.md#the-runs-screen-active-and-history-mvp-8-step-4-2026-11-23-narrowed-in-mvp-11-unit-8-2026-11-27)'s.
 
 ## 5. The chat grid
 

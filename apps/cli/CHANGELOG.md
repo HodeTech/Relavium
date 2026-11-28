@@ -8,8 +8,8 @@ publication guard are documented in
 ## [Unreleased]
 
 MVP-2 is implemented and independently reviewed, and MVP-11 (one surface language for
-the CLI) is built on `development` through unit 9 with its close-out pending; the
-published version is still `0.1.1`. Publication remains guarded until the accepted D59
+the CLI) is built on `development` through unit 10 and is in review as PR #103 (open, not
+merged); the published version is still `0.1.1`. Publication remains guarded until the accepted D59
 release path replaces the interim guard. Checkpoint evidence is recorded in the
 [MVP-2 acceptance register](../../docs/roadmap/phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10)
 and, for MVP-11, in its [implementation log](../../docs/roadmap/phases/mvp-11/implementation-log.md).
@@ -41,8 +41,9 @@ and, for MVP-11, in its [implementation log](../../docs/roadmap/phases/mvp-11/im
 
 The Home, the chat and the cards, pickers and reports inside them now share one palette
 order, one key-hint grammar, one glyph set and one surface per kind of interaction. No
-`--json` stream, NDJSON event or exit code changes; the few human-text changes on scripted
-paths are listed under Changed.
+`--json` stream or NDJSON event changes. The human-text changes on scripted paths are
+listed under Changed, and `relavium run` has one new refusal (exit code 2) listed under
+Security; the maintainer is to confirm that refusal.
 
 #### Added
 
@@ -93,8 +94,8 @@ paths are listed under Changed.
 - `/agents` popup: list and detail; `[c]` starts a chat bound to that agent.
 - A read-only card names why a stored run cannot be read.
 - `@` file picking on the Home prompt.
-- First run as a `Connect a provider` popup (Provider, Key, Done) in the Home's first
-  frame. It says where the key is stored and where it is sent before you paste it, offers
+- First run as a `Connect a provider` popup (Provider, Key, Done) over the Home, opened as
+  soon as the Home has drawn (the popup is the second frame, not the very first). It says where the key is stored and where it is sent before you paste it, offers
   `Retry the check` first on a network failure, and never pre-selects `Save it anyway`.
 - A message typed before a key exists is kept in the prompt and not sent. A draft that
   looks like an API key is never kept or recorded.
@@ -142,10 +143,21 @@ paths are listed under Changed.
   selector, Thai and Lao are drawn decomposed, and `›`, `▸`, `⇄` in a reply show as a
   space. `/copy`, `/edit`, `/scrollback` and the session file keep every byte.
 - The text column is narrower: 68 columns at 80.
-- Human text on scripted paths: `models pricing` echoes `$3 per M`; `status` prints `‖`;
+- Human text on scripted paths (none of it is a `--json` or NDJSON field): `models pricing`
+  and `models pricing set` echo `$3 per M`, `$0.04 per image`, `$0.001 per second`; `status`
+  prints `‖` (`||` with colour off) and `allowance $0.0420` for a pending budget gate;
   `--help` says `NO_COLOR (non-empty ⇒ off)`; the plain run renderer prints
-  `retry ... in 1.5s`; `/help` and the unknown-slash hint in plain, `--json` and one-shot
-  chats follow the new palette order.
+  `retry ... in 1.5s`, `~$0.0420 estimated` and `✓ completed <id>`; the `warning:` lines of
+  `run`, `gate`, `agent run` and plain chats say `--input-price` and `--output-price`; the
+  shell gate prompter prints `Budget allowance: $0.0420` and `Approve exactly $0.0420?`; the
+  `--approve-amount` mismatch error reads `the budget allowance is $X; --approve-amount must
+  equal it exactly (--approve-amount N)`; `chat export` prints the file project-relative or
+  from `~`; `logs` writes a budget estimate in dollars (`~$0.0420 estimated`) where it wrote
+  `µ¢`; the one-shot `agent run` note on a terminal stdin writes its keys in the bracket
+  grammar (`finish with [Ctrl+D] ([Ctrl+Z], [Enter] on Windows)`); `/help` and the
+  unknown-slash hint in plain, `--json` and one-shot chats follow the new palette order.
+- The chat's status line drops `turns` at 80 and 81 columns (the line is fitted to the
+  content column's width), and its hint likewise.
 - `history.db` gains an additive migration (record columns on `session_messages`); an older
   `relavium` reads a record as an inert system row. A config that contains
   `first_run_setup_skipped` is rejected by `relavium@0.1.1`.
@@ -160,6 +172,19 @@ paths are listed under Changed.
 - `Ctrl+Z` then `fg` no longer ends an idle Home or chat.
 - The Home's first full-screen frame is no longer drawn at the shell's cursor row.
 - A selected row is no longer told apart by its marker alone when colour is off.
+- While a turn runs, reasoning, tool calls and a long answer together no longer push the
+  rule, the status line and the hint out of the frame at 80×24: the live region is one
+  budget, and the oldest reasoning and tool rows give way first.
+- `/models` no longer opens on another model when the model in force cannot be used or is
+  not listed; it opens on the refresh row, so a bare `Enter` opens no model's second step.
+- A damaged session row no longer stops the Home from opening: the row is skipped.
+- `relavium run`'s resume no longer fails when the recorded project directory cannot be
+  read (permission, a path under a file); it falls back to the current directory.
+- A run that ends unreadable or unexpectedly now points at `/workflows`, then `[h]` (the
+  Runs screen), not at a `History tab` that no longer exists in `/workflows`.
+- The Runs screen's empty text no longer offers `/run`, which does nothing there.
+- Tabs and look-alike marks in a model's text on the run view no longer shift or imitate
+  the host's rows; `/pricing`'s confirmation of a clear no longer shows `Rates` as done.
 
 #### Removed
 
@@ -179,9 +204,15 @@ paths are listed under Changed.
   on the shell as well.
 - The approval card writes width-risk characters as `<U+XXXX>`, and the question card
   escapes labels that would draw alike.
+- A gate's message in `status`, `gate list` and the interactive prompt is redacted the way
+  the Home's card redacts it; the `--json` output is unchanged.
+- Text delivered in one chunk with its return (`xyz⏎`, a paste that ends in a return) no
+  longer answers a guarded option; a paste counts as typing for the approval guards, and a
+  question's settle time runs from the frame that reached the screen.
 - `--cwd` is made absolute and "this directory" uses the canonical path. `relavium run`
-  refuses a workspace at or inside `<repo>/.relavium` and a credential-store alias, as chat
-  does.
+  now refuses a workspace at or inside `<repo>/.relavium` and a credential-store alias, as
+  chat does: a new refusal on a scripted path (an `invalid_invocation` fault, exit code 2)
+  for a run that was accepted before. The maintainer is to confirm it.
 
 ## [0.1.1] — 2026-06-28
 

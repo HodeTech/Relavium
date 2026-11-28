@@ -137,3 +137,7 @@ Considered and rejected: **(a) providerOptions-only** (the status quo — not pr
 
 > **Editorial revision 2026-11-15 (maintainer instruction):** named external
 > product comparisons are removed; the technical decision remains unchanged.
+
+### Implementation note — 2026-11-28 (PR #103 review: the links of the 2026-07-07 note)
+
+The note above links `apps/cli/src/render/tui/effort-picker.ts` and `effort-tier-list.tsx`. Neither file exists: MVP-11 unit 5 replaced the docked tier overlay with the `/effort` popup ([ADR-0148](0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §3). The rows and the spec are built by `apps/cli/src/popups/effort-popup.ts` (tiers from `effortTiersFor`, the tier in force marked `current`, `Enter` applying it with no reseat), opened by `settings-session.ts`, and the `/models` effort sub-step is a step of `popups/models-popup.ts`. The decision of this ADR is unchanged: the per-turn `onSetEffort` change, no reseat, only on a reasoning-capable model.

@@ -351,7 +351,8 @@ A `DisplayLine` occupies one terminal row. Its `text` equals the concatenated
 drawn spans. Measure grapheme clusters across adjacent span boundaries, so a
 combining mark or ZWJ sequence split by markup cannot be counted twice. Resolve
 style changes inside one grapheme consistently for the whole cluster. Full-line
-width must agree with Ink's `string-width` measurement. Selection and clipboard
+width is the CLI's `displayWidth` (`render/tui/viewport.ts`): it equals Ink's `string-width` count except for a cluster a terminal draws wider than `string-width`
+counts, where it is larger and is **never less than Ink's count**; the screen filter runs on the text before it is laid out, so what is measured is what is drawn. Selection and clipboard
 partition the same displayed text by the existing column primitive.
 
 Both renderers draw the same word-wrapped rows, with semantic spans as nested
