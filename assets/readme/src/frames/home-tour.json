@@ -1,0 +1,121 @@
+[
+  {
+    "name": "00-first-run",
+    "ansi": "\n\n\n      \u001b[2m\u001b[36mR  E  L  A  V  I  U  M\u001b[0m\n\n      \u001b[2m\u001b[36m◉\u001b[39m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○\u001b[0m\n       \u001b[2m─ \u001b[0;1mConnect a provider\u001b[0;2m ─────────────────── first run · step 1 of 3 ─\u001b[0m\n       \u001b[1m◉ Provider\u001b[0;2m ╌╌ ○ Key ╌╌ ○ Done\u001b[0m\n      \u001b[2m First-run setup: A model provider is needed to start chatting.     \u001b[0m\n       Which provider?\n      \u001b[1;7m\u001b[36m › Anthropic  Official endpoint: https://api.anthropic.com          \u001b[0m\n         OpenAI  Official endpoint: https://api.openai.com\n         Google Gemini  Official endpoint:\n         https://generativelanguage.googleapis.com\n         DeepSeek  Official endpoint: https://api.deepseek.com\n       \u001b[1m↑/↓\u001b[0;2m select · \u001b[0;1mEnter\u001b[0;2m choose · \u001b[0;1mEsc\u001b[0;2m skip for now · \u001b[0;1m[Ctrl+C]\u001b[0;2m close\u001b[0m\n       \u001b[2m──────────────────────────────────────────────────────────────────\u001b[0m\n\n\n\n\n\n\n\n",
+    "beat": 1,
+    "caption": "First run: connect a provider, or skip for now",
+    "delay": 2400
+  },
+  {
+    "name": "01-skip",
+    "ansi": "\n\n\n      \u001b[1m\u001b[36mR  E  L  A  V  I  U  M\u001b[0m\n\n      \u001b[36m◉\u001b[2m\u001b[39m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○\u001b[0m\n      \u001b[1mStart as an agent\u001b[0m        \u001b[2mShip the workflow\u001b[0m             \u001b[2mOwn every run\u001b[0m\n      \u001b[2mtalk to an agent          save it as YAML             every run kept\u001b[0m\n\n\n      \u001b[36m› \u001b[7m\u001b[39ms\u001b[0;2mummarize the files in this folder\u001b[0m\n      \u001b[2m────────────────────────────────────────────────────────────────────\u001b[0m\n      \u001b[36mNo provider key yet · Enter connect · /providers\u001b[39m\n\n      \u001b[2mSetup skipped · /providers connects a provider anytime\u001b[0m\n\n\n\n\n\n\n\n\n\n",
+    "beat": 2,
+    "caption": "The Home: type to start an agent, or press / for every command",
+    "delay": 2400
+  },
+  {
+    "name": "02-palette",
+    "ansi": "\n\n\n      \u001b[1m\u001b[36mR  E  L  A  V  I  U  M\u001b[0m\n\n      \u001b[36m◉\u001b[2m\u001b[39m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○\u001b[0m\n      \u001b[1mStart as an agent\u001b[0m        \u001b[2mShip the workflow\u001b[0m             \u001b[2mOwn every run\u001b[0m\n      \u001b[2mtalk to an agent          save it as YAML             every run kept\u001b[0m\n\n\n      \u001b[36m› /\u001b[7m \u001b[0m\n      \u001b[2m────────────────────────────────────────────────────────────────────\u001b[0m\n      \u001b[1;7m\u001b[36m› /providers    \u001b[0;2;7m\u001b[36mConnect, login, or manage provider API keys.\u001b[0m\n      \u001b[2m  /resume       unavailable · nothing to resume\u001b[0m\n        /run          \u001b[2mPick a workflow, fill in its inputs and run it after conf…\n\u001b[0m        /workflows    \u001b[2mThe workflows of this project: run or export one.\u001b[0m\n        /agents       \u001b[2mThe agents of this project: start a chat with one.\u001b[0m\n        /models       \u001b[2mChoose the model new chats start with.\u001b[0m\n        /mode         \u001b[2mChoose the mode new chats start in.\u001b[0m\n        /permissions  \u001b[2mRemembered commands for this project; [d] withdraws one.\u001b[0m\n      \u001b[2m  ▼ 7 more\u001b[0m\n\n      \u001b[2m↑/↓ select · Enter run · Esc close\n\n",
+    "beat": 3,
+    "caption": "Press / to see every command",
+    "delay": 2000
+  },
+  {
+    "name": "03-p-r",
+    "ansi": "\n\n\n      \u001b[1m\u001b[36mR  E  L  A  V  I  U  M\u001b[0m\n\n      \u001b[36m◉\u001b[2m\u001b[39m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○\u001b[0m\n      \u001b[1mStart as an agent\u001b[0m        \u001b[2mShip the workflow\u001b[0m             \u001b[2mOwn every run\u001b[0m\n      \u001b[2mtalk to an agent          save it as YAML             every run kept\u001b[0m\n\n\n      \u001b[36m› /r\u001b[7m \u001b[0m\n      \u001b[2m────────────────────────────────────────────────────────────────────\u001b[0m\n      \u001b[2m  /resume       unavailable · nothing to resume\u001b[0m\n      \u001b[1;7m\u001b[36m› /run          \u001b[0;2;7m\u001b[36mPick a workflow, fill in its inputs and run it after conf…\n\u001b[0m        /providers    \u001b[2mConnect, login, or manage provider API keys.\u001b[0m\n        /workflows    \u001b[2mThe workflows of this project: run or export one.\u001b[0m\n        /permissions  \u001b[2mRemembered commands for this project; [d] withdraws one.\u001b[0m\n        /pricing      \u001b[2mSet or clear your own price for a model.\u001b[0m\n        /import       \u001b[2mBring a YAML file into this project, after confirmation.\u001b[0m\n        /doctor       \u001b[2mCheck your setup; --deep also validates keys and MCP.\u001b[0m\n      \u001b[2m  ▼ 6 more\u001b[0m\n\n      \u001b[2m↑/↓ select · Enter run · Esc close\n\n",
+    "beat": 3,
+    "caption": "It narrows as you type",
+    "delay": 650
+  },
+  {
+    "name": "04-p-ru",
+    "ansi": "\n\n\n      \u001b[1m\u001b[36mR  E  L  A  V  I  U  M\u001b[0m\n\n      \u001b[36m◉\u001b[2m\u001b[39m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○\u001b[0m\n      \u001b[1mStart as an agent\u001b[0m        \u001b[2mShip the workflow\u001b[0m             \u001b[2mOwn every run\u001b[0m\n      \u001b[2mtalk to an agent          save it as YAML             every run kept\u001b[0m\n\n\n      \u001b[36m› /ru\u001b[7m \u001b[0m\n      \u001b[2m────────────────────────────────────────────────────────────────────\u001b[0m\n      \u001b[1;7m\u001b[36m› /run        \u001b[0;2;7m\u001b[36mPick a workflow, fill in its inputs and run it after confir…\n\u001b[0m        /workflows  \u001b[2mThe workflows of this project: run or export one.\u001b[0m\n\n\n\n\n\n\n\n\n      \u001b[2m↑/↓ select · Enter run · Esc close\n\n",
+    "beat": 3,
+    "caption": "It narrows as you type",
+    "delay": 650
+  },
+  {
+    "name": "05-p-run",
+    "ansi": "\n\n\n      \u001b[1m\u001b[36mR  E  L  A  V  I  U  M\u001b[0m\n\n      \u001b[36m◉\u001b[2m\u001b[39m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○\u001b[0m\n      \u001b[1mStart as an agent\u001b[0m        \u001b[2mShip the workflow\u001b[0m             \u001b[2mOwn every run\u001b[0m\n      \u001b[2mtalk to an agent          save it as YAML             every run kept\u001b[0m\n\n\n      \u001b[36m› /run\u001b[7m \u001b[0m\n      \u001b[2m────────────────────────────────────────────────────────────────────\u001b[0m\n      \u001b[1;7m\u001b[36m› /run        \u001b[0;2;7m\u001b[36mPick a workflow, fill in its inputs and run it after confir…\n\u001b[0m        /workflows  \u001b[2mThe workflows of this project: run or export one.\u001b[0m\n\n\n\n\n\n\n\n\n      \u001b[2m↑/↓ select · Enter run · Esc close\n\n",
+    "beat": 3,
+    "caption": "/run picks a workflow, fills in its inputs and asks before it runs",
+    "delay": 1700
+  },
+  {
+    "name": "06-run-1",
+    "ansi": "\n\n\n      \u001b[2m\u001b[36mR  E  L  A  V  I  U  M\u001b[0m\n\n      \u001b[2m\u001b[36m◉\u001b[39m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○\u001b[0m\n      \u001b[2mStart as an agent        Ship the workflow             Own every run\u001b[0m\n      \u001b[2mtalk to an agent          save it as YAML             every run kept\u001b[0m\n\n       \u001b[2m─ \u001b[0;1m/run\u001b[0;2m ───────────────────────────────── from Home · step 1 of 3 ─\u001b[0m\n       \u001b[1m◉ Workflow\u001b[0;2m ╌╌ ○ Inputs ╌╌ ○ Confirm\u001b[0m\n       Run which workflow?\n      \u001b[1;7m\u001b[36m › Hello pipeline  hello-pipeline.relavium.yaml                     \u001b[0m\n       \u001b[1m↑/↓\u001b[0;2m select · \u001b[0;1mEnter\u001b[0;2m choose · \u001b[0;1mEsc\u001b[0;2m close\u001b[0m\n       \u001b[2m──────────────────────────────────────────────────────────────────\u001b[0m\n\n\n\n\n\n\n\n\n\n",
+    "beat": 4,
+    "caption": "Pick one of this project’s workflows",
+    "delay": 1900
+  },
+  {
+    "name": "07-run-2",
+    "ansi": "\n\n\n      \u001b[2m\u001b[36mR  E  L  A  V  I  U  M\u001b[0m\n\n      \u001b[2m\u001b[36m◉\u001b[39m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○\u001b[0m\n      \u001b[2mStart as an agent        Ship the workflow             Own every run\u001b[0m\n      \u001b[2mtalk to an agent          save it as YAML             every run kept\u001b[0m\n\n       \u001b[2m─ \u001b[0;1m/run\u001b[0;2m ───────────────────────────────── from Home · step 2 of 3 ─\u001b[0m\n       \u001b[1m\u001b[32m✓ Workflow\u001b[0;2m ╌╌ \u001b[0;1m◉ Inputs\u001b[0;2m ╌╌ ○ Confirm\u001b[0m\n       Input 1 of 2: who (string, optional)\n       >\n       \u001b[1mEnter\u001b[0;2m continue · \u001b[0;1mEsc\u001b[0;2m back · \u001b[0;1m[Ctrl+C]\u001b[0;2m close\u001b[0m\n       \u001b[2m──────────────────────────────────────────────────────────────────\u001b[0m\n\n\n\n\n\n\n\n\n\n",
+    "beat": 5,
+    "caption": "Fill in its inputs",
+    "delay": 1300
+  },
+  {
+    "name": "08-who-A",
+    "ansi": "\n\n\n      \u001b[2m\u001b[36mR  E  L  A  V  I  U  M\u001b[0m\n\n      \u001b[2m\u001b[36m◉\u001b[39m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○\u001b[0m\n      \u001b[2mStart as an agent        Ship the workflow             Own every run\u001b[0m\n      \u001b[2mtalk to an agent          save it as YAML             every run kept\u001b[0m\n\n       \u001b[2m─ \u001b[0;1m/run\u001b[0;2m ───────────────────────────────── from Home · step 2 of 3 ─\u001b[0m\n       \u001b[1m\u001b[32m✓ Workflow\u001b[0;2m ╌╌ \u001b[0;1m◉ Inputs\u001b[0;2m ╌╌ ○ Confirm\u001b[0m\n       Input 1 of 2: who (string, optional)\n       > A\n       \u001b[1mEnter\u001b[0;2m continue · \u001b[0;1mEsc\u001b[0;2m back · \u001b[0;1m[Ctrl+C]\u001b[0;2m close\u001b[0m\n       \u001b[2m──────────────────────────────────────────────────────────────────\u001b[0m\n\n\n\n\n\n\n\n\n\n",
+    "beat": 5,
+    "caption": "Fill in its inputs",
+    "delay": 420
+  },
+  {
+    "name": "09-who-Ad",
+    "ansi": "\n\n\n      \u001b[2m\u001b[36mR  E  L  A  V  I  U  M\u001b[0m\n\n      \u001b[2m\u001b[36m◉\u001b[39m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○\u001b[0m\n      \u001b[2mStart as an agent        Ship the workflow             Own every run\u001b[0m\n      \u001b[2mtalk to an agent          save it as YAML             every run kept\u001b[0m\n\n       \u001b[2m─ \u001b[0;1m/run\u001b[0;2m ───────────────────────────────── from Home · step 2 of 3 ─\u001b[0m\n       \u001b[1m\u001b[32m✓ Workflow\u001b[0;2m ╌╌ \u001b[0;1m◉ Inputs\u001b[0;2m ╌╌ ○ Confirm\u001b[0m\n       Input 1 of 2: who (string, optional)\n       > Ad\n       \u001b[1mEnter\u001b[0;2m continue · \u001b[0;1mEsc\u001b[0;2m back · \u001b[0;1m[Ctrl+C]\u001b[0;2m close\u001b[0m\n       \u001b[2m──────────────────────────────────────────────────────────────────\u001b[0m\n\n\n\n\n\n\n\n\n\n",
+    "beat": 5,
+    "caption": "Fill in its inputs",
+    "delay": 420
+  },
+  {
+    "name": "10-who-Ada",
+    "ansi": "\n\n\n      \u001b[2m\u001b[36mR  E  L  A  V  I  U  M\u001b[0m\n\n      \u001b[2m\u001b[36m◉\u001b[39m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○\u001b[0m\n      \u001b[2mStart as an agent        Ship the workflow             Own every run\u001b[0m\n      \u001b[2mtalk to an agent          save it as YAML             every run kept\u001b[0m\n\n       \u001b[2m─ \u001b[0;1m/run\u001b[0;2m ───────────────────────────────── from Home · step 2 of 3 ─\u001b[0m\n       \u001b[1m\u001b[32m✓ Workflow\u001b[0;2m ╌╌ \u001b[0;1m◉ Inputs\u001b[0;2m ╌╌ ○ Confirm\u001b[0m\n       Input 1 of 2: who (string, optional)\n       > Ada\n       \u001b[1mEnter\u001b[0;2m continue · \u001b[0;1mEsc\u001b[0;2m back · \u001b[0;1m[Ctrl+C]\u001b[0;2m close\u001b[0m\n       \u001b[2m──────────────────────────────────────────────────────────────────\u001b[0m\n\n\n\n\n\n\n\n\n\n",
+    "beat": 5,
+    "caption": "Fill in its inputs",
+    "delay": 900
+  },
+  {
+    "name": "11-times-0",
+    "ansi": "\n\n\n      \u001b[2m\u001b[36mR  E  L  A  V  I  U  M\u001b[0m\n\n      \u001b[2m\u001b[36m◉\u001b[39m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○\u001b[0m\n      \u001b[2mStart as an agent        Ship the workflow             Own every run\u001b[0m\n      \u001b[2mtalk to an agent          save it as YAML             every run kept\u001b[0m\n\n       \u001b[2m─ \u001b[0;1m/run\u001b[0;2m ───────────────────────────────── from Home · step 2 of 3 ─\u001b[0m\n       \u001b[1m\u001b[32m✓ Workflow\u001b[0;2m ╌╌ \u001b[0;1m◉ Inputs\u001b[0;2m ╌╌ ○ Confirm\u001b[0m\n       Input 2 of 2: times (number, optional)\n       >\n       \u001b[1mEnter\u001b[0;2m continue · \u001b[0;1mEsc\u001b[0;2m back · \u001b[0;1m[Ctrl+C]\u001b[0;2m close\u001b[0m\n       \u001b[2m──────────────────────────────────────────────────────────────────\u001b[0m\n\n\n\n\n\n\n\n\n\n",
+    "beat": 5,
+    "caption": "Fill in its inputs",
+    "delay": 1000
+  },
+  {
+    "name": "12-times-3",
+    "ansi": "\n\n\n      \u001b[2m\u001b[36mR  E  L  A  V  I  U  M\u001b[0m\n\n      \u001b[2m\u001b[36m◉\u001b[39m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○\u001b[0m\n      \u001b[2mStart as an agent        Ship the workflow             Own every run\u001b[0m\n      \u001b[2mtalk to an agent          save it as YAML             every run kept\u001b[0m\n\n       \u001b[2m─ \u001b[0;1m/run\u001b[0;2m ───────────────────────────────── from Home · step 2 of 3 ─\u001b[0m\n       \u001b[1m\u001b[32m✓ Workflow\u001b[0;2m ╌╌ \u001b[0;1m◉ Inputs\u001b[0;2m ╌╌ ○ Confirm\u001b[0m\n       Input 2 of 2: times (number, optional)\n       > 3\n       \u001b[1mEnter\u001b[0;2m continue · \u001b[0;1mEsc\u001b[0;2m back · \u001b[0;1m[Ctrl+C]\u001b[0;2m close\u001b[0m\n       \u001b[2m──────────────────────────────────────────────────────────────────\u001b[0m\n\n\n\n\n\n\n\n\n\n",
+    "beat": 5,
+    "caption": "Fill in its inputs",
+    "delay": 900
+  },
+  {
+    "name": "13-confirm-wait",
+    "ansi": "\n\n\n      \u001b[2m\u001b[36mR  E  L  A  V  I  U  M\u001b[0m\n\n      \u001b[2m\u001b[36m◉\u001b[39m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○\u001b[0m\n      \u001b[2mStart as an agent        Ship the workflow             Own every run\u001b[0m\n      \u001b[2mtalk to an agent          save it as YAML             every run kept\u001b[0m\n\n       \u001b[2m─ \u001b[0;1m/run\u001b[0;2m ───────────────────────────────── from Home · step 3 of 3 ─\u001b[0m\n       \u001b[1m\u001b[32m✓ Workflow\u001b[0;2m ╌╌ \u001b[0;1m\u001b[32m✓ Inputs\u001b[0;2m ╌╌ \u001b[0;1m◉ Confirm\u001b[0m\n       Run Hello pipeline with who=Ada, times=3?\n       File: …e/acme-app/.relavium/workflows/hello-pipeline.relavium.yaml\n       \u001b[2m[Ctrl+Y] Start it (wait) · \u001b[0;1mEsc\u001b[0;2m back · \u001b[0;1m\u001b[33m[Ctrl+C]\u001b[0;2m denies\u001b[0m\n       \u001b[2m──────────────────────────────────────────────────────────────────\u001b[0m\n\n\n\n\n\n\n\n\n\n",
+    "beat": 6,
+    "caption": "Confirm: the answer key waits a moment before it opens",
+    "delay": 1700
+  },
+  {
+    "name": "14-confirm-open",
+    "ansi": "\n\n\n      \u001b[2m\u001b[36mR  E  L  A  V  I  U  M\u001b[0m\n\n      \u001b[2m\u001b[36m◉\u001b[39m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○\u001b[0m\n      \u001b[2mStart as an agent        Ship the workflow             Own every run\u001b[0m\n      \u001b[2mtalk to an agent          save it as YAML             every run kept\u001b[0m\n\n       \u001b[2m─ \u001b[0;1m/run\u001b[0;2m ───────────────────────────────── from Home · step 3 of 3 ─\u001b[0m\n       \u001b[1m\u001b[32m✓ Workflow\u001b[0;2m ╌╌ \u001b[0;1m\u001b[32m✓ Inputs\u001b[0;2m ╌╌ \u001b[0;1m◉ Confirm\u001b[0m\n       Run Hello pipeline with who=Ada, times=3?\n       File: …e/acme-app/.relavium/workflows/hello-pipeline.relavium.yaml\n       \u001b[1m\u001b[32m[Ctrl+Y]\u001b[0;2m Start it · \u001b[0;1m\u001b[31m[Ctrl+N]\u001b[0;2m Cancel · \u001b[0;1mEsc\u001b[0;2m back · \u001b[0;1m\u001b[33m[Ctrl+C]\u001b[0;2m denies\u001b[0m\n       \u001b[2m──────────────────────────────────────────────────────────────────\u001b[0m\n\n\n\n\n\n\n\n\n\n",
+    "beat": 6,
+    "caption": "Then Ctrl+Y starts it, Ctrl+N cancels, Esc goes back",
+    "delay": 2300
+  },
+  {
+    "name": "15-started",
+    "ansi": "\n\n\n      \u001b[1m\u001b[36mR  E  L  A  V  I  U  M\u001b[0m\n\n      \u001b[36m◉\u001b[2m\u001b[39m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌○\u001b[0m\n      \u001b[1mStart as an agent\u001b[0m        \u001b[2mShip the workflow\u001b[0m             \u001b[2mOwn every run\u001b[0m\n      \u001b[2mtalk to an agent          save it as YAML             every run kept\u001b[0m\n\n\n      \u001b[36m› \u001b[7m\u001b[39ms\u001b[0;2mummarize the files in this folder\u001b[0m\n      \u001b[2m────────────────────────────────────────────────────────────────────\u001b[0m\n      \u001b[36mNo provider key yet · Enter connect · /providers\u001b[39m\n\n      \u001b[2mStarted Hello pipeline · run 22ec16bb\u001b[0m\n\n\n\n\n\n\n\n\n\n",
+    "beat": 7,
+    "caption": "Started: the run is kept as a record you can open later",
+    "delay": 2400
+  },
+  {
+    "name": "16-runs",
+    "ansi": "\u001b[2mActive  │  \u001b[0;1;7m› History\n\u001b[0;2m──────────────────────────────────────────────────────────────────────────────\u001b[0m\nthis project · every finished run · page 1 (last)\n\u001b[1;7m\u001b[36m› ✓ completed  22ec16bb  hello-pipeline                         just now  free\u001b[0m\n\u001b[2mcost free · 22ec16bb-0b46-4c9a-957e-b59ff7f5e793 · . (project root)\u001b[0m\nFinished runs, newest first. Enter opens a run.\n\u001b[1m←/→\u001b[0;2m tab · \u001b[0;1m↑/↓\u001b[0;2m move · \u001b[0;1mEnter\u001b[0;2m open · \u001b[0;1m[p]\u001b[0;2m pin · \u001b[0;1m[a]\u001b[0;2m all · \u001b[0;1mEsc\u001b[0;2m back to Home\u001b[0m\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+    "beat": 8,
+    "caption": "/workflows, then h: every finished run, newest first. Enter opens one",
+    "delay": 4200
+  }
+]
