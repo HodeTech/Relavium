@@ -79,6 +79,13 @@ function nativeSnapshot(directory: string) {
   }
 }
 
+// Each resume starts a separate vitest process from source, which takes 8 to 10 seconds on the CI runner before its test runs; the whole
+// test took 12 to 17 seconds there in four runs and 20 in the one that failed: its child's own 5-second test limit, then a 20-second
+// limit on the process, sat at the edge of that. The limits below are for the runner; the assertions are the same.
+const CHILD_TEST_TIMEOUT_MS = 60_000;
+const CHILD_PROCESS_TIMEOUT_MS = 90_000;
+const PARENT_TEST_TIMEOUT_MS = 240_000;
+
 const childHome = process.env['RELAVIUM_SNAPSHOT_TEST_HOME'];
 const childRunId = process.env['RELAVIUM_SNAPSHOT_TEST_RUN_ID'];
 const childMismatch = process.env['RELAVIUM_SNAPSHOT_TEST_MISMATCH'] === 'true';
@@ -159,54 +166,58 @@ describe('native authored snapshot warning and resume identity', () => {
     });
   } else {
     for (const json of [false, true]) {
-      it(`warns on authored content and preserves native snapshot through a fresh process resume (${json ? 'json' : 'human'})`, async () => {
-        const path = join(directory, 'workflow.relavium.yaml');
-        writeFileSync(path, YAML);
-        const capture = captureIo();
-        expect(
-          await run(
-            [
-              'node',
-              'relavium',
-              '--cwd',
-              directory,
-              'run',
-              path,
-              '--secret-inputs-stdin',
-              ...(json ? ['--json'] : []),
-            ],
-            capture.io,
-          ),
-        ).toBe(3);
-        expect(capture.err(), 'SNAPSHOT_NATIVE_RUN_NOTICE').toContain(
-          '1 string(s) matching known credential shapes',
-        );
-        expect(capture.out()).not.toContain('Warning:');
-        expect(capture.out() + capture.err()).not.toContain(AUTHORED);
-        expect(capture.out() + capture.err()).not.toContain(INPUT);
-        expect(capture.err()).not.toContain('arbitraryPrivateProperty');
-        if (json) {
-          const events = capture
-            .out()
-            .trim()
-            .split('\n')
-            .map((line) => RunEventSchema.parse(JSON.parse(line)));
-          expect(events.at(-1)?.type).toBe('run:paused');
-        }
-        const paused = nativeSnapshot(directory);
-        expect(paused.definition, 'SNAPSHOT_NATIVE_WRITE_FIDELITY').toEqual(parseWorkflow(YAML));
-        expect(JSON.stringify(paused.persistedEvents)).not.toContain(AUTHORED);
-        expect(JSON.stringify(paused.persistedEvents)).not.toContain(INPUT);
+      it(
+        `warns on authored content and preserves native snapshot through a fresh process resume (${json ? 'json' : 'human'})`,
+        async () => {
+          const path = join(directory, 'workflow.relavium.yaml');
+          writeFileSync(path, YAML);
+          const capture = captureIo();
+          expect(
+            await run(
+              [
+                'node',
+                'relavium',
+                '--cwd',
+                directory,
+                'run',
+                path,
+                '--secret-inputs-stdin',
+                ...(json ? ['--json'] : []),
+              ],
+              capture.io,
+            ),
+          ).toBe(3);
+          expect(capture.err(), 'SNAPSHOT_NATIVE_RUN_NOTICE').toContain(
+            '1 string(s) matching known credential shapes',
+          );
+          expect(capture.out()).not.toContain('Warning:');
+          expect(capture.out() + capture.err()).not.toContain(AUTHORED);
+          expect(capture.out() + capture.err()).not.toContain(INPUT);
+          expect(capture.err()).not.toContain('arbitraryPrivateProperty');
+          if (json) {
+            const events = capture
+              .out()
+              .trim()
+              .split('\n')
+              .map((line) => RunEventSchema.parse(JSON.parse(line)));
+            expect(events.at(-1)?.type).toBe('run:paused');
+          }
+          const paused = nativeSnapshot(directory);
+          expect(paused.definition, 'SNAPSHOT_NATIVE_WRITE_FIDELITY').toEqual(parseWorkflow(YAML));
+          expect(JSON.stringify(paused.persistedEvents)).not.toContain(AUTHORED);
+          expect(JSON.stringify(paused.persistedEvents)).not.toContain(INPUT);
 
-        // The source file is no longer needed: a distinct OS process rebuilds from native history.
-        rmSync(path);
-        await resumeInChild(directory, paused.runId, true);
-        await resumeInChild(directory, paused.runId, false);
-        const resumed = nativeSnapshot(directory);
-        expect(resumed.definition).toEqual(paused.definition);
-        expect(JSON.stringify(resumed.persistedEvents)).not.toContain(AUTHORED);
-        expect(JSON.stringify(resumed.persistedEvents)).not.toContain(INPUT);
-      }, 30_000);
+          // The source file is no longer needed: a distinct OS process rebuilds from native history.
+          rmSync(path);
+          await resumeInChild(directory, paused.runId, true);
+          await resumeInChild(directory, paused.runId, false);
+          const resumed = nativeSnapshot(directory);
+          expect(resumed.definition).toEqual(paused.definition);
+          expect(JSON.stringify(resumed.persistedEvents)).not.toContain(AUTHORED);
+          expect(JSON.stringify(resumed.persistedEvents)).not.toContain(INPUT);
+        },
+        PARENT_TEST_TIMEOUT_MS,
+      );
     }
   }
 });
@@ -221,7 +232,7 @@ async function resumeInChild(directory: string, runId: string, mismatch: boolean
 export default { root, resolve: { alias: [
   { find: /^@relavium\\/llm\\/adapters$/, replacement: root + '/packages/llm/src/adapters/index.ts' },
   ...['llm', 'shared', 'core', 'db', 'mcp'].map(name => ({find: new RegExp('^@relavium/' + name + '$'), replacement: root + '/packages/' + name + '/src/index.ts'}))
-] }, test: { environment: 'node', include: ['apps/cli/src/run-snapshot-notice.test.ts'], pool: 'forks', maxWorkers: 1, fileParallelism: false, cache: false } };`,
+] }, test: { environment: 'node', include: ['apps/cli/src/run-snapshot-notice.test.ts'], pool: 'forks', maxWorkers: 1, fileParallelism: false, cache: false, testTimeout: ${String(CHILD_TEST_TIMEOUT_MS)}, hookTimeout: ${String(CHILD_TEST_TIMEOUT_MS)} } };`,
   );
   const require = createRequire(import.meta.url);
   const vitest = join(dirname(require.resolve('vitest/package.json')), 'vitest.mjs');
@@ -233,7 +244,7 @@ export default { root, resolve: { alias: [
       RELAVIUM_SNAPSHOT_TEST_RUN_ID: runId,
       RELAVIUM_SNAPSHOT_TEST_MISMATCH: String(mismatch),
     },
-    timeout: 20_000,
+    timeout: CHILD_PROCESS_TIMEOUT_MS,
   });
   expect(result.stdout, 'SNAPSHOT_NATIVE_CHILD_COMPLETED').toContain('1 passed');
 }
